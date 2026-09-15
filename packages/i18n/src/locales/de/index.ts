@@ -301,6 +301,7 @@ export const de = {
     "errorProvider": "KI-Anbieter",
     "errorModel": "Modell",
     "previewFile": "Vorschau im Seitenbereich",
+    "fileRefMissing": "Keine Datei entspricht {{name}}",
     "previewUrl": "Im Seitenbrowser öffnen",
     "openFile": "Mit Standardanwendung öffnen",
     "retry": "Neu generieren",
@@ -659,6 +660,7 @@ sklm: {
     "groupAgent": "Agent",
     "groupWorkspace": "Arbeitsbereich",
     "groupSystem": "System",
+    "groupExtensions": "Erweiterungen",
     "nav": {
       "general": "Allgemein",
       "ai": "KI",
@@ -1027,6 +1029,8 @@ sklm: {
     "apiStyleAnthropic": "Anthropic Messages",
     "apiStyleGoogle": "Google Generative AI",
     "apiStyleCodexResponses": "OpenAI Codex (ChatGPT)",
+    apiStyleLegacyAccount: "Dieses gespeicherte Format erfordert ein Anbieterkonto. Es bleibt unverändert, bis Sie ein anderes Format wählen.",
+    apiStyleChooseCustom: "Dieses Format erfordert ein Anbieterkonto. Wählen Sie ein unterstütztes API-Format, um diesen Dienst zu speichern.",
     "apiStylePiMessages": "Pi Messages (Radius)",
     "close": "Schließen",
     "vendorAccounts": "Lieferantenkonten",
@@ -1958,6 +1962,12 @@ sklm: {
       "errorTooBig": "Das Dokument überschreitet die Größenbeschränkung."
     },
     "subagents": {
+      fallbackModels: "Ersatzmodelle",
+      fallbackModelsHint: "Nach fehlgeschlagenen Modellwiederholungen der Reihe nach versuchen. Werkzeugergebnisse bleiben erhalten; Stopp beendet die gesamte Aufgabe.",
+      fallbackAdd: "Ersatzmodell hinzufügen",
+      fallbackMoveUp: "{{model}} nach oben",
+      fallbackMoveDown: "{{model}} nach unten",
+      fallbackRemove: "{{model}} entfernen",
       "title": "Subagenten",
       "add": "Neuer Subagent",
       "addTitle": "Neuer Subagent",
