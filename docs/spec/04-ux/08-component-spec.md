@@ -2811,9 +2811,10 @@ Anatomy:
   path. Session chips survive a workspace switch and are never sent as
   structured file attachments. Sending expands each mention, through existing
   `session.get`, into a frozen snapshot of the newest 10 completed user/assistant
-  Q&A turns (no thinking, tools, or nested delegates) attached as reference
-  material. The transcript still shows the chip; clicking it opens that
-  durable session. File rows persistently show only the leaf file or directory
+  Q&A turns. A turn concatenates every complete parent assistant `content`
+  before the next user (no thinking, tools, or nested delegates) and attaches
+  that as reference material. The transcript still shows the chip; clicking it
+  opens that durable session. File rows persistently show only the leaf file or directory
   name; directories get a trailing `/` and continue completion on accept. The
   complete relative path remains available through the row tooltip and
   accessible name. Accepting a completed file (Enter, Tab, or click) replaces

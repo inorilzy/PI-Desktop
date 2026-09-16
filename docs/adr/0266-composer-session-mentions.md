@@ -32,10 +32,13 @@ local Q&A snapshot so the current model can see the other conversation.
 5. No host-core, IPC, schema, or `Task*` change. At send time the desktop
    reads the referenced session through existing `session.get`, keeps the
    newest 10 completed user/assistant Q&A turns, and injects them as a frozen
-   reference block. `thinking`, tools, nested delegates, and aborted rows are
-   dropped. Nested `@session` tokens inside that material are not expanded.
-   The UI still shows the compact chip; the model sees the snapshot plus the
-   address.
+   reference block. One turn concatenates every complete parent assistant
+   `content` before the next user; a later follow-up does not replace an
+   earlier visible answer. `thinking`, tools, nested delegates, and aborted
+   rows are dropped. Nested `@session` tokens inside that material are not
+   expanded. The UI still shows the compact chip; the model sees the snapshot
+   plus the address.
+
 
 ## Consequences
 

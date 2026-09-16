@@ -42,17 +42,21 @@ function isCompleteAssistantAnswer(message: UiMessage): boolean {
 }
 
 /**
- * One turn is a user question plus the last complete assistant answer before
- * the next user. Thinking, tools, nested delegates, and aborted rows are not turns.
+ * One turn is a user question plus every complete parent assistant reply
+ * before the next user, joined in order. Thinking, tools, nested delegates,
+ * and aborted/streaming rows are not turns. A later follow-up does not
+ * replace an earlier visible answer in the same turn.
  */
 export function pairCompletedQaTurns(messages: readonly UiMessage[]): SessionQaTurn[] {
   const turns: SessionQaTurn[] = [];
   let question: string | null = null;
-  let answer: string | null = null;
+  const answers: string[] = [];
   const commit = () => {
-    if (question && answer) turns.push({ question, answer });
+    if (question && answers.length > 0) {
+      turns.push({ question, answer: answers.join("\n\n") });
+    }
     question = null;
-    answer = null;
+    answers.length = 0;
   };
   for (const message of messages) {
     if (isNestedDelegate(message)) continue;
@@ -64,12 +68,13 @@ export function pairCompletedQaTurns(messages: readonly UiMessage[]): SessionQaT
       continue;
     }
     if (question && isCompleteAssistantAnswer(message)) {
-      answer = message.content.trim();
+      answers.push(message.content.trim());
     }
   }
   commit();
   return turns;
 }
+
 
 export function collectSessionReferenceIds(
   content: string,

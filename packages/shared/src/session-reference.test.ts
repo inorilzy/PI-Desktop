@@ -67,15 +67,36 @@ describe("pairCompletedQaTurns", () => {
     expect(JSON.stringify(turns)).not.toContain(THINKING_MARKER);
   });
 
-  it("uses the last complete assistant before the next user as the answer", () => {
+  it("joins every complete parent assistant reply in the turn", () => {
     const turns = pairCompletedQaTurns([
-      message({ role: "user", content: "Do the work" }),
+      message({ role: "user", content: "How do I use this?" }),
+      message({ role: "assistant", content: "Looking at the docs." }),
       message({ role: "assistant", content: "", status: "streaming" }),
       message({ role: "tool", content: "", toolResult: TOOL_MARKER }),
-      message({ role: "assistant", content: "Done." }),
+      message({
+        role: "assistant",
+        content: SUBAGENT_MARKER,
+        parentToolCallId: "call_1",
+      }),
+      message({
+        role: "assistant",
+        content: "Full usage guide.",
+        thinking: THINKING_MARKER,
+      }),
+      message({ role: "assistant", content: "Researcher addendum." }),
     ]);
-    expect(turns).toEqual([{ question: "Do the work", answer: "Done." }]);
+    expect(turns).toEqual([
+      {
+        question: "How do I use this?",
+        answer: "Looking at the docs.\n\nFull usage guide.\n\nResearcher addendum.",
+      },
+    ]);
+    const serialized = JSON.stringify(turns);
+    expect(serialized).not.toContain(THINKING_MARKER);
+    expect(serialized).not.toContain(TOOL_MARKER);
+    expect(serialized).not.toContain(SUBAGENT_MARKER);
   });
+
 });
 
 describe("session reference prompt wrap", () => {
