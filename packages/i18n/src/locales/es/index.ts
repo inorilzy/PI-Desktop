@@ -255,6 +255,8 @@ export const es = {
     "slashGroupSkills": "Habilidades",
     "slashEmpty": "No hay comandos coincidentes",
     "fileMenu": "Referencias de archivos",
+    "fileGroup": "Archivos",
+    "sessionGroup": "Sesiones",
     "fileReferences": "Archivos a los que hace referencia este borrador",
     "removeFileReference": "Eliminar referencia de archivo {{name}}",
     "messageAttachments": "Archivos adjuntos en este mensaje",

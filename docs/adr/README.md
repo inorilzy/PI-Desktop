@@ -292,3 +292,4 @@ Each ADR includes:
 | 0265 | [Priority block and row actions for the Host-owned turn queue](0265-turn-queue-priority-block-and-row-actions.md) | Accepted for implementation (D429; amends ADR 0213 / 0118) |
 | session-content-search | [Discover sessions by indexed message text](session-content-search.md) | Accepted |
 | transcript-reading-ownership | [Share renderer history and search views](transcript-reading-ownership.md) | Accepted |
+| 0266 | [Composer @ mentions other sessions](0266-composer-session-mentions.md) | Accepted (amends ADR 0024 / 0070 / 0163; D430) |

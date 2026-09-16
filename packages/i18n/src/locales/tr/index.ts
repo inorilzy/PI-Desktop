@@ -264,6 +264,8 @@ export const tr = {
     slashGroupSkills: "Beceriler",
     slashEmpty: "Eşleşen komut yok",
     fileMenu: "Dosya başvuruları",
+    fileGroup: "Dosyalar",
+    sessionGroup: "Oturumlar",
     fileReferences: "Bu taslağın başvurduğu dosyalar",
     removeFileReference: "{{name}} dosya başvurusunu kaldır",
     messageAttachments: "Bu iletideki ekler",

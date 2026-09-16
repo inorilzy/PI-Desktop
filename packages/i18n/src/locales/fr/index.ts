@@ -255,6 +255,8 @@ export const fr = {
     "slashGroupSkills": "Compétences",
     "slashEmpty": "Aucune commande correspondante",
     "fileMenu": "Références de fichiers",
+    "fileGroup": "Fichiers",
+    "sessionGroup": "Sessions",
     "fileReferences": "Fichiers référencés par ce brouillon",
     "removeFileReference": "Supprimer la référence de fichier {{name}}",
     "messageAttachments": "Pièces jointes à ce message",

@@ -2766,7 +2766,7 @@ reasoning-level control.
   There are no visual previews in MVP.
 - No voice input
 
-### 11.8 Slash commands, @ file references, and clipboard files (D123–D125, D197, D209, D262, D362, D-LOCAL-message-quotes, D397, ADR 0024, ADR 0059, ADR 0070, ADR 0131, ADR 0221, ADR 0222)
+### 11.8 Slash commands, @ file and session references, and clipboard files (D123–D125, D197, D209, D262, D362, D-LOCAL-message-quotes, D397, D430, ADR 0024, ADR 0059, ADR 0070, ADR 0131, ADR 0221, ADR 0222, ADR 0266)
 
 The composer owns an inline autocomplete menu — one component serving two
 modes. Focus never leaves the textarea (D125).
@@ -2790,7 +2790,7 @@ Anatomy:
   shadow, subtle hairline, `--radius-lg`); max-height caps with internal
   scroll and `scrollIntoView(nearest)` keyboard follow.
 - Slash mode (`/` typed at position 0, cursor inside the first token, no
-  whitespace yet): the placeholder teaches `Type / for commands · @ for files`
+  whitespace yet): the placeholder teaches `Type / for commands · @ for files and sessions`
   (localized in zh-CN), and groups appear in order — prompt templates (name +
   `argument-hint` ghost text + description, project source before
   user-global), app commands (builtin slash aliases), plugin commands.
@@ -2801,17 +2801,26 @@ Anatomy:
   short command name to an ellipsis, including in narrow composers. Names and
   hints can still truncate when they themselves exceed the available row width;
   neither command rows nor file rows overflow the menu.
-- File mode (`@` token at cursor, boundary-preceded): rows persistently show
-  only the leaf file or directory name; directories get a trailing `/` and
-  continue completion on accept. The complete relative path remains available
-  through the row tooltip and accessible name. Accepting a completed file
-  (Enter, Tab, or click) replaces the `@` token with an inline leaf-name chip
-  at the caret — the same sentinel-backed chip as a pasted file — whose
-  canonical value is the original `entry.path`; the menu closes and that Enter
-  does not send. Accepting a directory keeps the literal path in the draft so
-  completion can continue. Entries come from `fs/index` (D124, D209, D362). A
-  truncation footnote appears when the index is capped; without a workspace the
-  menu shows an "open a project" empty state.
+- File mode (`@` token at cursor, boundary-preceded) lists two groups from the
+  same menu: **Sessions** then **Files**. Session rows come from the renderer's
+  live session list, exclude the current session, show the session title, and
+  keep the durable `sessionId` in the tooltip and accessible name. An empty
+  query shows the eight most recently updated sessions; a query fuzzy-matches
+  title then id. Accepting a session replaces the `@` token with an inline
+  title chip whose canonical value is `@session:<uuid>` — not a filesystem
+  path. Session chips survive a workspace switch and are never sent as
+  structured file attachments. Clicking a sent session chip opens that
+  durable session. File rows persistently show only the leaf file or directory
+  name; directories get a trailing `/` and continue completion on accept. The
+  complete relative path remains available through the row tooltip and
+  accessible name. Accepting a completed file (Enter, Tab, or click) replaces
+  the `@` token with an inline leaf-name chip at the caret — the same
+  sentinel-backed chip as a pasted file — whose canonical value is the original
+  `entry.path`; the menu closes and that Enter does not send. Accepting a
+  directory keeps the literal path in the draft so completion can continue.
+  File entries come from `fs/index` (D124, D209, D362). A truncation footnote
+  appears when the index is capped; without a workspace the file group is
+  empty while sessions remain available.
 - Accepting commands and directories inserts text (`/name ` / `@dir/`);
   accepting a completed file inserts the inline chip rather than deleting the
   trigger. Immediately

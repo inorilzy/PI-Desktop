@@ -264,6 +264,8 @@ export const ko = {
     slashGroupSkills: "스킬",
     slashEmpty: "일치하는 명령 없음",
     fileMenu: "파일 참조",
+    fileGroup: "파일",
+    sessionGroup: "세션",
     fileReferences: "이 초안에서 참조하는 파일",
     removeFileReference: "파일 참조 {{name}} 제거",
     messageAttachments: "이 메시지의 첨부 파일",

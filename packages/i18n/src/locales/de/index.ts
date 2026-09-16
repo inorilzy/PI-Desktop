@@ -255,6 +255,8 @@ export const de = {
     "slashGroupSkills": "Fähigkeiten",
     "slashEmpty": "Keine übereinstimmenden Befehle",
     "fileMenu": "Dateiverweise",
+    "fileGroup": "Dateien",
+    "sessionGroup": "Sitzungen",
     "fileReferences": "Von diesem Entwurf referenzierte Dateien",
     "removeFileReference": "Dateiverweis {{name}} entfernen",
     "messageAttachments": "Anhänge in dieser Nachricht",

@@ -52,11 +52,13 @@ test("accepted files become compact references while directories keep completion
   );
   assert.match(composer, /applyEditorDraft\(\s*nextText,/);
   // Workspace switches still drop relative `@` chips, not every token-backed
-  // chip — paste/scratch paths are absolute and must survive.
+  // chip — paste/scratch paths are absolute and must survive. Session chips
+  // are not workspace-relative files, so they also survive.
   assert.match(composer, /function isPersistedScratchReference\(path: string\)/);
+  assert.match(composer, /function isDurableComposerReference\(/);
   assert.match(
     composer,
-    /kept = current\.filter\(\(fileReference\) =>\s*isPersistedScratchReference\(fileReference\.path\)/,
+    /kept = current\.filter\(\(fileReference\) =>\s*isDurableComposerReference\(fileReference\)/,
   );
   assert.doesNotMatch(
     composer,
@@ -121,4 +123,18 @@ test("unanswered stop restores compact references instead of serialized paths", 
     /createFileReferenceFromSnapshot\(fileReference,\s*composerPrefill\.sessionId\)/,
   );
   assert.doesNotMatch(composer, /setValue\(composerPrefill\);/);
+});
+
+test("at-menu session mentions become session chips, not file paths", () => {
+  assert.match(autocompleteHook, /kind: \"session\"/);
+  assert.match(autocompleteHook, /filterSessions\(/);
+  assert.match(autocompleteHook, /kind: \"session\"/);
+  assert.match(
+    autocompleteHook,
+    /fileReference: \{\s*path: item\.session\.id,\s*name: item\.session\.title,\s*kind: \"session\"/,
+  );
+  assert.match(autocomplete, /item\.kind === \"session\"/);
+  assert.match(autocomplete, /t\(\"chat\.sessionGroup\"\)/);
+  assert.match(composer, /acceptedFileReference\.kind === \"session\"/);
+  assert.match(composer, /kind === \"session\"/);
 });
