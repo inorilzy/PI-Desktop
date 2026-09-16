@@ -150,6 +150,17 @@ test("budget estimates only target visible text and includes compaction summary 
   assert.equal(modelBudget({ messages: [message("nested", "assistant", "x".repeat(9000), { parentToolCallId: "tool" })] }).usedTokens, 0);
 });
 
+test("budget keeps reported occupancy when the compaction mark is outside the visible window", () => {
+  const result = modelBudget({
+    messages: [message("new", "assistant", "ok", { usage: { inputTokens: 800, outputTokens: 50, cacheReadTokens: 20 } })],
+    compactions: [{ id: "c", throughMessageId: "missing", summaryTokens: 100, summarized: true, generation: 1 }],
+  });
+  assert.equal(result.usedTokens, 870);
+
+  assert.equal(result.usageSource, "reported");
+});
+
+
 test("service walks physical >400-row pages without clipping tool or answer content", async () => {
   const messages = [message("u", "user", "Long tool-loop question"),
     ...Array.from({ length: 400 }, (_, i) => message(`t${i}`, "tool", "tool data")),
@@ -227,12 +238,14 @@ function harness({ running = false, getSession = async () => source() } = {}) {
     stop: async (id) => { calls.push(["stop", id]); },
     removeQueuedPrompt: async () => {},
   });
+
   const state = {
     activeSessionId: targetId, pendingPlans: {}, runningSessions: { [targetId]: running },
     agentStatuses: { [targetId]: { currentTurnId: "turn" } },
     responseAnnotations: { [targetId]: [lib.responseAnnotation({ id: "note", messageId: "a", text: "Selection" })] },
     sessions: [{ id: targetId, title: "Target", providerId: "p", modelId: "m" }, { id: otherId, title: "Other", providerId: "large", modelId: "large" }],
-    messages: [], queuedPrompts: {}, latestTurnResults: {}, sessionOutcomes: {}, sideChats: {}, sideChatTranscripts: {}, sessionCompactions: {},
+    messages: [], queuedPrompts: {}, latestTurnResults: {}, sessionOutcomes: {}, sideChats: {}, sideChatTranscripts: {}, sessionCompactions: {}, retainedTranscripts: {},
+
     providers: [{ id: "p", models: [{ id: "m", contextWindow: 16000, maxTokens: 2000 }] }, { id: "large", models: [{ id: "large", contextWindow: 1000000 }] }],
     providerModels: {}, showToast: (...args) => toasts.push(args),
   };

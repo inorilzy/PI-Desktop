@@ -47,20 +47,18 @@ export function calculateSessionReferenceBudget(input: SessionReferenceBudgetInp
   const outputReserve = Math.min(Math.floor(contextWindow / 2),
     positive(binding?.maxTokens) || positive(provider?.maxOutputTokens) || Math.ceil(contextWindow * 0.1));
   const systemReserve = Math.ceil(contextWindow * 0.1);
-  const compactions = input.compactions ?? [];
-  const checkpoint = compactions.at(-1);
+  const checkpoint = input.compactions?.at(-1);
+
   const parentMessages = input.messages.filter((message) => !message.parentToolCallId);
   const boundary = checkpoint ? parentMessages.findIndex((message) => message.id === checkpoint.throughMessageId) : -1;
   const messages = boundary >= 0 ? parentMessages.slice(boundary + 1) : parentMessages;
-  // summaryTokens is already estimated by contextCompactionMark / estimateSummaryTokens.
-  // Include it once; never add it on top of post-checkpoint reported occupancy.
   const visibleEstimate = visibleTokens(messages) + positive(checkpoint?.summaryTokens);
-  const inspector = !checkpoint || boundary >= 0
-    ? latestTurnContextInspector(messages, providerModels, providers) : undefined;
+  const inspector = latestTurnContextInspector(messages, providerModels, providers, input.compactions);
   const usageIndex = messages.findLastIndex((message) => Boolean(message.usage));
   const usedTokens = inspector
     ? Math.max(visibleEstimate, contextOccupancyTokens(inspector.usage) + visibleTokens(messages.slice(usageIndex + 1)))
     : visibleEstimate;
+
   const currentInputEstimate = estimateSessionReferenceTokens(input.currentInput);
   const availableTokens = Math.max(0, contextWindow - outputReserve - systemReserve - usedTokens - currentInputEstimate);
   const percent = normalizeSessionReferenceBudgetPercent(input.percent);

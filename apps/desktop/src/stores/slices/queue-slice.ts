@@ -133,7 +133,11 @@ export function createQueueSlice({
         providers: state.providers,
         providerModels: state.providerModels,
         messages: state.activeSessionId === sessionId ? state.messages
-          : state.sideChatTranscripts[sessionId] ?? runtime.sessionTranscriptCache.get(sessionId) ?? [],
+          : state.sideChatTranscripts[sessionId]
+            ?? runtime.sessionTranscriptCache.get(sessionId)
+            ?? state.retainedTranscripts[sessionId]
+            ?? [],
+
         compactions: state.sessionCompactions[sessionId],
         currentInput,
         percent: getSessionReferenceBudgetPercent(),
