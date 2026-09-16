@@ -83,6 +83,23 @@ test("a stored annotated prompt reduces back to the user's request", () => {
   );
 });
 
+test("a stored session-reference snapshot reduces back to the user's request", async () => {
+  const { attachSessionReferenceSnapshots } = await import("@pi-desktop/shared");
+  const wrapped = attachSessionReferenceSnapshots("please continue", [
+    {
+      sessionId: "42cf934f-ba75-46e1-84b5-e44bb76eba83",
+      title: "Pool design",
+      turns: [{ question: "How should the pool work?", answer: "Use a bounded pool." }],
+    },
+  ]);
+  assert.match(wrapped, /Use a bounded pool/);
+  assert.equal(requestTextWithoutAnnotations(wrapped), "please continue");
+  assert.equal(
+    requestTextWithoutAnnotations(responseAnnotationPrompt(wrapped, [annotation()])),
+    "please continue",
+  );
+});
+
 test("an excerpt is capped without cutting a surrogate pair", () => {
   assert.equal(annotationExcerpt("  keep me  "), "keep me");
   assert.equal(annotationExcerpt("a\r\nb"), "a\nb");
@@ -167,7 +184,7 @@ test("annotations attach to assistant turns, not to the draft", () => {
 });
 
 test("sending carries the annotations and consumes them", () => {
-  assert.match(store, /const outgoing = responseAnnotationPrompt\(content, annotations\);/);
+  assert.match(store, /const outgoing = responseAnnotationPrompt\(promptContent, annotations\);/);
   assert.match(store, /content: outgoing,/);
   assert.match(store, /isDefaultSessionTitle\(current\?\.title\)[\s\S]*?promptFallbackSessionTitle\(\s*content,/);
   assert.match(store, /consumeAnnotations\(\)/);

@@ -266,6 +266,8 @@ export const tr = {
     fileMenu: "Dosya başvuruları",
     fileGroup: "Dosyalar",
     sessionGroup: "Oturumlar",
+    sessionReferenceMissing: "Atıfta bulunulan oturum artık yok",
+    sessionReferenceFailed: "Atıfta bulunulan oturum yüklenemedi",
     fileReferences: "Bu taslağın başvurduğu dosyalar",
     removeFileReference: "{{name}} dosya başvurusunu kaldır",
     messageAttachments: "Bu iletideki ekler",

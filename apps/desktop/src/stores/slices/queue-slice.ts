@@ -9,6 +9,7 @@ import type {
   QueuedTurnSummary,
 } from "@pi-desktop/shared";
 import { api } from "../../lib/api";
+import { expandComposerSessionReferences } from "../../lib/session-reference-prompt";
 import {
   enqueueQueuedPrompt,
   isPendingQueuedPrompt,
@@ -79,6 +80,31 @@ export function createQueueSlice({
 > {
   const queuedDrafts = new Map<string, ComposerDraftSnapshot>();
   const pendingSubmissions = new Set<string>();
+
+  async function expandReferencedSessions(
+    content: string,
+    draft: ComposerDraftSnapshot | undefined,
+    excludeSessionId: string | null | undefined,
+  ): Promise<string | null> {
+    try {
+      const expanded = await expandComposerSessionReferences(
+        content,
+        draft?.fileReferences,
+        excludeSessionId,
+      );
+      if (expanded.missingIds.length > 0) {
+        get().showToast(i18n.t("chat.sessionReferenceMissing"), { variant: "error" });
+        return null;
+      }
+      return expanded.content;
+    } catch (error) {
+      get().showToast(
+        error instanceof Error ? error.message : i18n.t("chat.sessionReferenceFailed"),
+        { variant: "error" },
+      );
+      return null;
+    }
+  }
 
   function toQueuedPrompt(entry: QueuedTurnSummary): QueuedPrompt {
     return {
@@ -310,6 +336,8 @@ export function createQueueSlice({
         get().showToast(i18n.t("chat.steeringUnavailable"), { variant: "info" });
         return false;
       }
+      const promptContent = await expandReferencedSessions(content, draft, sessionId);
+      if (promptContent === null) return false;
       const message = optimisticUserMessage(
         crypto.randomUUID(), content, draft?.fileReferences ?? [],
       );
@@ -317,7 +345,7 @@ export function createQueueSlice({
       runtime.insertOptimisticUserMessage(sessionId, message);
       try {
         await api.steer({
-          sessionId, expectedTurnId, content, messageId: message.id,
+          sessionId, expectedTurnId, content: promptContent, messageId: message.id,
           attachments: draft ? promptAttachmentsFromDraft(draft.fileReferences) : [],
         });
         return true;
@@ -356,11 +384,13 @@ export function createQueueSlice({
         }
         if (!sessionId) throw new Error(i18n.t("errors.noActiveSession"));
         if (get().pendingPlans[sessionId]?.status === "pending") return false;
+        const promptContent = await expandReferencedSessions(content, draft, sessionId);
+        if (promptContent === null) return false;
         // Capture this session's immutable annotation objects before awaiting the host.
         // Only accepted, unchanged objects are consumed; edits/new attachments survive.
         const annotationSessionId = sessionId;
         const annotations = get().responseAnnotations[annotationSessionId] ?? [];
-        const outgoing = responseAnnotationPrompt(content, annotations);
+        const outgoing = responseAnnotationPrompt(promptContent, annotations);
         const consumeAnnotations = () => set((state) => {
           const current = state.responseAnnotations[annotationSessionId] ?? [];
           const remaining = current.filter((item) => !annotations.includes(item));

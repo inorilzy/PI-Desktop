@@ -2809,7 +2809,10 @@ Anatomy:
   title then id. Accepting a session replaces the `@` token with an inline
   title chip whose canonical value is `@session:<uuid>` — not a filesystem
   path. Session chips survive a workspace switch and are never sent as
-  structured file attachments. Clicking a sent session chip opens that
+  structured file attachments. Sending expands each mention, through existing
+  `session.get`, into a frozen snapshot of the newest 10 completed user/assistant
+  Q&A turns (no thinking, tools, or nested delegates) attached as reference
+  material. The transcript still shows the chip; clicking it opens that
   durable session. File rows persistently show only the leaf file or directory
   name; directories get a trailing `/` and continue completion on accept. The
   complete relative path remains available through the row tooltip and

@@ -257,6 +257,8 @@ export const es = {
     "fileMenu": "Referencias de archivos",
     "fileGroup": "Archivos",
     "sessionGroup": "Sesiones",
+    "sessionReferenceMissing": "La sesión citada ya no existe",
+    "sessionReferenceFailed": "No se pudo cargar la sesión citada",
     "fileReferences": "Archivos a los que hace referencia este borrador",
     "removeFileReference": "Eliminar referencia de archivo {{name}}",
     "messageAttachments": "Archivos adjuntos en este mensaje",

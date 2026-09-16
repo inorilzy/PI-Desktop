@@ -12,9 +12,9 @@ the current Agent at another durable conversation had to paste a session id or
 rely on Session Orchestrator's `SessionTask.list`. There is no `@session`
 chip, and a bare title in the draft is not a reference.
 
-Restoring parent-to-parent A2A (ADR 0165) is still rejected. This change is
-only a composer mention: pick a session from the existing `@` menu, serialize
-a stable id, and let the model use tools it already has.
+Restoring parent-to-parent A2A (ADR 0165) is still rejected. The mention is a
+composer address. At send time the desktop may expand that address into a
+local Q&A snapshot so the current model can see the other conversation.
 
 ## Decision
 
@@ -29,19 +29,27 @@ a stable id, and let the model use tools it already has.
 4. `@session:<uuid>` is not a filesystem path. It is never a structured
    attachment, never opened by `fs/open`, and survives a workspace switch.
    The transcript paints it as a chip; clicking opens that durable session.
-5. No host-core, IPC, schema, or `Task*` change. Sessions are not inlined
-   into the prompt. The mention is an address, not a transcript import.
+5. No host-core, IPC, schema, or `Task*` change. At send time the desktop
+   reads the referenced session through existing `session.get`, keeps the
+   newest 10 completed user/assistant Q&A turns, and injects them as a frozen
+   reference block. `thinking`, tools, nested delegates, and aborted rows are
+   dropped. Nested `@session` tokens inside that material are not expanded.
+   The UI still shows the compact chip; the model sees the snapshot plus the
+   address.
 
 ## Consequences
 
 - Users can `@` another conversation the same way they `@` a file.
-- The model sees `@session:<uuid>` and can pass that id to SessionTask when
-  the plugin is installed.
+- The current model receives recent Q&A from that session without A2A and
+  without importing thinking or tool traces.
 - File completion, paste chips, and transcript file chips stay unchanged.
 
 ## Alternatives considered
 
 - **A second trigger (`@@` or `#`)**: rejected. The request is to reuse `@`.
-- **Inline the other transcript**: rejected. That is a context-injection
-  feature with token and privacy cost, not a mention.
+- **Pointer only, no snapshot**: rejected for v1 of this expansion. An id
+  without content does not give the model the other conversation.
+- **Inline the full transcript, including thinking and tools**: rejected.
 - **Core A2A messaging**: rejected; ADR 0165 still stands.
+- **LLM summarization / RAG / view_chat tool**: deferred. First version is a
+  deterministic last-N Q&A snapshot with a character budget.

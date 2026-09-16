@@ -264,6 +264,8 @@ export const en = {
     fileMenu: "File references",
     fileGroup: "Files",
     sessionGroup: "Sessions",
+    sessionReferenceMissing: "That referenced session no longer exists",
+    sessionReferenceFailed: "Could not load the referenced session",
     fileReferences: "Files referenced by this draft",
     removeFileReference: "Remove file reference {{name}}",
     messageAttachments: "Attachments in this message",

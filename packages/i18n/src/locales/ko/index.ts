@@ -266,6 +266,8 @@ export const ko = {
     fileMenu: "파일 참조",
     fileGroup: "파일",
     sessionGroup: "세션",
+    sessionReferenceMissing: "참조한 세션이 더 이상 없습니다",
+    sessionReferenceFailed: "참조한 세션을 불러올 수 없습니다",
     fileReferences: "이 초안에서 참조하는 파일",
     removeFileReference: "파일 참조 {{name}} 제거",
     messageAttachments: "이 메시지의 첨부 파일",

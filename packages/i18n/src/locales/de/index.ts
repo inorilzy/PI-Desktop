@@ -257,6 +257,8 @@ export const de = {
     "fileMenu": "Dateiverweise",
     "fileGroup": "Dateien",
     "sessionGroup": "Sitzungen",
+    "sessionReferenceMissing": "Die referenzierte Sitzung existiert nicht mehr",
+    "sessionReferenceFailed": "Die referenzierte Sitzung konnte nicht geladen werden",
     "fileReferences": "Von diesem Entwurf referenzierte Dateien",
     "removeFileReference": "Dateiverweis {{name}} entfernen",
     "messageAttachments": "Anhänge in dieser Nachricht",

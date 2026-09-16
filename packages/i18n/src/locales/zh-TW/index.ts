@@ -259,6 +259,8 @@ export const zhTW = {
     fileMenu: "引用檔案",
     fileGroup: "檔案",
     sessionGroup: "會話",
+    sessionReferenceMissing: "引用的會話已不存在",
+    sessionReferenceFailed: "無法載入引用的會話",
     fileReferences: "此草稿引用的檔案",
     removeFileReference: "移除檔案引用 {{name}}",
     messageAttachments: "此訊息中的附件",

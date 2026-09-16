@@ -1402,7 +1402,10 @@ identify the platform validation still needed.
   accept the row. 3) Inspect the composer chip, then send. 4) Click the chip in
   the transcript. 5) Switch the project/workspace and confirm the chip remains.
 - **Expected**: Accepting inserts a title chip, not a file path. The sent user
-  turn contains `@session:<uuid>` and renders as a session chip. Clicking it
+  turn contains `@session:<uuid>` plus a frozen snapshot of the newest 10
+  completed Q&A turns from that session. Thinking, tools, and nested delegate
+  rows are absent from the snapshot. The transcript still renders a session
+  chip (the snapshot is stripped from the visible request). Clicking the chip
   opens that durable session. The mention is not a structured attachment and is
   not opened by `fs/open`. File `@` completion still works.
 - **Specs linked**: `04-ux/08-component-spec.md` §11.8; ADR 0266, D430

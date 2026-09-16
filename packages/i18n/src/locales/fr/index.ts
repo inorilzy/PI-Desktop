@@ -257,6 +257,8 @@ export const fr = {
     "fileMenu": "Références de fichiers",
     "fileGroup": "Fichiers",
     "sessionGroup": "Sessions",
+    "sessionReferenceMissing": "La session citée n'existe plus",
+    "sessionReferenceFailed": "Impossible de charger la session citée",
     "fileReferences": "Fichiers référencés par ce brouillon",
     "removeFileReference": "Supprimer la référence de fichier {{name}}",
     "messageAttachments": "Pièces jointes à ce message",

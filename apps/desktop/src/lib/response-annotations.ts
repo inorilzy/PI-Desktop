@@ -15,9 +15,9 @@
  * and the inline marker geometry.
  */
 
+import { stripSessionReferencePrompt } from "@pi-desktop/shared";
 import type { ResponseAnnotationAnchor } from "./response-annotation-anchor";
 
-/** Heading the annotation block opens with, exactly as the reference sends it. */
 export const ANNOTATION_BLOCK_HEADING = "# Response annotations:";
 export const ANNOTATION_BLOCK_OPEN = "<response-annotations>";
 export const ANNOTATION_BLOCK_CLOSE = "</response-annotations>";
@@ -225,14 +225,18 @@ export function responseAnnotationPrompt(
  */
 export function requestTextWithoutAnnotations(prompt: string): string {
   const text = String(prompt ?? "");
-  if (!text.startsWith(`${ANNOTATION_BLOCK_HEADING}\n`)) return text;
-  const heading = `\n${ANNOTATION_REQUEST_HEADING}\n`;
-  const index = text.lastIndexOf(heading);
-  if (index === -1) {
-    // Main trims prompt text; an annotation-only request ends at the heading.
-    return text.endsWith(`\n${ANNOTATION_REQUEST_HEADING}`) ? "" : text;
+  let request = text;
+  if (text.startsWith(`${ANNOTATION_BLOCK_HEADING}\n`)) {
+    const heading = `\n${ANNOTATION_REQUEST_HEADING}\n`;
+    const index = text.lastIndexOf(heading);
+    if (index === -1) {
+      // Main trims prompt text; an annotation-only request ends at the heading.
+      request = text.endsWith(`\n${ANNOTATION_REQUEST_HEADING}`) ? "" : text;
+    } else {
+      request = text.slice(index + heading.length);
+    }
   }
-  return text.slice(index + heading.length);
+  return stripSessionReferencePrompt(request);
 }
 
 /** Cap one excerpt, never cutting between the halves of a surrogate pair. */

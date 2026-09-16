@@ -259,6 +259,8 @@ export const zhCN = {
     fileMenu: "引用文件",
     fileGroup: "文件",
     sessionGroup: "会话",
+    sessionReferenceMissing: "引用的会话已不存在",
+    sessionReferenceFailed: "无法加载引用的会话",
     fileReferences: "此草稿引用的文件",
     removeFileReference: "移除文件引用 {{name}}",
     messageAttachments: "此消息中的附件",

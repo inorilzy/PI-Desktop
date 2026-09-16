@@ -138,3 +138,13 @@ test("at-menu session mentions become session chips, not file paths", () => {
   assert.match(composer, /acceptedFileReference\.kind === \"session\"/);
   assert.match(composer, /kind === \"session\"/);
 });
+
+test("sending a session mention expands completed Q&A before the host prompt", async () => {
+  const queueSlice = await read("../src/stores/slices/queue-slice.ts");
+  const expander = await read("../src/lib/session-reference-prompt.ts");
+  assert.match(expander, /expandSessionReferences/);
+  assert.match(expander, /messageLimit: SESSION_REFERENCE_READ_LIMIT/);
+  assert.match(queueSlice, /expandComposerSessionReferences/);
+  assert.match(queueSlice, /chat\.sessionReferenceMissing/);
+  assert.match(queueSlice, /content: promptContent/);
+});
