@@ -7,6 +7,7 @@ export * from "./keyboard-shortcuts.js";
 export * from "./changelog.js";
 export * from "./composer-trigger.js";
 export * from "./session-reference.js";
+export * from "./session-reference-reader.js";
 export * from "./fuzzy.js";
 export * from "./mcp-import.js";
 export * from "./mcp-catalog.js";

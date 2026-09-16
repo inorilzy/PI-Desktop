@@ -2810,11 +2810,23 @@ Anatomy:
   title chip whose canonical value is `@session:<uuid>` — not a filesystem
   path. Session chips survive a workspace switch and are never sent as
   structured file attachments. Sending expands each mention, through existing
-  `session.get`, into a frozen snapshot of the newest 10 completed user/assistant
-  Q&A turns. A turn concatenates every complete parent assistant `content`
-  before the next user (no thinking, tools, or nested delegates) and attaches
-  that as reference material. The transcript still shows the chip; clicking it
-  opens that durable session. File rows persistently show only the leaf file or directory
+  `session.get` pagination, into frozen complete user/assistant Q&A turns.
+  There is no fixed turn count: all referenced sessions share an estimated
+  context budget, including headings and coverage notices. Settings > AI
+  offers 10%, 25% (default), 50%, or 100% of estimated available context.
+  Each turn joins every eligible parent assistant `content` before the next
+  user, including progress; empty user rows still close the preceding turn.
+  Thinking, tools, nested delegates, and aborted/error/streaming replies are
+  excluded. Wrappers are cleaned per message, before concatenation. A send-time
+  notice reports included turns, known omissions, unread older history, and
+  approximate tokens. The newest turn from every nonempty source must fit
+  together; otherwise sending is blocked without consuming the draft. Older
+  whole turns are added round-robin without splitting or cherry-picking.
+  A 400-line page is not a history limit: follow physical cursors until enough
+  complete turns are available, history ends, or a visible read-safety stop is
+  reached (ADR 0266). Queued snapshots stay frozen. Reference text is not new
+  tool authorization and does not recursively expand mentions. The transcript
+  still shows the chip; clicking it opens that durable session. File rows persistently show only the leaf file or directory
   name; directories get a trailing `/` and continue completion on accept. The
   complete relative path remains available through the row tooltip and
   accessible name. Accepting a completed file (Enter, Tab, or click) replaces

@@ -143,8 +143,13 @@ test("sending a session mention expands completed Q&A before the host prompt", a
   const queueSlice = await read("../src/stores/slices/queue-slice.ts");
   const expander = await read("../src/lib/session-reference-prompt.ts");
   assert.match(expander, /expandSessionReferences/);
-  assert.match(expander, /messageLimit: SESSION_REFERENCE_READ_LIMIT/);
+  assert.match(expander, /readSessionReferenceSource/);
+  assert.match(expander, /messageLimit: DEFAULT_SESSION_REFERENCE_PAGE_LIMIT/);
+  assert.match(expander, /messageBefore: before/);
+  assert.match(expander, /budgetTokens: options\.budgetTokens/);
   assert.match(queueSlice, /expandComposerSessionReferences/);
+  assert.match(queueSlice, /calculateSessionReferenceBudget/);
   assert.match(queueSlice, /chat\.sessionReferenceMissing/);
-  assert.match(queueSlice, /content: promptContent/);
+  assert.match(queueSlice, /chat\.sessionReferenceBudgetBlocked/);
+  assert.match(queueSlice, /enqueueFrozenPrompt/);
 });
