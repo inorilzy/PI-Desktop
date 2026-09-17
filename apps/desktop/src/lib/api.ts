@@ -1,5 +1,6 @@
 import type {
   ActivationScope,
+  AgentCapabilityMove,
   AgentCapabilityQuery,
   AgentEventEnvelope,
   AgentCompactRequest,
@@ -49,6 +50,7 @@ import type {
   OAuthStartResult,
   OAuthVendor,
   PluginSummary,
+  PluginPermissionReview,
   PluginSettingDefinition,
   PluginServiceStatus,
   PluginViewMeta,
@@ -106,6 +108,7 @@ import {
   normalizeMode,
   normalizeNetworkProxy,
   resolveFontScale,
+  normalizeChatContentMaxWidth,
   validateNetworkProxy,
 } from "@pi-desktop/shared";
 
@@ -221,6 +224,7 @@ export function validateSettingsWrite(settings: AppSettings): AppSettings {
     defaultCommandShell?: unknown;
     largePasteThreshold?: unknown;
     fontScale?: unknown;
+    chatContentMaxWidth?: unknown;
     networkProxy?: unknown;
   };
   if (
@@ -247,6 +251,14 @@ export function validateSettingsWrite(settings: AppSettings): AppSettings {
     throw Object.assign(new Error("fontScale is invalid"), {
       errorCode: "INVALID_PARAMS",
     });
+  }
+  if (Object.prototype.hasOwnProperty.call(value, "chatContentMaxWidth")) {
+    const next = normalizeChatContentMaxWidth(value.chatContentMaxWidth);
+    if (next === undefined || next !== value.chatContentMaxWidth) {
+      throw Object.assign(new Error("chatContentMaxWidth is invalid"), {
+        errorCode: "INVALID_PARAMS",
+      });
+    }
   }
   if (Object.prototype.hasOwnProperty.call(value, "networkProxy")) {
     const proxy = validateNetworkProxy(value.networkProxy);
@@ -533,6 +545,11 @@ export const api = {
       IPC.invoke.projectClone,
       { url },
     ),
+  cloneProjectInto: (url: string, parentPath: string) =>
+    invoke<{ path: string; name: string }>(IPC.invoke.projectCloneCheckout, {
+      url,
+      parentPath,
+    }),
   pickFiles: () =>
     invoke<{ token: string | null; canceled?: boolean }>(IPC.invoke.composerPickFiles),
   getDroppedFilePath: (file: File) =>
@@ -650,8 +667,24 @@ export const api = {
     invoke<PlanResolutionResult>(IPC.invoke.plansResolve, resolution),
   listPlugins: () =>
     invoke<{ plugins: PluginSummary[] }>(IPC.invoke.pluginList),
-  loadDevPlugin: () => invoke(IPC.invoke.pluginLoadDev),
-  reloadPlugin: (id: string) => invoke(IPC.invoke.pluginReload, id),
+  /**
+   * Picking a folder only reports what it declares; the load happens in
+   * `confirmLoadDevPlugin` once the user has seen that.
+   */
+  loadDevPlugin: () =>
+    invoke<{ canceled?: boolean; review?: PluginPermissionReview }>(
+      IPC.invoke.pluginLoadDev,
+    ),
+  confirmLoadDevPlugin: (input: { path: string; grantedPermissions: string[] }) =>
+    invoke(IPC.invoke.pluginLoadDevConfirm, input),
+  /**
+   * A manifest that asks for more than the current approval comes back as a
+   * `review` instead of a reload, so the page asks before anything is granted.
+   */
+  reloadPlugin: (id: string) =>
+    invoke<{ review?: PluginPermissionReview }>(IPC.invoke.pluginReload, id),
+  confirmReloadPlugin: (input: { id: string; grantedPermissions: string[] }) =>
+    invoke(IPC.invoke.pluginReloadConfirm, input),
   createPluginFromTemplate: (template: string) =>
     invoke<{
       canceled?: boolean;
@@ -659,6 +692,7 @@ export const api = {
       name?: string;
       dir?: string;
       files?: string[];
+      review?: PluginPermissionReview;
     }>(IPC.invoke.pluginCreateFromTemplate, { template }),
   installPluginFromPath: () => invoke(IPC.invoke.pluginInstallFromPath),
   installPluginFromPackage: () => invoke(IPC.invoke.pluginInstallFromPackage),
@@ -701,6 +735,13 @@ export const api = {
   ) => invoke(IPC.invoke.mcpSetEnabled, { id, enabled, ...query }),
   setMcpServerScope: (id: string, scope: ActivationScope) =>
     invoke(IPC.invoke.mcpSetScope, { id, scope }),
+  /**
+   * Move one server to the other level. The document is moved, not copied, and
+   * the response carries the id it ended up under: a destination that already
+   * holds the same id or name renames the arriving server.
+   */
+  transferMcpServer: (move: AgentCapabilityMove) =>
+    invoke<{ server: McpServerRecord }>(IPC.invoke.mcpTransfer, move),
   /** Force one handshake and report what happened, for the editor's test button. */
   testMcpServer: (id: string, query?: Partial<AgentCapabilityQuery>) =>
     invoke<{ status: McpServerStatus }>(IPC.invoke.mcpTest, { id, ...query }),
@@ -726,7 +767,19 @@ export const api = {
        * Why each named source failed, so the market can explain a policy/DNS
        * refusal instead of reporting every source as merely unreachable.
        */
-      failureKinds?: Record<string, "policy" | "network">;
+      failureKinds?: Record<string, "policy" | "fake-ip" | "unresolved" | "network">;
+      /**
+       * The host, the address it resolved to, and the guard's own reason behind
+       * each failed source. Without them the panel can say a source was refused
+       * but not *what* was refused — and `198.18.0.1` is what tells a user their
+       * proxy is in fake-IP mode. `route` adds which route the guard judged that
+       * address on, so a fake-IP refusal on a direct route reads apart from one
+       * on a proxied route (issue #419, ADR 0272).
+       */
+      failureDetails?: Record<
+        string,
+        { host?: string; address?: string; reason?: string; addressKind?: string; route?: string }
+      >;
     }>(IPC.invoke.skillMarketSearch, { query, sources }),
   /** Fetch one catalog document (frontmatter split off) for preview/install. */
   fetchSkillMarketDocument: (entry: SkillCatalogEntry) =>
@@ -761,6 +814,13 @@ export const api = {
   setUserSkillScope: (id: string, scope: ActivationScope) =>
     invoke(IPC.invoke.skillSetScope, { id, scope }),
   /**
+   * Move one skill to the other level. The document is moved, not copied, and
+   * the response carries the id it ended up under: a destination that already
+   * holds the same id or display name renames the arriving skill.
+   */
+  transferUserSkill: (move: AgentCapabilityMove) =>
+    invoke<{ skill: UserSkillRecord }>(IPC.invoke.skillTransfer, move),
+  /**
    * Level and project must travel with the id: a project skill has no global
    * counterpart to fall back to, so resolving by id alone would miss it.
    */
@@ -770,10 +830,15 @@ export const api = {
   // --- Subagents the user owns ----------------------------------------------
   listUserSubagents: (query?: Pick<AgentCapabilityQuery, "level">) =>
     invoke<{ subagents: UserSubagentRecord[] }>(IPC.invoke.subagentList, query),
-  /** What `Task` would offer right now, merged across all three sources. */
+  /**
+   * What `Task` would offer right now, merged across the shipped builtins and
+   * the registry. `builtins` keeps a switched-off default in the list, flagged
+   * `enabled: false`, so Settings can still show that row and its switch.
+   */
   subagentCatalog: () =>
     invoke<{
       subagents: SubagentDefinition[];
+      builtins: Array<SubagentDefinition & { enabled: boolean }>;
       diagnostics: string[];
       projectPath: string | null;
     }>(IPC.invoke.subagentCatalog),
@@ -793,6 +858,15 @@ export const api = {
   removeUserSubagent: (id: string) => invoke(IPC.invoke.subagentRemove, id),
   setUserSubagentEnabled: (id: string, enabled: boolean) =>
     invoke(IPC.invoke.subagentSetEnabled, { id, enabled }),
+  /**
+   * Turn one shipped default off, or back on. The id is the `Task` handle
+   * (`explorer`), never a document id: a builtin has no file to switch.
+   */
+  setBuiltinSubagentEnabled: (id: string, enabled: boolean) =>
+    invoke<{ id: string; enabled: boolean }>(IPC.invoke.subagentSetBuiltinEnabled, {
+      id,
+      enabled,
+    }),
   setUserSubagentScope: (id: string, scope: ActivationScope) =>
     invoke(IPC.invoke.subagentSetScope, { id, scope }),
   /** Registry entries reveal by id; project documents pass their own path. */

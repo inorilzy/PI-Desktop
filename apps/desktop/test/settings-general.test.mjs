@@ -126,6 +126,7 @@ test("Basics and AI tabs expose their respective app and AI controls", () => {
   }
   assert.match(sharedTypesSource, /contextUsageDisplay\?: ContextUsageDisplay/);
   assert.match(sharedTypesSource, /ContextUsageDisplay = "remaining" \| "used"/);
+  assert.match(sharedTypesSource, /chatContentMaxWidth\?: number/);
   assert.match(settingsPageSource, /largePasteThreshold/);
   assert.match(settingsPageSource, /saveSettings\(\{ largePasteThreshold: next \}\)/);
   assert.doesNotMatch(settingsPageSource, /commandShellConfigured/);
@@ -396,8 +397,21 @@ test("marketplace source settings live inside the Plugins marketplace surface", 
   assert.match(pluginsPageSource, /<MarketplaceSourceSettings/);
   assert.match(marketplaceSettingsSource, /api\.marketRefresh\(true\)/);
   assert.match(marketplaceSettingsSource, /settings\.marketProvider/);
+  assert.match(marketplaceSettingsSource, /<SettingsMenuSelect/);
+  assert.doesNotMatch(marketplaceSettingsSource, /<Select/);
   assert.doesNotMatch(settingsPageSource, /ExtensionMarketSection/);
   assert.doesNotMatch(settingsPageSource, /tab === "extensions"/);
+});
+
+test("settings compact pickers hug the current label on the shared menu select", () => {
+  assert.match(
+    stylesSource,
+    /\.settings-language-anchor,\s*\.settings-theme-anchor,\s*\.settings-menu-select-anchor\s*\{[^}]*width:\s*max-content/s,
+  );
+  assert.match(
+    stylesSource,
+    /\.settings-language-trigger,\s*\.settings-theme-trigger,\s*\.settings-menu-select-trigger\s*\{[^}]*width:\s*max-content/s,
+  );
 });
 
 test("native select menus keep readable theme colors across the app on Windows", () => {

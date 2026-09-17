@@ -1,5 +1,5 @@
 import { dialog, shell } from "electron";
-import { ErrorCodes, IPC, type ActivationScope, type AgentCapabilityQuery, type UserSkillRecord, type UserSubagentRecord } from "@pi-desktop/shared";
+import { ErrorCodes, IPC, type ActivationScope, type AgentCapabilityMove, type AgentCapabilityQuery, type UserSkillRecord, type UserSubagentRecord } from "@pi-desktop/shared";
 import { loadSubagentDefinitions, type UserSubagentDocument } from "@pi-desktop/agent-runtime";
 import type { HostProcess } from "../host-process";
 import type { Logger } from "../logger";
@@ -9,7 +9,11 @@ import {
   type SkillMarketDocument,
   type SkillMarketSearchResult,
 } from "../skill-market-catalog";
-import { skillMarketFailureDetail, skillMarketHost } from "../skill-market-scan";
+import {
+  skillMarketFailureDetail,
+  type SkillMarketFailureDetail,
+  type SkillMarketFailureKind,
+} from "../skill-market-scan";
 import type { IpcRegistrar } from "./types";
 
 export type SkillsIpcDependencies = {
@@ -17,6 +21,8 @@ export type SkillsIpcDependencies = {
   getHost: () => HostProcess | null;
   optionalWorkspaceRoot: () => Promise<string | null>;
   activeUserSubagentDocuments: (projectPath: string | undefined) => Promise<UserSubagentDocument[]>;
+  /** Handles whose shipped definition the user turned off (builtin activation). */
+  disabledBuiltinSubagents: () => Promise<string[]>;
   stripWinLongPrefix: (path: string) => string;
   sendToRenderer: (channel: string, payload?: unknown) => void;
   searchSkillMarket: (query: string, sources: { id: string; name: string; url: string }[]) => Promise<SkillMarketSearchResult>;
@@ -30,6 +36,7 @@ export function registerSkillsIpc({
   getHost,
   optionalWorkspaceRoot,
   activeUserSubagentDocuments,
+  disabledBuiltinSubagents,
   stripWinLongPrefix,
   sendToRenderer,
   searchSkillMarket,
@@ -44,26 +51,55 @@ export function registerSkillsIpc({
     refuses a URL the browser reaches) was therefore impossible to diagnose
     from a user's logs. `diagnostics` is the category spec 09 gives to blocked
     requests; the payload is host + source + kind only, never the full URL.
+
+    `reason` and `addressKind` were added for the same issue: "the resolver
+    answered nothing" and "the resolved address is not public" need different
+    fixes, and a single `kind` could not tell them apart in a report.
   */
-  const logSourceFailure = (
-    source: { name?: unknown; url?: unknown },
-    kind: "policy" | "network",
-  ) => {
-    const host = skillMarketHost(source.url);
+  /**
+   * The code a refusal is logged under. Two codes, because the guard refuses
+   * for two different reasons: a judged address is a policy decision
+   * (`NETWORK_POLICY_BLOCKED`), while a resolver that answered nothing is an
+   * environment condition (`NETWORK_RESOLVE_FAILED`). A plain transport failure
+   * carries no code, as before.
+   */
+  const refusalCode = (kind: SkillMarketFailureKind): string | undefined => {
+    // Both are refusals the guard decided, so both carry the policy code; the
+    // `kind` beside it is what says which address was judged — the proxy's own
+    // fake-IP placeholder, or the target's actual address.
+    if (kind === "policy" || kind === "fake-ip") return ErrorCodes.NETWORK_POLICY_BLOCKED;
+    if (kind === "unresolved") return ErrorCodes.NETWORK_RESOLVE_FAILED;
+    return undefined;
+  };
+  const logSourceFailure = (name: string, detail: SkillMarketFailureDetail) => {
+    const code = refusalCode(detail.kind);
     logger.app("diagnostics", "warn", "skill market source produced no entries", {
-      ...(kind === "policy" ? { code: ErrorCodes.NETWORK_POLICY_BLOCKED } : {}),
+      ...(code ? { code } : {}),
       event: "skillMarket.sourceFailed",
       data: {
-        ...(typeof source.name === "string" && source.name ? { source: source.name } : {}),
-        ...(host ? { host } : {}),
-        kind,
+        ...(name ? { source: name } : {}),
+        ...(detail.host ? { host: detail.host } : {}),
+        kind: detail.kind,
+        ...(detail.reason ? { reason: detail.reason } : {}),
+        ...(detail.address ? { address: detail.address } : {}),
+        ...(detail.addressKind ? { addressKind: detail.addressKind } : {}),
+        ...(detail.route ? { route: detail.route } : {}),
       },
     });
   };
-  const marketFailureKind = (
-    result: SkillMarketSearchResult,
-    name: string,
-  ): "policy" | "network" => (result.failureKinds?.[name] === "policy" ? "policy" : "network");
+  /**
+   * What one failed source reports. `failureDetails` carries the host and the
+   * guard's own reason; `failureKinds` is the earlier name-only view, kept so a
+   * result that predates the details still logs a kind rather than nothing.
+   */
+  const marketFailure = (result: SkillMarketSearchResult, name: string): SkillMarketFailureDetail => {
+    const detail = result.failureDetails?.[name];
+    if (detail) return detail;
+    const kind = result.failureKinds?.[name];
+    return {
+      kind: kind === "policy" || kind === "fake-ip" || kind === "unresolved" ? kind : "network",
+    };
+  };
   let host: HostProcess | null = null;
   const handle = (channel: string, fn: (...args: any[]) => Promise<any>) => {
     registrar.handle(channel, async (...args) => {
@@ -83,10 +119,7 @@ export function registerSkillsIpc({
       // One record per source that produced nothing. The panel shows the names,
       // so without this the reason and the host exist nowhere a user can reach.
       for (const name of result.failedSources ?? []) {
-        logSourceFailure(
-          requested.find((source) => source?.name === name) ?? { name },
-          marketFailureKind(result, name),
-        );
+        logSourceFailure(name, marketFailure(result, name));
       }
       return result;
     },
@@ -100,8 +133,9 @@ export function registerSkillsIpc({
         // The install sheet shows this refusal; the log is what makes it
         // diagnosable after the fact, and it survives the sheet closing.
         const detail = skillMarketFailureDetail(entry, error);
+        const code = refusalCode(detail.kind);
         logger.app("diagnostics", "warn", "skill market document fetch failed", {
-          ...(detail.kind === "policy" ? { code: ErrorCodes.NETWORK_POLICY_BLOCKED } : {}),
+          ...(code ? { code } : {}),
           event: "skillMarket.documentFailed",
           data: detail,
         });
@@ -193,6 +227,19 @@ export function registerSkillsIpc({
   );
 
   /**
+   * Move a skill between the global and a project's `.agents/skills`.
+   *
+   * Ownership changes, so both levels change; the response carries the id the
+   * skill ended up under, because a move into an occupied destination renames it.
+   */
+  handle(IPC.invoke.skillTransfer, async (payload: AgentCapabilityMove) => {
+    if (!host) throw new Error("host unavailable");
+    const res = await host.call<{ skill: UserSkillRecord }>("skills.transfer", payload);
+    sendToRenderer(IPC.event.pluginChanged,{ reason: "skill" });
+    return res;
+  });
+
+  /**
    * Show a skill document in the OS file manager. The level and project travel
    * with the id because `skills.read` falls back to the global directory when
    * they are absent, which never resolves a project-only document.
@@ -219,16 +266,33 @@ export function registerSkillsIpc({
 
   /**
    * The effective catalog: what `Task` would actually offer right now, merged
-   * across builtin, registry and project documents. The renderer needs this to
-   * show read-only rows and to name the definition that wins each handle.
+   * across builtin and registry documents. The renderer needs this to list the
+   * shipped defaults and to name the definition that wins each handle.
+   *
+   * `builtins` carries a switched-off builtin too, with `enabled: false`, so the
+   * page can keep its row and let the user turn it back on; `subagents` is the
+   * delegation catalog and never lists one.
    */
   handle(IPC.invoke.subagentCatalog, async () => {
     const projectPath = (await optionalWorkspaceRoot()) ?? undefined;
-    const { definitions, diagnostics } = await loadSubagentDefinitions(
+    const disabled = await disabledBuiltinSubagents();
+    const { definitions, builtins, diagnostics } = await loadSubagentDefinitions(
       projectPath,
-      { userDocuments: await activeUserSubagentDocuments(projectPath) },
+      {
+        userDocuments: await activeUserSubagentDocuments(projectPath),
+        disabledBuiltins: disabled,
+      },
     );
-    return { subagents: definitions, diagnostics, projectPath: projectPath ?? null };
+    const off = new Set(disabled);
+    return {
+      subagents: definitions,
+      builtins: builtins.map((definition) => ({
+        ...definition,
+        enabled: !off.has(definition.name),
+      })),
+      diagnostics,
+      projectPath: projectPath ?? null,
+    };
   });
 
   handle(IPC.invoke.subagentCreate, async (subagent: Record<string, unknown>) => {
@@ -267,6 +331,21 @@ export function registerSkillsIpc({
       if (!host) throw new Error("host unavailable");
       const res = await host.call("agents.setEnabled", payload);
       sendToRenderer(IPC.event.pluginChanged,{ reason: "subagent" });
+      return res;
+    },
+  );
+
+  /**
+   * Turn one shipped default off, or back on. The row owns no document:
+   * host-core keeps the handle in app-local state, and the exclusion lands on
+   * the next catalog load — this prompt's catalog if it has not launched yet.
+   */
+  handle(
+    IPC.invoke.subagentSetBuiltinEnabled,
+    async (payload: { id: string; enabled: boolean }) => {
+      if (!host) throw new Error("host unavailable");
+      const res = await host.call("agents.setBuiltinEnabled", payload);
+      sendToRenderer(IPC.event.pluginChanged, { reason: "subagent" });
       return res;
     },
   );

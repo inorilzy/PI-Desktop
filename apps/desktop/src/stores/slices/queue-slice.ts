@@ -1,7 +1,3 @@
-import { requestTextWithoutAnnotations, responseAnnotationPrompt } from "../../lib/response-annotations";
-import { collectSessionReferenceIds } from "@pi-desktop/shared";
-import { calculateSessionReferenceBudget } from "../../lib/session-reference-budget";
-import { getSessionReferenceBudgetPercent } from "../../lib/session-reference-preferences";
 import i18n from "i18next";
 import type {
   AgentQueueChangedEvent,
@@ -11,7 +7,10 @@ import type {
   UiMessage,
   QueuedTurnSummary,
 } from "@pi-desktop/shared";
+import { collectSessionReferenceIds, stripSessionReferencePrompt } from "@pi-desktop/shared";
 import { api } from "../../lib/api";
+import { calculateSessionReferenceBudget } from "../../lib/session-reference-budget";
+import { getSessionReferenceBudgetPercent } from "../../lib/session-reference-preferences";
 import { expandComposerSessionReferences } from "../../lib/session-reference-prompt";
 import {
   enqueueQueuedPrompt,
@@ -84,26 +83,14 @@ export function createQueueSlice({
   const queuedDrafts = new Map<string, ComposerDraftSnapshot>();
   const pendingSubmissions = new Set<string>();
 
-  function needsReferenceExpansion(content: string, draft: ComposerDraftSnapshot | undefined, sessionId: string): boolean {
-    // Persisted/frozen prompts are never re-read, including annotation-wrapped snapshots.
-    return requestTextWithoutAnnotations(content) === content &&
+  function needsReferenceExpansion(
+    content: string,
+    draft: ComposerDraftSnapshot | undefined,
+    sessionId: string,
+  ): boolean {
+    // Frozen/queued snapshots already carry the reference block and must not be re-read.
+    return stripSessionReferencePrompt(content) === content &&
       collectSessionReferenceIds(content, draft?.fileReferences, sessionId).length > 0;
-  }
-
-  function captureAnnotations(sessionId: string) {
-    const annotations = get().responseAnnotations[sessionId] ?? [];
-    return {
-      wrap: (content: string) => responseAnnotationPrompt(content, annotations),
-      consume: () => set((state) => {
-        const current = state.responseAnnotations[sessionId] ?? [];
-        const remaining = current.filter((item) => !annotations.includes(item));
-        if (remaining.length === current.length) return {};
-        const responseAnnotations = { ...state.responseAnnotations };
-        if (remaining.length) responseAnnotations[sessionId] = remaining;
-        else delete responseAnnotations[sessionId];
-        return { responseAnnotations };
-      }),
-    };
   }
 
   async function expandReferencedSessions(
@@ -119,7 +106,6 @@ export function createQueueSlice({
       get().showToast(i18n.t("chat.sessionReferenceChanged"), { variant: "error" });
       return null;
     }
-    // Capture primitive identities, not the active-session selection or mutable objects.
     const { providerId, modelId } = target;
     const isCurrent = () => {
       const current = get();
@@ -133,11 +119,9 @@ export function createQueueSlice({
         providers: state.providers,
         providerModels: state.providerModels,
         messages: state.activeSessionId === sessionId ? state.messages
-          : state.sideChatTranscripts[sessionId]
-            ?? runtime.sessionTranscriptCache.get(sessionId)
+          : runtime.sessionTranscriptCache.get(sessionId)
             ?? state.retainedTranscripts[sessionId]
             ?? [],
-
         compactions: state.sessionCompactions[sessionId],
         currentInput,
         percent: getSessionReferenceBudgetPercent(),
@@ -178,11 +162,10 @@ export function createQueueSlice({
       sessionId: entry.sessionId,
       content: entry.content,
       draft: queuedDrafts.get(entry.id) ?? {
-        text: requestTextWithoutAnnotations(entry.content),
+        text: stripSessionReferencePrompt(entry.content),
         fileReferences: [],
       },
       createdAt: Date.parse(entry.createdAt) || Date.now(),
-      // The Host owns ordering and priority: entries arrive in delivery order.
       ...(entry.priority === undefined ? {} : { priority: entry.priority }),
     };
   }
@@ -211,7 +194,6 @@ export function createQueueSlice({
     });
   }
 
-  /** Drop one row locally and, unless it is still optimistic, at the Host. */
   function detachQueuedPrompt(sessionId: string, promptId: string): void {
     set((state) => ({
       queuedPrompts: removeQueuedPrompt(state.queuedPrompts, sessionId, promptId),
@@ -227,58 +209,62 @@ export function createQueueSlice({
     });
   }
 
-  async function enqueueFrozenPrompt(content: string, draft: ComposerDraftSnapshot | undefined, sessionId: string): Promise<boolean> {
-      const queuedDraft: ComposerDraftSnapshot = draft
-        ? {
-            text: draft.text,
-            fileReferences: draft.fileReferences.map((reference) => ({
-              ...reference,
-            })),
-          }
-        : { text: requestTextWithoutAnnotations(content), fileReferences: [] };
-      const item: QueuedPrompt = {
-        id: `pending:${crypto.randomUUID()}`,
+  async function enqueueFrozenPrompt(
+    content: string,
+    draft: ComposerDraftSnapshot | undefined,
+    sessionId: string,
+  ): Promise<boolean> {
+    const queuedDraft: ComposerDraftSnapshot = draft
+      ? {
+          text: draft.text,
+          fileReferences: draft.fileReferences.map((reference) => ({
+            ...reference,
+          })),
+        }
+      : { text: stripSessionReferencePrompt(content), fileReferences: [] };
+    const item: QueuedPrompt = {
+      id: `pending:${crypto.randomUUID()}`,
+      sessionId,
+      content,
+      draft: queuedDraft,
+      createdAt: Date.now(),
+    };
+    set((state) => ({
+      queuedPrompts: enqueueQueuedPrompt(state.queuedPrompts, item),
+    }));
+    const attachments = promptAttachmentsFromDraft(queuedDraft.fileReferences);
+    return api
+      .queuePrompt({
         sessionId,
         content,
-        draft: queuedDraft,
-        createdAt: Date.now(),
-      };
-      set((state) => ({
-        queuedPrompts: enqueueQueuedPrompt(state.queuedPrompts, item),
-      }));
-      const attachments = promptAttachmentsFromDraft(queuedDraft.fileReferences);
-      return api
-        .queuePrompt({
-          sessionId,
-          content,
-          ...(attachments.length ? { attachments } : {}),
-        })
-        .then((entry) => {
-          queuedDrafts.set(entry.id, queuedDraft);
-          set((state) => ({
-            queuedPrompts: removeQueuedPrompt(
-              state.queuedPrompts,
-              sessionId,
-              item.id,
-            ),
-          }));
-          void get().refreshQueuedPrompts(sessionId);
-          return true;
-        })
-        .catch((error) => {
-          set((state) => ({
-            queuedPrompts: removeQueuedPrompt(
-              state.queuedPrompts,
-              sessionId,
-              item.id,
-            ),
-          }));
-          get().showToast(
-            error instanceof Error ? error.message : String(error),
-            { variant: "error" },
-          );
-          return false;
-        });
+        ...(attachments.length ? { attachments } : {}),
+      })
+      .then((entry) => {
+        queuedDrafts.set(entry.id, queuedDraft);
+        set((state) => ({
+          queuedPrompts: removeQueuedPrompt(
+            state.queuedPrompts,
+            sessionId,
+            item.id,
+          ),
+        }));
+        void get().refreshQueuedPrompts(sessionId);
+        return true;
+      })
+      .catch((error) => {
+        set((state) => ({
+          queuedPrompts: removeQueuedPrompt(
+            state.queuedPrompts,
+            sessionId,
+            item.id,
+          ),
+        }));
+        get().showToast(
+          error instanceof Error ? error.message : String(error),
+          { variant: "error" },
+        );
+        return false;
+      });
   }
 
   return {
@@ -289,13 +275,10 @@ export function createQueueSlice({
       if (pendingSubmissions.has(key)) return false;
       pendingSubmissions.add(key);
       try {
-        const annotations = captureAnnotations(sessionId);
         const promptContent = needsReferenceExpansion(content, draft, sessionId)
-          ? await expandReferencedSessions(content, draft, sessionId, annotations.wrap(content)) : content;
+          ? await expandReferencedSessions(content, draft, sessionId, content) : content;
         if (promptContent === null || get().pendingPlans[sessionId]?.status === "pending") return false;
-        const accepted = await enqueueFrozenPrompt(annotations.wrap(promptContent), draft, sessionId);
-        if (accepted) annotations.consume();
-        return accepted;
+        return enqueueFrozenPrompt(promptContent, draft, sessionId);
       } finally {
         pendingSubmissions.delete(key);
       }
@@ -307,7 +290,6 @@ export function createQueueSlice({
       detachQueuedPrompt(sessionId, promptId);
     },
 
-    /** Return one waiting row to the composer as an editable draft. */
     editQueuedPrompt: (promptId) => {
       const sessionId = get().activeSessionId;
       if (!sessionId) return;
@@ -317,8 +299,6 @@ export function createQueueSlice({
         promptId,
       );
       if (!item || isPromotedQueuedPrompt(item)) return;
-      // `item.content` is token-stripped; the row's captured draft is the text
-      // and the inline file references the user actually wrote.
       const restored: ComposerPrefill = {
         sessionId,
         text: item.draft.text,
@@ -330,7 +310,6 @@ export function createQueueSlice({
       set({ composerPrefill: restored });
     },
 
-    /** Move one waiting row past its neighbour; promoted rows stay locked. */
     moveQueuedPrompt: async (promptId, direction) => {
       const sessionId = get().activeSessionId;
       if (!sessionId) return;
@@ -349,7 +328,6 @@ export function createQueueSlice({
         promptId,
         direction,
       );
-      // A promoted neighbour means the row already sits at its block boundary.
       if (moved === before) return;
       set({ queuedPrompts: moved });
       try {
@@ -383,8 +361,6 @@ export function createQueueSlice({
       }));
       try {
         await api.prioritizeQueuedPrompt(promptId);
-        // Send now keeps its graceful stop: the active turn reaches its
-        // boundary before the promoted row starts.
         if (get().runningSessions[sessionId]) await api.stop(sessionId);
       } catch (error) {
         void get().refreshQueuedPrompts(sessionId);
@@ -412,7 +388,10 @@ export function createQueueSlice({
       const state = get();
       const sessionId = state.activeSessionId;
       const expectedTurnId = sessionId ? state.agentStatuses[sessionId]?.currentTurnId : undefined;
-      if (!sessionId || !expectedTurnId || !state.runningSessions[sessionId] || state.pendingPlans[sessionId]?.status === "pending") {
+      if (
+        !sessionId || !expectedTurnId || !state.runningSessions[sessionId] ||
+        state.pendingPlans[sessionId]?.status === "pending"
+      ) {
         get().showToast(i18n.t("chat.steeringUnavailable"), { variant: "info" });
         return false;
       }
@@ -423,24 +402,29 @@ export function createQueueSlice({
         const stillValid = () => Boolean(get().runningSessions[sessionId] &&
           get().agentStatuses[sessionId]?.currentTurnId === expectedTurnId &&
           get().pendingPlans[sessionId]?.status !== "pending");
-        const annotations = captureAnnotations(sessionId);
         const promptContent = needsReferenceExpansion(content, draft, sessionId)
-          ? await expandReferencedSessions(content, draft, sessionId, annotations.wrap(content), stillValid) : content;
+          ? await expandReferencedSessions(content, draft, sessionId, content, stillValid) : content;
         if (promptContent === null || !stillValid()) return false;
-        const message = optimisticUserMessage(crypto.randomUUID(), content, draft?.fileReferences ?? []);
+        const message = optimisticUserMessage(
+          crypto.randomUUID(), content, draft?.fileReferences ?? [],
+        );
         message.steering = true;
         runtime.insertOptimisticUserMessage(sessionId, message);
         try {
           await api.steer({
-            sessionId, expectedTurnId, content: annotations.wrap(promptContent), messageId: message.id,
+            sessionId, expectedTurnId, content: promptContent, messageId: message.id,
             attachments: draft ? promptAttachmentsFromDraft(draft.fileReferences) : [],
           });
-          annotations.consume();
           return true;
         } catch (error) {
           runtime.retractOptimisticUserMessage(sessionId, message);
           const failure = messageErrorFromUnknown(error);
-          get().showToast(failure.code === "TURN_NOT_FOUND" ? i18n.t("chat.steeringUnavailable") : failure.message, { variant: "error" });
+          get().showToast(
+            failure.code === "TURN_NOT_FOUND"
+              ? i18n.t("chat.steeringUnavailable")
+              : failure.message,
+            { variant: "error" },
+          );
           return false;
         }
       } finally {
@@ -470,17 +454,10 @@ export function createQueueSlice({
         }
         if (!sessionId) throw new Error(i18n.t("errors.noActiveSession"));
         if (get().pendingPlans[sessionId]?.status === "pending") return false;
-        // Freeze these objects before reference reads; reserve their full wrappers once.
-        const annotations = captureAnnotations(sessionId);
         const promptContent = needsReferenceExpansion(content, draft, sessionId)
-          ? await expandReferencedSessions(content, draft, sessionId, annotations.wrap(content)) : content;
+          ? await expandReferencedSessions(content, draft, sessionId, content) : content;
         if (promptContent === null || get().pendingPlans[sessionId]?.status === "pending") return false;
-        const outgoing = annotations.wrap(promptContent);
-        const consumeAnnotations = annotations.consume;
         if (get().runningSessions[sessionId]) {
-          // Native Pi children have no Desktop prompt queue. Reject the send
-          // here so the caller restores the draft instead of round-tripping a
-          // queue item the backend refuses.
           if (
             get().sessions.find((session) => session.id === sessionId)?.source ===
             "pi-native"
@@ -488,9 +465,7 @@ export function createQueueSlice({
             get().showToast(i18n.t("chat.nativeSessionBusy"), { variant: "info" });
             return false;
           }
-          const accepted = await enqueueFrozenPrompt(outgoing, draft, sessionId);
-          if (accepted) consumeAnnotations();
-          return accepted;
+          return enqueueFrozenPrompt(promptContent, draft, sessionId);
         }
         const startedIn = sessionId;
         const messageCountBeforeSend =
@@ -555,12 +530,11 @@ export function createQueueSlice({
           }
           await api.prompt({
             sessionId,
-            content: outgoing,
+            content: promptContent,
             messageId: optimisticMessage.id,
             viewingSessionId: viewingSessionIdForPrompt(get(), sessionId),
             attachments: draft ? promptAttachmentsFromDraft(draft.fileReferences) : [],
           });
-          consumeAnnotations();
           const submitted = runtime.submittedComposerDrafts.get(startedIn);
           if (submitted?.abortResolution && (await submitted.abortResolution)) {
             return false;
@@ -570,10 +544,8 @@ export function createQueueSlice({
           runtime.submittedComposerDrafts.delete(startedIn);
           runtime.retractOptimisticUserMessage(startedIn, optimisticMessage);
           const messageError = messageErrorFromUnknown(error);
-          const sideChatChild = Boolean(get().sideChats[startedIn]);
           const errorRow = assistantErrorMessage(messageError);
           set((state) => {
-            const childRows = state.sideChatTranscripts[startedIn];
             return {
               isRunning:
                 state.activeSessionId === startedIn ? false : state.isRunning,
@@ -590,37 +562,12 @@ export function createQueueSlice({
               sessionOutcomes: { ...state.sessionOutcomes, [startedIn]: "failed" },
               ...(state.activeSessionId === startedIn
                 ? { messages: [...state.messages, errorRow] }
-                : sideChatChild && childRows
-                  ? {
-                      sideChatTranscripts: {
-                        ...state.sideChatTranscripts,
-                        [startedIn]: [...childRows, errorRow],
-                      },
-                    }
-                  : {}),
+                : {}),
             };
           });
-          if (sideChatChild && get().activeSessionId !== startedIn) {
-            // The panel is not the visible conversation: surface the failure in
-            // the child projection and as a toast instead of the main transcript.
-            const cached = runtime.sessionTranscriptCache.get(startedIn);
-            if (cached) {
-              runtime.cacheSessionTranscript(startedIn, [...cached, errorRow]);
-            }
-            get().showToast(messageError.message, { variant: "error" });
-          }
           return false;
         }
-      } catch (error) {
-        // Keep sendPrompt's Promise<boolean> contract so the composer can
-        // restore a draft cleared before submission, even on unexpected setup errors.
-        const target = requestedSessionId ?? get().activeSessionId;
-        if (target && get().sideChats[target]) {
-          get().showToast(
-            error instanceof Error ? error.message : String(error),
-            { variant: "error" },
-          );
-        }
+      } catch {
         return false;
       } finally {
         pendingSubmissions.delete(submissionKey);

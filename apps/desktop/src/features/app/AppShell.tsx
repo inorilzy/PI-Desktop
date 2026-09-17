@@ -53,6 +53,7 @@ export function AppShell() {
     searchOpen,
     setSearchOpen,
     sidebarCollapsed,
+    sidebarEntering,
     sidebarExiting,
     sidebarWidth,
     handleSidebarWidthChange,
@@ -100,7 +101,7 @@ export function AppShell() {
         <>
           {!sidebarCollapsed || sidebarExiting ? (
             <Sidebar
-              className={sidebarExiting ? "is-exiting" : undefined}
+              className={cx(sidebarEntering && "is-entering", sidebarExiting && "is-exiting")}
               onAnimationEnd={handleSidebarAnimationEnd}
               onToggleSidebar={toggleSidebar}
               sidebarToggleShortcut={sidebarToggleShortcut}
@@ -111,9 +112,8 @@ export function AppShell() {
           ) : null}
 
           {workPanelMaximized && (
-            /* Preview mode hides MainChat, which normally owns the drag band and
-               the window controls. Keep the same top band with the same system
-               buttons, at the window level rather than inside the panel. */
+            /* MainChat is absent; the panel header owns dragging while this
+               pass-through row keeps the shell controls available. */
             <div
               className={cx(
                 "window-chrome-row",
@@ -136,7 +136,7 @@ export function AppShell() {
                   data-nav="new-task"
                   onClick={() => void runMenuCommand("newTask")}
                 >
-                  <IconNewSession size={13} />
+                  <IconNewSession size={15} />
                 </TooltipButton>
               )}
               <div className="window-chrome-drag" aria-hidden />

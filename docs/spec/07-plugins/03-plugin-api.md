@@ -246,6 +246,9 @@ picked through `requestDirectory()` when the mode declares
 anything outside it prompts the user, and the credential deny-list overrides both
 (see [04-plugin-security.md](04-plugin-security.md) §6). `remove` is
 non-recursive and moves the path to the OS trash.
+Under the `workspace` root, paths are relative to the project of the tool session
+that invoked the call, falling back to the visible workspace for a panel call,
+which has no tool session (ADR 0266).
 
 `list` returns one directory's entries, name-sorted, so a plugin can walk a tree
 lazily instead of pulling a whole-repo `glob` and reassembling it. It applies the
@@ -516,8 +519,18 @@ a secret. `includeSessionContext: true` also requires `session.read` and an
 in-flight tool session; the host serializes that context and, if `messages` is
 empty, appends `Please respond to the request.` System prompt
 ≤ 32 KiB; combined messages ≤ 200k characters; eight calls per plugin per
-rolling 60s (`RATE_LIMITED`); 90s budget (`TIMEOUT`). Empty model output is
-`INVALID_ARGUMENT`.
+rolling 60s (`RATE_LIMITED`); 90s budget (`TIMEOUT`). Provider 429 and other
+transient provider failures are retried inside the same call under the shared
+provider retry budget (ADR 0206) and a `Retry-After` header is honored. Empty
+model output is `INVALID_ARGUMENT`.
+
+When the call still fails, the plugin receives the host's classified code
+rather than a single generic failure — `PROVIDER_RATE_LIMITED` once the retry
+budget is exhausted, `PROVIDER_UNAUTHORIZED`, `CONTEXT_TOO_LARGE`,
+`NETWORK_ERROR` — so it can pace itself and report the cause. The broker
+answers with whichever code the failing service classified, in the same
+`data.errorCode` → `errorCode` → `code` precedence every other host boundary
+uses.
 
 ### clipboard / shell
 ```ts
@@ -624,6 +637,14 @@ pi.net.fetch(input: {
  timeoutMs?: number
 }): Promise<{ status: number; headers: Record<string, string>; bodyText: string }>
 ```
+
+`fetch` answers with the upstream response unchanged — `status`, `headers`, and
+`bodyText` — so a `429` is data your plugin can read, `Retry-After` included,
+rather than an error the host hides. The host does not retry, throttle, or
+re-issue the request: retry and backoff after a `429` are your plugin's own
+policy, and the response headers are the only backoff signal you get. A failed
+call (`status >= 400`) is audited as `ok: false`, together with the
+`retryAfter` it advertised when the response states one (§7).
 
 ```ts
 pi.net.websocket.connect(input: {
@@ -783,7 +804,7 @@ command belonging to that plugin.
 `command` must already be registered by the calling plugin; anything else fails
 `INVALID_ARGUMENT`. An accelerator reserved by the operating system, one
 PI-Desktop itself currently spends (by default `Alt+Space` opens the plugin
-launcher and `Mod+Shift+W` summons the window; once the user rebinds one of
+launcher and `Alt+Shift+W` shows or hides the window; once the user rebinds one of
 them, the freed accelerator is available again), or one held by another plugin
 is refused rather than taken over, and a refused re-registration leaves the
 previous binding in place.
@@ -895,6 +916,32 @@ Detached panel pages using the current chrome contract declare
 for normal-flow top spacing. The host preserves that page-owned spacing. A
 page without the marker remains supported through the legacy additive offset.
 
+### 6.1 Floating widgets
+
+A manifest may declare `"ui": { "shape": "widget" }`. The panel then opens as a
+floating widget: the same sandboxed, permission-gated page in a transparent,
+frameless window with no 46px drag band, no control capsule, and no rectangular
+native shadow. The page owns its whole rectangle and normally paints a
+silhouette smaller than it — a round orb, for instance — so the host must not
+draw a frame around that silhouette.
+
+- `--pi-plugin-titlebar-height` is `0px`, and the legacy additive top offset is
+  not applied either, whatever chrome marker the page declares.
+- The placement is published before page scripts run as
+  `document.documentElement.dataset.piPluginPanelShape`: `panel`, `widget`, or
+  `view`.
+- Dragging uses a whole-window drag map: empty space moves the window, while
+  standard controls (`button`, `input`, `a`, `[tabindex]`, …) and every element
+  marked `data-pi-plugin-no-drag` stay clickable.
+- A widget has no capsule, so the host owns an equivalent menu behind the
+  surface's own context menu: close, minimize, and always on top. A plugin may
+  still close its own widget through `ui.closePanel()`.
+- `ui.width` / `ui.height` are honoured down to 120×120 (a panel's minimum stays
+  360×280). `ui.alwaysOnTop` pins a widget above other windows, and
+  `ui.resizable` defaults to `false` for a widget and `true` for a panel.
+- Nothing else changes: same preload, same `pluginBridge` channels, same
+  permission gate, same session partition and egress policy.
+
 A docked view may also be given one subject to show. The `location` a work-panel
 tab already carries is delivered to any contributed view — not only
 `pi.browser`, whose address bar keeps its own navigation channel: on creation it
@@ -978,6 +1025,8 @@ Log fields:
 - ts
 - sessionId?
 - ok / errorCode
+- status / retryAfter (`net.fetch`: the upstream status of a completed call, and
+  for a failed one the `Retry-After` it stated — never the header set or body)
 
 ## 8. Versioning strategy
 

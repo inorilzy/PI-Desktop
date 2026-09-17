@@ -15,7 +15,7 @@
 | `Cmd/Ctrl + Shift + P` | Open command palette | Global (D014) |
 | `Cmd/Ctrl + N` | New chat/session | Global |
 | `Cmd/Ctrl + O` | Open project | Global |
-| `Cmd/Ctrl + W` | Close window | Global |
+| `Alt + Shift + W` | Show or hide the window (toggle) | OS-global (D439); hides to the tray, never quits |
 | `Cmd/Ctrl + ,` | Open settings | Global |
 | `Cmd/Ctrl + B` | Toggle sidebar | Global |
 | `Cmd/Ctrl + J` | Toggle work panel | Global; active session |
@@ -74,6 +74,16 @@
   the panel's normal activation instead of issuing a second application
   activation or window-stack move. The launcher always opens on the display
   nearest the pointer.
+- The window visibility key is one toggle (`Alt + Shift + W`): a visible,
+  focused window hides to the tray, and anything else — hidden, minimized, or
+  behind another application — is shown and focused. Hiding never enters the
+  close path, so it raises no close-behaviour prompt, destroys nothing, and
+  never quits the app. The key is globally registered, so it deliberately
+  avoids `Cmd/Ctrl + W`, which macOS spends on its own close-window command and
+  which would be taken from every application if the app claimed it. The
+  retired `Cmd/Ctrl + Shift + W` summon chord is not registered either, and
+  stored `closeWindow`/`summonWindow` overrides are folded into the toggle when
+  the map is read (D438, D439).
 
 ### 1.5 Plugin launcher shortcuts
 
@@ -217,6 +227,14 @@ may be retained while exactly one workspace supplies the visible shell context.
 - **Archive** is non-destructive. Archived rows are hidden by default,
   available through Show archived, and restorable. Archiving does not cancel
   a turn or delete a transcript.
+- **Delete** removes a session or a project permanently and takes two clicks:
+  the first arms the overflow item and relabels it (`nav.deleteTaskConfirm` /
+  `project.deleteMenuConfirm`), and only the second click removes the row. The
+  arm expires on its own, so a row never stays one stray click away from a
+  permanent delete, and the folder on disk is never touched. A project whose
+  turn is still live still opens the confirmation dialog that names those
+  sessions and stops them first; an idle project is removed on that second
+  click.
 - **Create branch** snapshots an idle conversation's complete active
   transcript into an independent session in the same project/Temporary scope.
   The command is disabled while the source runs. Success selects the child and
@@ -475,21 +493,6 @@ may be retained while exactly one workspace supplies the visible shell context.
   switching back restores it; selecting a workspace without an active
   conversation hides the panel. Session/workspace identity remains attached to
   every relative resource, preventing cross-context reinterpretation.
-- A side chat (D-LOCAL-message-quotes) is one more resource in the same context: the message
-  action opens a renderer draft in the origin session's retained context.
-  First Send forks through `session.fork` without activating the child and
-  replaces the draft tab with `sidechat:<childSessionId>`.
-  The tab label reuses `sideChat.title`, the body renders the child's transcript
-  from the same event stream through the background-transcript reducer, and the
-  compact input sends to and stops the child session, never the visible one.
-- Closing the `sidechat` tab, opening the child as a conversation, or deleting
-  the parent or child session removes the registration; the child stays an
-  ordinary session in the sidebar, lists, and search. Like every other resource
-  it does not survive relaunch, while the durable child session does.
-- Closing the final side-chat tab keeps the upstream panel launcher visible.
-  Closing it beside other tabs leaves those resources and other sessions intact.
-  Registered transcripts and side-chat drafts survive tab switches. Scroll
-  position belongs to the mounted tab and may reset on remount.
 - Relaunch discards every session context, including Browser resources; only
   the committed preferred panel width persists. Native window state is stored
   independently from normal bounds, including when the app closes while
@@ -990,76 +993,8 @@ Running turns and pending approvals continue to gate the controls.
   remain text-selectable for inspection and copying.
 - Interactive controls nested inside selectable content remain
   non-selectable and must keep their click and keyboard behavior.
-- A non-empty selection inside a transcript row raises one floating overlay
-  above it (D-LOCAL-selection-overlay): Add to chat, Ask in side chat, and Copy. It is centered on the
-  selection, clamped into the clipping ancestors' rects (capped above the docked
-  composer), portaled above the transcript, and it follows the selection while
-  the thread scrolls instead of disappearing. It recomputes on selection change,
-  double click, key up, pointer up, pointer cancel, and resize, and hides when a
-  press lands outside it, when the selection collapses, and after any action
-  (each action clears the native selection). A selection that spans two rows
-  raises no overlay, and a range that leaves its row is clamped back to it. It
-  never renders in a read-only projection, and it does not steal the selection:
-  the pointer press is prevented so the excerpt is whatever was selected,
-  including a whole formula. Add to chat writes a composer draft and focuses the
-  composer; Ask in side chat prefills a blockquote in the side chat anchored at that
-  row; neither sends into the conversation being read. On an assistant turn, Add
-  to chat opens the annotation comment editor instead of writing draft text
-  (D-LOCAL-response-annotations): the editor snapshots the excerpt, Save attaches one annotation to the
-  session's floating index, and the next send carries the excerpts as numbered prompt
-  data (see §7.5a).
 - Selection rules must not disable `focus-visible` feedback or native window
   drag regions.
-
-### 7.5a Annotations
-
-- An annotation belongs to an **assistant turn**, never to the user's own
-  message: annotating is a response concept (D-LOCAL-response-annotations). Selecting text inside a
-  response, or activating the turn's annotate action, opens a compact comment
-  editor on a snapshot of the excerpt; **Save** attaches one numbered annotation
-  with the optional comment; **Enter** in the comment textarea does the same,
-  while **Shift+Enter** keeps native multiline input and IME confirmation Enter
-  never saves. **Cancel** and **Escape** discard it. Saving
-  the editor sends nothing, and an excerpt that is already attached reopens its
-  own annotation for editing instead of adding a second one (same row and selected
-  offsets; repeated phrases elsewhere remain separate under ADR floating-annotation-index). The annotation does
-  not edit the response: the answer gains a numbered reference only where the
-  model cites the annotation (`:codex-annotation{index="N"}`), and that reference
-  is a tooltip target, not selectable text.
-- Annotations are session state that lives exactly as long as the send that
-  carries them. They are numbered in attachment order, listed in a collapsible
-  floating index above the composer with matching out-of-flow source badges
-  (ADR floating-annotation-index). Locate releases follow mode and reveals/highlights the source;
-  edit opens the existing comment editor. All saved exact ranges stay highlighted
-  without selecting an item; collapsing or selecting another item retains every
-  highlight. Remove/clear/send removes them with their annotations, and unresolved
-  ranges never shade the whole answer. All are consumed
-  by the send. They are not persisted and do not survive
-  relaunch. The editor is owned by the session it was opened in: a session switch
-  closes it, and a save for an annotation that was already sent or removed is
-  dropped.
-- Saved annotations make an empty composer sendable: click Send or press Enter
-  to send only the annotations, or queue them while a turn runs. Unconfigured
-  models, pending approval, and unfinished paste still block sending. Unsaved
-  comments and other sessions' annotations do not enable Send; clearing the last
-  annotation restores the empty-draft disabled/Stop behavior. No request text is
-  fabricated, and a rejected send keeps the annotations.
-- A send with annotations attaches them to the prompt as numbered data before the
-  user's own request, so the model can address `Annotation 1`, `Annotation 2`, …
-  The user's prompt text stays what the user typed: no excerpt is copied into the
-  draft, the optimistic row, or the session title.
-- Because the stored prompt carries the block, every read surface shows the
-  request only: the transcript's user row, the composer's edit seed, and the
-  minimap all reduce a stored prompt to its request text.
-
-- Host acknowledgement, not an optimistic queue row, consumes annotations. The
-  originating session retains any attachments added or edited during the wait;
-  host rejection or an unexpected pre-host exception leaves them pending, returns
-  a rejected submission, and does not overwrite a newer composer draft.
-- **Alt+Enter**/steer sends only text and leaves pending annotations untouched;
-  no text means no steering turn. **Shift+Enter** inserts a newline. The comment
-  editor owns its own **Enter** (save only), **Shift+Enter** (newline), and IME
-  confirmation, independently of the main composer's shortcuts.
 
 ## 8. Drag / drop
 
@@ -1096,9 +1031,14 @@ Work-panel and application-window resizing are implemented in MVP:
 
 - Preview mode unmounts MainChat and lets the work panel fill the client area
   beside the sidebar. A window-level 46px chrome row keeps New Task, sidebar,
-  and native window controls available. In collapsed-sidebar macOS preview, the
-  panel header reserves the 76px windowed (8px fullscreen) traffic-light inset,
-  the preview action lane, and an 8px gap before its first tab.
+  and native window controls available through a pointer-transparent row that
+  declares neither drag nor no-drag across the panel. The panel header's drag
+  border box starts after the shell actions plus an 8px gap, including expanded
+  sidebar New Task. All platforms use an 8px left inset, except collapsed-sidebar
+  windowed macOS (88px). That reserve uses `--ds-window-lead-inset`: the
+  traffic-light cluster's 76px right edge (from `@pi-desktop/shared`) plus 12px.
+  Native pointer clicks must operate the controls and dragging empty header
+  space must move the window; DOM/CDP clicks alone do not establish native hit testing.
 
 The expanded sidebar is fixed at 275px. Collapse/open changes only whether the
 column is present; the historical resize handle is hidden and legacy width
@@ -1368,14 +1308,20 @@ Project drag/drop follows these patterns:
 - Hovering or focusing a session row reveals a multi-line hover card after
   the same 500ms delay used by the project path tooltip; the card never
   anchors to a torn-down row.
-- The card surfaces the row's metadata in this order, top to bottom: title,
-  tag chips, **Workspace**, branch (when the project exposes one), and
-  **Updated {{when}}**. Temporary/scratch sessions show the localized
-  "Temporary" / "临时对话" placeholder instead of a workspace name.
+- The card surfaces only key metadata, in this order, top to bottom: title;
+  a Session task chip when the session was created by another session; the
+  mode/permission chip; live status; collaboration details when present;
+  the readable model display name (falling back to the provider's readable
+  name); workspace name and branch on one row; and **Updated {{when}}**
+  without seconds. Temporary/scratch sessions show the localized
+  "Temporary" / "临时对话" placeholder instead of a workspace name. The
+  card does not show the session UUID, a Local task chip, a separate
+  Provider/Model label pair, or the collaboration poll timestamp.
 - For a session with host-owned collaboration activity, the card adds a
-  bounded collaboration section after the standard metadata: localized
-  status, creator/source session when present, current task preview, and up to
-  four recent exchanges with direction, kind, and terminal result. It may
+  bounded collaboration section after the chips: creator/source session
+  when present (title, not UUID), current task preview, up to two recent
+  exchanges with direction, and terminal result. Created-session
+  references remain keyboard-navigable buttons (at most eight). It may
   show a live `running` or `waiting_permission` state, but never loads the
   complete transcript or exposes message content beyond the host's bounded
   preview. Completion and failure results are derived from the durable target
@@ -1405,8 +1351,17 @@ Project drag/drop follows these patterns:
   the conversation, or activates and toggles the project group, exactly as a
   click on the title does; a no-hover pointer gets the controls revealed so it
   never meets a hidden target.
+- Project headers and conversation rows (project, pinned and standalone) use
+  the same full-row hover surface, radius and transition. The title button is
+  transparent; hover never draws a nested title tile. The selected conversation
+  keeps its selected fill on hover. A current workspace uses only the project
+  dot, not another selected background; folding a selected child or leaving the
+  chat page never promotes its project to a selected navigation item.
+- Keyboard focus keeps its outline independently of selection. The add and
+  overflow buttons retain local hover feedback, and drag-target paint takes
+  precedence over ordinary header hover.
 - Hover paint belongs to the pointer that caused it. When the window loses
-  focus the row and the project title drop their hover background and their
+  focus the row and the project header drop their hover background and their
   revealed actions hide, so nothing is left lit or armed after the window
   returns; moving the pointer over the row again re-arms it.
 - Revealed actions become clickable the moment the row is hovered or focused,
@@ -1549,11 +1504,3 @@ This does not prevent state changes — it makes them instant.
     the expanded sidebar yields at the threshold and returns when the panel
     closes, and divider cancellation restores the prior panel width
     (ADR 0033 / ADR 0151 / ADR 0238)
-
-### Side-chat draft lifecycle (Issue #421)
-
-Open side chat and selection Ask in side chat create a renderer-only draft.
-Selection text is prefilled as a blockquote, without sending. First nonempty
-Send creates the anchored child and sends once; failure keeps the draft and
-reuses any already-created child. Closing before Send creates no history.
-Existing child sessions remain after close.

@@ -20,12 +20,6 @@
   letter-spacing: var(--tracking-tighter);
 }
 
-.page-subtitle {
-  margin-top: 6px;
-  color: var(--ds-text-muted);
-  font-size: var(--text-md);
-}
-
 .page-card {
   border-radius: var(--radius-lg-plus);
   background: var(--ds-tile);
@@ -268,9 +262,11 @@
   color: var(--ds-text-secondary) !important;
 }
 
+/* Tone and truncation only. The label-driven chip sets its own padding with
+   `!important`, so the inline padding that used to sit here only ever widened
+   the icon-only controls in this row. */
 .composer-right .icon-btn {
   max-width: 220px;
-  padding: 0 10px;
   color: var(--ds-text-secondary);
   font-size: var(--text-sm);
 }

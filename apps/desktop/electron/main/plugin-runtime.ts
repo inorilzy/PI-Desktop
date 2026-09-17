@@ -195,6 +195,16 @@ export type PluginPanelRequest = {
   htmlPath: string;
   locale?: string;
   theme?: "light" | "dark";
+  /**
+   * `"panel"` (default) keeps the 46px host drag band and its capsule.
+   * `"widget"` is the transparent floating placement: no band, no capsule, a
+   * whole-window drag map, and a host context menu instead of the capsule.
+   */
+  shape?: "panel" | "widget";
+  /** Floating widget placement only: keep the surface above other windows. */
+  alwaysOnTop?: boolean;
+  /** Overrides the per-shape default: panels are resizable, widgets are not. */
+  resizable?: boolean;
   /** The plugin's egress allowlist; the panel session is confined to it. */
   netDomains?: readonly string[];
   /** Allows the isolated panel to request microphone audio, never camera access. */
@@ -261,6 +271,12 @@ export type PluginHostServices = {
    * it. Additive: `workspace.get` falls back to `getWorkspacePath` alone.
    */
   getWorkspaceInfo?: () => PluginWorkspaceInfo | null;
+  /**
+   * The project the tool session behind this call belongs to, when the host
+   * tracks one. Additive: an fs call falls back to `getWorkspacePath` -- the
+   * visible workspace -- for a panel call or an unknown session.
+   */
+  getWorkspacePathForSession?: (sessionId: string) => string | null;
   /** The set of `contributes.agentExtensions` modules changed (load/unload). */
   agentExtensionsChanged?: () => void;
   getLocale?: () => string;
@@ -533,6 +549,49 @@ const PANEL_SKILL_CHANNELS = new Set([
 const MAX_SKILLS_PER_PLUGIN = 32;
 /** Redirect hops `pi.net.fetch` follows; each one is re-checked against egress. */
 const NET_FETCH_MAX_REDIRECTS = 5;
+
+/**
+ * The delay a response advertises, verbatim — the value a plugin has to parse
+ * itself. `retry-after-ms` wins over `retry-after`, the same precedence the
+ * runtime's provider retry uses.
+ */
+function retryAfterHeader(headers: Record<string, string>): string | undefined {
+  let seconds: string | undefined;
+  for (const [name, value] of Object.entries(headers)) {
+    const lower = name.toLowerCase();
+    if (lower === "retry-after-ms") return value;
+    if (lower === "retry-after") seconds ??= value;
+  }
+  return seconds;
+}
+
+/**
+ * The audit entry for one completed `pi.net.fetch`. The response itself is
+ * passed to the plugin untouched, so the entry reports the upstream status
+ * verbatim: a 4xx/5xx is a failed call (`ok: false`), and that failed call
+ * records the delay it advertised instead of a bare `429`. The host never
+ * retries the plugin's request — retry and backoff are the plugin's own policy
+ * (`docs/spec/07-plugins/03-plugin-api.md` §7) — so this is observability, not
+ * a behaviour change: no field beyond these, and never a header set or a body.
+ */
+function netFetchAuditEntry(
+  pluginId: string,
+  url: string,
+  status: number,
+  headers: Record<string, string>,
+): Record<string, unknown> {
+  const retryAfter = status < 400 ? undefined : retryAfterHeader(headers);
+  return {
+    pluginId,
+    api: "net.fetch",
+    ok: status < 400,
+    ts: Date.now(),
+    url,
+    status,
+    ...(retryAfter === undefined ? {} : { retryAfter }),
+  };
+}
+
 /** Skill documents above this size are refused (prompt budget, not disk). */
 const MAX_SKILL_BYTES = 128 * 1024;
 /** Catalog lines stay short — the body carries the detail. */
@@ -631,6 +690,27 @@ function apiError(code: string, message: string): PluginApiError {
   const err = new Error(message) as PluginApiError;
   err.code = code;
   return err;
+}
+
+/**
+ * Error code one host API call answers with. Host services classify their own
+ * failures as `errorCode` (agent-runtime, host-core) while this runtime's own
+ * refusals carry `code`; the broker forwards whichever is present so a plugin
+ * can branch on the same documented code the app uses instead of reading every
+ * service failure as a generic one. Every other host boundary reads the same
+ * precedence — `data.errorCode`, then `errorCode`, then `code`.
+ */
+function pluginCallErrorCode(error: unknown): string {
+  const candidate = error as
+    | { code?: string; errorCode?: string; data?: { errorCode?: string } }
+    | null
+    | undefined;
+  return (
+    candidate?.data?.errorCode ??
+    candidate?.errorCode ??
+    candidate?.code ??
+    "PLUGIN_API_FAILED"
+  );
 }
 
 function pluginActionEnum(schema: unknown): readonly string[] | null {
@@ -859,7 +939,7 @@ function readDeclaredAccess(pluginPath: string): {
  * through review rather than being reasoned about, because deciding whether one
  * glob covers another is not something to guess at behind the gateway.
  */
-function widenedFsScope(ceiling: PluginFsPolicy, next: PluginFsPolicy): string[] {
+export function widenedFsScope(ceiling: PluginFsPolicy, next: PluginFsPolicy): string[] {
   const added: string[] = [];
   for (const mode of ["read", "write", "delete"] as const) {
     const before = ceiling[mode];
@@ -876,6 +956,30 @@ function widenedFsScope(ceiling: PluginFsPolicy, next: PluginFsPolicy): string[]
     }
   }
   return added;
+}
+
+/**
+ * Manifest and folded access a development plugin directory declares right now,
+ * for the permission review that has to happen before it is loaded. The same
+ * read a reload performs, plus the identity the review UI needs to name it
+ * before its first load.
+ */
+export function readDevPluginDeclaration(pluginPath: string): {
+  manifest: PluginManifest;
+  permissions: string[];
+  fs: PluginFsPolicy;
+} {
+  const manifestPath = join(pluginPath, "manifest.json");
+  if (!existsSync(manifestPath)) {
+    throw new Error("PLUGIN_INVALID: manifest.json missing");
+  }
+  const raw = JSON.parse(readFileSync(manifestPath, "utf8")) as unknown;
+  const validated = validateManifest(raw);
+  if (!validated.ok || !validated.manifest) {
+    throw new Error(`PLUGIN_INVALID: ${validated.error}`);
+  }
+  const access = readDeclaredAccess(pluginPath);
+  return { manifest: validated.manifest, permissions: access.permissions, fs: access.fs };
 }
 
 /**
@@ -1543,6 +1647,18 @@ export class PluginRuntime {
     return this.watcher.isWatching(pluginId);
   }
 
+  /**
+   * The approval a development plugin is loaded under: the permission set and
+   * the file scope the user accepted when they last reviewed it, or null when
+   * the plugin is not watched. Both the hot reload and the manual reload measure
+   * a manifest edit against this record, never against the manifest itself —
+   * the manifest is the request, this is the answer.
+   */
+  devApproval(pluginId: string): { permissions: string[]; fs: PluginFsPolicy } | null {
+    const dev = this.devPlugins.get(pluginId);
+    return dev ? { permissions: [...dev.permissions], fs: dev.fs } : null;
+  }
+
   /** Stop every watch; called on app quit alongside the other subsystems. */
   disposeWatchers(): void {
     this.watcher.disposeAll();
@@ -1626,7 +1742,7 @@ export class PluginRuntime {
       const widened = widenedFsScope(dev.fs, declaredAccess.fs);
       if (added.length || widened.length) {
         throw new Error(
-          `PERMISSION_DENIED: manifest now requests ${[...added, ...widened].join(", ")}; load the plugin again to review`,
+          `PERMISSION_DENIED: manifest now requests ${[...added, ...widened].join(", ")}; reload it from the Plugins page to review`,
         );
       }
       // Grants follow the manifest downwards, never upwards: a permission the
@@ -1932,7 +2048,7 @@ export class PluginRuntime {
             id: message.id,
             ok: false,
             error: {
-              code: error?.code ?? "PLUGIN_API_FAILED",
+              code: pluginCallErrorCode(error),
               message: error?.message ?? String(error),
             },
           }),
@@ -3795,6 +3911,24 @@ export class PluginRuntime {
   }
 
   /**
+   * The directory one fs call resolves against.
+   *
+   * A `userSelected` mode keeps the directory the user picked. Every other mode
+   * resolves the project of the session that invoked the tool: two sessions can
+   * sit on two projects at once, so the visible workspace is a fallback only --
+   * for a panel call, which has no tool session, and for a session the host has
+   * not launched yet.
+   */
+  private fsRoot(loaded: LoadedPlugin, rule: PluginFsRule): string | null {
+    if (rule.root === "userSelected") return loaded.userRoot ?? null;
+    const sessionId = this.inFlightTool(loaded.manifest.id)?.sessionId.trim() || undefined;
+    const scoped = sessionId
+      ? (this.services.getWorkspacePathForSession?.(sessionId) ?? null)
+      : null;
+    return scoped ?? this.services.getWorkspacePath();
+  }
+
+  /**
    * Resolve one file request and decide whether it may proceed.
    *
    * Four gates in a fixed order, because each one is only sound behind the
@@ -3848,8 +3982,7 @@ export class PluginRuntime {
       return { full, rel: `<dropped>/${basename(full)}`, root: dirname(full) };
     }
     const rule: PluginFsRule = loaded.fsPolicy[mode] ?? { root: "workspace", scope: [] };
-    const root =
-      rule.root === "userSelected" ? loaded.userRoot : this.services.getWorkspacePath();
+    const root = this.fsRoot(loaded, rule);
     if (!root) {
       throw apiError(
         "NOT_FOUND",
@@ -4351,6 +4484,9 @@ export class PluginRuntime {
                 this.services.getLocale?.(),
                 loaded.manifest.name,
               ),
+            shape: loaded.manifest.ui?.shape,
+            alwaysOnTop: loaded.manifest.ui?.alwaysOnTop,
+            resizable: loaded.manifest.ui?.resizable,
             width: loaded.manifest.ui?.width ?? 480,
             height: loaded.manifest.ui?.height ?? 360,
             htmlPath,
@@ -4745,8 +4881,7 @@ export class PluginRuntime {
         list: async (pathFromRoot: string) => {
           this.assertPermission(loaded, "fs.read");
           const rule = loaded.fsPolicy.read ?? { root: "workspace", scope: [] };
-          const root =
-            rule.root === "userSelected" ? loaded.userRoot : this.services.getWorkspacePath();
+          const root = this.fsRoot(loaded, rule);
           if (!root) throw apiError("NOT_FOUND", "No workspace is open");
           const rel = normalizeFsPath(String(pathFromRoot ?? ""));
           if (rel.split("/").includes("..")) {
@@ -4833,8 +4968,7 @@ export class PluginRuntime {
         glob: async (pattern: string) => {
           this.assertPermission(loaded, "fs.read");
           const rule = loaded.fsPolicy.read ?? { root: "workspace", scope: [] };
-          const root =
-            rule.root === "userSelected" ? loaded.userRoot : this.services.getWorkspacePath();
+          const root = this.fsRoot(loaded, rule);
           if (!root) throw apiError("NOT_FOUND", "No workspace is open");
           const matches: string[] = [];
           const visit = (dir: string, rel = "") => {
@@ -5049,14 +5183,9 @@ export class PluginRuntime {
           this.assertEgress(loaded, input.url, "net.fetch");
           if (this.services.fetch) {
             const result = await this.services.fetch(input);
-            this.services.audit?.({
-              pluginId,
-              api: "net.fetch",
-              ok: true,
-              ts: Date.now(),
-              url: input.url,
-              status: result.status,
-            });
+            this.services.audit?.(
+              netFetchAuditEntry(pluginId, input.url, result.status, result.headers),
+            );
             return result;
           }
           const controller = new AbortController();
@@ -5088,14 +5217,7 @@ export class PluginRuntime {
               headers[key] = value;
             });
             const bodyText = await res.text();
-            this.services.audit?.({
-              pluginId,
-              api: "net.fetch",
-              ok: true,
-              ts: Date.now(),
-              url,
-              status: res.status,
-            });
+            this.services.audit?.(netFetchAuditEntry(pluginId, url, res.status, headers));
             return { status: res.status, headers, bodyText };
           } finally {
             clearTimeout(timer);

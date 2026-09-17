@@ -1,6 +1,6 @@
 /** Real CSS cascade probe; fixture classes use the built app's complete stylesheet. */
-// Built-in sRGB paint and shadows sampled from the pre-fix a9053531 app.
-const DEFAULT_RGBA = {"light":{"rail":[244,244,244,255],"search":[255,255,255,255],"active":[224,224,225,255],"knob":[255,255,255,255],"composer":[255,255,255,255],"pluginSearch":[243,243,243,255],"capabilitySearch":[243,243,243,255],"pluginFocus":[255,255,255,255],"capabilityFocus":[255,255,255,255],"scrim":[25,29,32,71],"modalVeil":[25,28,31,82],"toolRow":[51,51,51,5],"toolRowPlain":[51,51,51,5],"toolRowError":[51,51,51,5],"codeHead":[28,28,28,9],"mermaidCanvas":[255,255,255,255],"thinkingCode":[240,240,240,255],"sendDisabled":[142,142,144,255],"kbd":[26,26,26,20]},"dark":{"rail":[0,0,0,255],"search":[33,33,33,255],"active":[255,255,255,26],"knob":[24,24,24,255],"composer":[33,33,33,245],"pluginSearch":[255,255,255,13],"capabilitySearch":[255,255,255,13],"pluginFocus":[255,255,255,18],"capabilityFocus":[255,255,255,18],"scrim":[0,0,0,115],"modalVeil":[24,24,24,199],"toolRow":[255,255,255,9],"toolRowPlain":[0,0,0,0],"toolRowError":[255,99,99,18],"codeHead":[255,255,255,10],"mermaidCanvas":[35,35,35,255],"thinkingCode":[255,255,255,11],"sendDisabled":[255,255,255,46],"kbd":[255,255,255,20]}};
+// Built-in sRGB paint; the settings rail shares the sidebar's opaque fallback.
+const DEFAULT_RGBA = {"light":{"rail":[243,243,243,255],"search":[255,255,255,255],"active":[224,224,225,255],"knob":[255,255,255,255],"composer":[255,255,255,255],"pluginSearch":[243,243,243,255],"capabilitySearch":[243,243,243,255],"pluginFocus":[255,255,255,255],"capabilityFocus":[255,255,255,255],"scrim":[25,29,32,71],"modalVeil":[25,28,31,82],"toolRow":[51,51,51,5],"toolRowPlain":[51,51,51,5],"toolRowError":[51,51,51,5],"codeHead":[28,28,28,9],"mermaidCanvas":[255,255,255,255],"thinkingCode":[240,240,240,255],"sendDisabled":[142,142,144,255],"kbd":[26,26,26,20]},"dark":{"rail":[0,0,0,255],"search":[33,33,33,255],"active":[255,255,255,26],"knob":[24,24,24,255],"composer":[33,33,33,245],"pluginSearch":[255,255,255,13],"capabilitySearch":[255,255,255,13],"pluginFocus":[255,255,255,18],"capabilityFocus":[255,255,255,18],"scrim":[0,0,0,115],"modalVeil":[24,24,24,199],"toolRow":[255,255,255,9],"toolRowPlain":[0,0,0,0],"toolRowError":[255,99,99,18],"codeHead":[255,255,255,10],"mermaidCanvas":[35,35,35,255],"thinkingCode":[255,255,255,11],"sendDisabled":[255,255,255,46],"kbd":[255,255,255,20]}};
 const DEFAULT_SHADOWS = {"light":{"knob":"rgba(0, 0, 0, 0.22) 0px 1px 2px 0px","composer":"rgba(0, 0, 0, 0.04) 0px 3px 7.5px 0px, rgba(0, 0, 0, 0.05) 0px 0px 20px 0px","pluginFocus":"oklab(0.22559 -0.00131416 -0.00642684 / 0.35) 0px 0px 0px 1px","capabilityFocus":"oklab(0.22559 -0.00131416 -0.00642684 / 0.35) 0px 0px 0px 1px"},"dark":{"knob":"rgba(0, 0, 0, 0.16) 0px 1px 2px 0px","composer":"rgba(0, 0, 0, 0.04) 0px 3px 7.5px 0px, rgba(0, 0, 0, 0.05) 0px 0px 20px 0px","pluginFocus":"oklab(0.999994 0.0000455678 0.0000200868 / 0.45) 0px 0px 0px 1px","capabilityFocus":"oklab(0.999994 0.0000455678 0.0000200868 / 0.45) 0px 0px 0px 1px"}};
 /**
  * Surface entries are `[selector, token]` for a surface the token fills,
@@ -32,7 +32,23 @@ const surfaces = {
   thinkingCode: [".thinking-prose code", "--ds-thinking-code-bg"],
   sendDisabled: [".send-btn:disabled", "--ds-send-disabled-bg"],
   kbd: [".prose-chat kbd", "--ds-prose-kbd-fg", "ink"],
+  asktoolCard: [".composer-stack > .asktool-card", "--ds-bg-composer"],
+  asktoolOption: [".asktool-option", "--ds-tile-deep"],
 };
+
+// Issue #360: the dock question card rides the composer plate and its option
+// rows are inlaid on it. Sampled the same way as the table above.
+Object.assign(DEFAULT_RGBA.light, {
+  asktoolCard: [255, 255, 255, 255],
+  asktoolOption: [26, 26, 26, 20],
+});
+Object.assign(DEFAULT_RGBA.dark, {
+  asktoolCard: [33, 33, 33, 245],
+  asktoolOption: [255, 255, 255, 20],
+});
+const COMPOSER_SHADOW = "rgba(0, 0, 0, 0.04) 0px 3px 7.5px 0px, rgba(0, 0, 0, 0.05) 0px 0px 20px 0px";
+Object.assign(DEFAULT_SHADOWS.light, { asktoolCard: COMPOSER_SHADOW });
+Object.assign(DEFAULT_SHADOWS.dark, { asktoolCard: COMPOSER_SHADOW });
 const customColors = {
   "--ds-settings-rail-bg": "#243645",
   "--ds-settings-field-bg": "#365476",
@@ -50,6 +66,7 @@ const customColors = {
   "--ds-thinking-code-bg": "#4a2f5e",
   "--ds-send-disabled-bg": "#6b5c2f",
   "--ds-prose-kbd-fg": "#a1b2c3",
+  "--ds-tile-deep": "#586166",
 };
 const canvas = document.createElement("canvas");
 canvas.width = canvas.height = 1;

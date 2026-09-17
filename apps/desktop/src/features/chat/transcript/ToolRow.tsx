@@ -517,7 +517,7 @@ export const ToolRow = memo(function ToolRow({
  * one level in and stay collapsed with the call. Only one level is possible: a
  * delegate has no `Task` tool of its own (ADR 0062).
  */
-export function SubagentRunRows({
+export const SubagentRunRows = memo(function SubagentRunRows({
   run,
   agentName,
   onCollapse,
@@ -567,7 +567,7 @@ export function SubagentRunRows({
       />
     </div>
   );
-}
+});
 
 /**
  * Nested follow-scroll for one expanded delegate (D302). Mounted only once

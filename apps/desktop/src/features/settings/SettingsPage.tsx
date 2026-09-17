@@ -227,7 +227,7 @@ export function SettingsPage() {
   return (
     <div className="settings-shell settings-shell-full">
       <div className="settings-titlebar" aria-hidden="true" />
-      <aside className="settings-nav" aria-label={t("settings.title")}>
+      <aside className="settings-nav sidebar-surface" aria-label={t("settings.title")}>
         <div className="settings-nav-top drag">
           <div className="settings-search-wrap no-drag">
             <IconSearch size={14} />
@@ -453,7 +453,7 @@ export function SettingsPage() {
           {tab === "about" && (
             <div className="settings-stack">
               <SettingsCard>
-                <SettingsRow title={t("settings.application")} description={t("settings.applicationDesc")}>
+                <SettingsRow title={t("settings.application")}>
                   <div className="settings-about-meta">
                     <div className="font-medium">
                       {version?.name || "PI-Desktop"} {version?.version}
@@ -463,7 +463,7 @@ export function SettingsPage() {
                     </div>
                   </div>
                 </SettingsRow>
-                <SettingsRow title={t("settings.logs")} description={t("settings.logsDesc")}>
+                <SettingsRow title={t("settings.logs")}>
                   <Button variant="secondary" onClick={() => void api.openLogs()}>
                     {t("settings.openLogs")}
                   </Button>

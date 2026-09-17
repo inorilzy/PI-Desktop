@@ -17,7 +17,6 @@ const bundle = await build({
       export * from "./apps/desktop/src/lib/session-reference-preferences.ts";
       export * from "./apps/desktop/src/lib/session-reference-budget.ts";
       export * from "./apps/desktop/src/lib/session-reference-prompt.ts";
-      export * from "./apps/desktop/src/lib/response-annotations.ts";
       export { createQueueSlice } from "./apps/desktop/src/stores/slices/queue-slice.ts";
       export { stripSessionReferencePrompt, estimateSessionReferenceTokens } from "@pi-desktop/shared";
     `,
@@ -133,11 +132,9 @@ test("target binding controls window/output reserve; old usage model cannot sele
   assert.equal(result.budgetTokens, 37);
 });
 
-test("budget reserves UTF-8/CJK input and annotation wrappers; zero headroom stays zero", () => {
+test("budget reserves UTF-8/CJK input; zero headroom stays zero", () => {
   assert.equal(lib.estimateSessionReferenceTokens("汉字"), 2);
-  const currentInput = lib.responseAnnotationPrompt("汉字", [lib.responseAnnotation({ id: "a", messageId: "m", text: "Selected quote" })]);
-  const reserved = modelBudget({ currentInput });
-  assert.equal(reserved.currentInputEstimate, lib.estimateSessionReferenceTokens(currentInput));
+  const reserved = modelBudget({ currentInput: "汉字".repeat(200) });
   assert.ok(reserved.budgetTokens < modelBudget({ currentInput: "汉字" }).budgetTokens);
   assert.equal(modelBudget({ currentInput: "x".repeat(9000) }).budgetTokens, 0);
 });
@@ -242,9 +239,8 @@ function harness({ running = false, getSession = async () => source() } = {}) {
   const state = {
     activeSessionId: targetId, pendingPlans: {}, runningSessions: { [targetId]: running },
     agentStatuses: { [targetId]: { currentTurnId: "turn" } },
-    responseAnnotations: { [targetId]: [lib.responseAnnotation({ id: "note", messageId: "a", text: "Selection" })] },
     sessions: [{ id: targetId, title: "Target", providerId: "p", modelId: "m" }, { id: otherId, title: "Other", providerId: "large", modelId: "large" }],
-    messages: [], queuedPrompts: {}, latestTurnResults: {}, sessionOutcomes: {}, sideChats: {}, sideChatTranscripts: {}, sessionCompactions: {}, retainedTranscripts: {},
+    messages: [], queuedPrompts: {}, latestTurnResults: {}, sessionOutcomes: {}, sessionCompactions: {}, retainedTranscripts: {},
 
     providers: [{ id: "p", models: [{ id: "m", contextWindow: 16000, maxTokens: 2000 }] }, { id: "large", models: [{ id: "large", contextWindow: 1000000 }] }],
     providerModels: {}, showToast: (...args) => toasts.push(args),
@@ -269,15 +265,14 @@ function harness({ running = false, getSession = async () => source() } = {}) {
 
 for (const action of ["sendPrompt", "steerPrompt", "enqueuePrompt"]) {
   for (const failure of ["budget", "missing", "read-error"]) {
-    test(`${action}: ${failure} keeps draft/annotations, with no optimistic row or host submission`, async () => {
+    test(`${action}: ${failure} keeps draft, with no optimistic row or host submission`, async () => {
       const h = harness({ running: action === "steerPrompt", getSession: async () => {
         if (failure === "read-error") throw Error("read failed");
         return failure === "missing" ? { session: null } : source([message("u", "user", "Q"), message("a", "assistant", "汉".repeat(20000))]);
       } });
-      const input = draft(); const before = structuredClone(input); const annotations = h.state.responseAnnotations[targetId];
+      const input = draft(); const before = structuredClone(input);
       assert.equal(await h.state[action](text, input), false);
       assert.deepEqual(input, before);
-      assert.equal(h.state.responseAnnotations[targetId], annotations);
       assert.equal(h.calls.length, 0);
       assert.equal(h.optimistic.length, 0);
       assert.deepEqual(h.state.queuedPrompts, {});
@@ -301,7 +296,6 @@ for (const change of ["model", "provider", "deleted", "plan", "steer-turn"]) {
     assert.equal(await pending, false);
     assert.equal(h.calls.length, 0);
     assert.equal(h.optimistic.length, 0);
-    assert.ok(h.state.responseAnnotations[targetId]);
   });
 }
 
@@ -315,10 +309,9 @@ test("navigation alone does not redirect a captured target", async () => {
   assert.equal(h.calls[0][1].sessionId, targetId);
 });
 
-test("explicit side-chat target uses its own window and transcript, not active chat", async () => {
+test("inactive target falls back to retained transcripts when the cache is empty", async () => {
   const h = harness(); h.state.activeSessionId = otherId;
-  h.state.sideChats[targetId] = { sessionId: targetId, parentSessionId: otherId };
-  h.state.sideChatTranscripts[targetId] = [message("used", "assistant", "ok", { usage: { inputTokens: 15500, outputTokens: 100 } })];
+  h.state.retainedTranscripts[targetId] = [message("used", "assistant", "ok", { usage: { inputTokens: 15500, outputTokens: 100 } })];
   assert.equal(await h.state.sendPrompt(text, draft(), targetId), false);
   assert.equal(h.calls.length, 0);
 });
@@ -331,16 +324,13 @@ test("inactive target falls back to its cached transcript, not unrelated active 
 });
 
 for (const action of ["sendPrompt", "steerPrompt", "enqueuePrompt"]) {
-  test(`${action}: freezes once, preserves annotations and attachments, hides snapshots in visible text`, async () => {
+  test(`${action}: freezes once, preserves attachments, hides snapshots in visible text`, async () => {
     const h = harness({ running: action === "steerPrompt" });
     assert.equal(await h.state[action](text, draft()), true);
     assert.equal(h.reads(), 1);
     assert.match(h.calls[0][1].content, /Complete answer/);
-    assert.equal(h.calls[0][1].content.split("Selected quote").length, 1);
-    assert.equal(h.calls[0][1].content.split('"text":"Selection"').length, 2);
-    assert.equal(lib.requestTextWithoutAnnotations(h.calls[0][1].content), text);
+    assert.equal(lib.stripSessionReferencePrompt(h.calls[0][1].content), text);
     assert.equal(h.calls[0][1].attachments[0].path, "notes.md");
-    assert.equal(h.state.responseAnnotations[targetId], undefined);
     assert.ok(h.toasts.some(([key]) => key.startsWith("chat.sessionReferenceSummary")));
     for (const [, row] of h.optimistic) assert.equal(row.content, text);
   });

@@ -145,7 +145,7 @@ export function formatFileInsert(path: string, kind: "dir" | "file"): string {
   return needsQuote ? `@\"${path}\" ` : `@${path} `;
 }
 
-/** Canonical @ token for another durable session (D430 / ADR 0266). */
+/** Canonical @ token for another durable session (D442 / ADR 0276). */
 export const SESSION_REFERENCE_PREFIX = "@session:";
 
 const SESSION_ID_RE =

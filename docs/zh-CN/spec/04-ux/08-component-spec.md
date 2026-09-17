@@ -57,7 +57,9 @@
 折叠和展开使用安装后动画的停靠过渡（入口
   `sidebar-in`，退出 `sidebar-out` 关键帧），镜像工作面板停靠：
   侧面通过退出关键帧保留在树中，然后卸载
-  （`is-exiting` 标志 + `animationend` 防护，具有超时回退）
+  （`is-exiting` 标志 + `animationend` 防护，具有超时回退）。只有可见主界面发生
+  折叠到展开的变化才进入显式 `is-entering` 阶段；首次挂载及从设置返回直接恢复布局。
+  进入设置会取消未完成的入场或退出阶段，快速往返也不重播；不为抑制动画保留隐藏主界面。
 - 侧边栏宽度：展开列固定为 275px。折叠/展开只改变列是否存在；历史上的
   调整大小手柄会隐藏，旧的持久化宽度偏好会被忽略。
 - 工作面板折叠：唯一的控件位于会话窗格标题栏右上角
@@ -70,8 +72,16 @@
   工作面板标题带通过让自身盒子在该保留带之前结束来承载它——
   用外边距而非内边距——因为原生拖拽矩形就是边框盒。
 - 工作面板预览：标题栏最大化操作会临时卸载 MainChat，并让面板填充侧边栏
-  之外的客户区。窗口级 46px chrome 行负责拖动区域、新建任务、侧边栏和本机
-  窗口控件。macOS 侧边栏折叠时，窗口模式左侧预留 76px，全屏预留 8px 给交通灯。
+  之外的客户区。
+  The 46px chrome row keeps shell/native controls but has no drag/no-drag
+  rectangle and passes pointer events through outside controls. The panel
+  header alone owns dragging in the preview pane; its border box excludes
+  shell actions plus an 8px gap in both sidebar states on every platform.
+  The left inset is 8px except collapsed-sidebar windowed macOS (88px through
+  `--ds-window-lead-inset`: the shared 76px native cluster edge plus 12px).
+  Main uses the same native geometry from `@pi-desktop/shared`.
+  Right native-control exclusion is unchanged. Header-height paint fills the
+  left lane without an opaque overlay hiding tabs or panel actions.
 - 工作面板调整大小：左边缘拖动手柄（§5.4）
 - 窗口大小调整：本机边缘仅在打开作品时更改 MainChat 宽度
   面板保持其承诺的宽度；响应式布局如下
@@ -136,7 +146,9 @@
 - macOS 启用 Electron 原生 `vibrancy: "sidebar"` source-list 材质，配合
   `visualEffectState: "followWindow"` 和透明窗口底（D348）。`nativeTheme.themeSource`
   跟随应用主题偏好（`system` / `light` / `dark` / 插件 base），让毛玻璃底板与
-  渲染器一致。仅在该来源变化时重设 vibrancy；缺失的插件主题回落 `system`。只有 `.sidebar` 和已渲染的 `.sidebar-rail` 半透明；渲染器叠加
+  渲染器一致。仅在该来源变化时重设 vibrancy；缺失的插件主题回落 `system`。
+  主侧栏与设置导航共享 `.sidebar-surface` 材质，已渲染的 `.sidebar-rail` 同样半透明。
+  设置外壳透明，但其右侧内容和顶部条保持不透明；渲染器叠加
   一层薄主题 tint（`--ds-sidebar-glass-tint`，深色 40% / 浅色 55%）和上下
   sheen。侧栏与不透明主面板齐平，没有接缝。`.main-pane`、`.main-titlebar` 和
   `.conversation-topbar` 保持不透明 `bg-primary`。Windows/Linux 仍用不透明底。
@@ -197,8 +209,8 @@ Composer 拥有 Agent/Plan/Goal 控件以及组合的模型 × 推理选择（§
 - 背景：bg-primary
 - 边框：边框-微妙底部
 - 位置：绝对46px无框带； `-webkit-app-region: drag` 与
-  交互式控件上的 `no-drag`； macOS 保留左侧约 76 像素的流量
-  灯亮（仅当侧边栏折叠时），Windows/Linux保留权利
+  交互式控件上的 `no-drag`； macOS 仅在侧边栏折叠时保留左侧 88px 的交通
+  灯空间，Windows/Linux保留权利
   本机窗口控件为 112px
 - 标题簇（任务标题）最多可显示前 10 个 Unicode
   字符加省略号；完整标题保留在本机工具提示中。
@@ -218,6 +230,17 @@ Composer 拥有 Agent/Plan/Goal 控件以及组合的模型 × 推理选择（§
   `--ds-toolbar-height` 填充。缺少这一保留时，页面标头会渲染到带的后面，
   标题行被遮挡。只有叠在带之上的表面（`z-index: 60` 的插件详情侧面板）
   可以跳过它。
+- 每个 chrome 图标控件都是同一个 28px 方形（`--ds-work-panel-toggle-size`），
+  并共用同一个透明底座：顶栏的侧边栏开关、视口固定的工作面板开关、
+  预览态/路由带上的动作组，以及工作面板头部的 `+` 与最大化/还原按钮。
+  控件与其同级保持一致，不再使用自己更小的尺寸，也不再自带表面，因此默认
+  由图标本身承载，只有语义化的悬停淡色才会在其下着色。面板头部为动作组
+  预留的车道宽度也由同一个控件尺寸推导，而不是写死的字面量；开关的打开
+  状态只改变图形与墨色，这一族控件都不绘制填充或抬升的“开启”胶囊。
+  With the sidebar collapsed, Plugins, Pull requests, and Scheduled render their
+  sidebar/New Task actions inside `.main-titlebar`, not the preview-only
+  `.window-chrome-row`. Both containers must share the same geometry, rest,
+  hover, and disabled rules; route actions must not duplicate those declarations.
 
 ### 2.4 状态
 
@@ -320,8 +343,10 @@ Collapsed (48px):
 | 会话进行中 | 橙色呼吸点；减少运动时的静态 |
 | 会话已完成 | 未选择该行时呈绿色复选标记 |
 | 会话失败 | 未选择该行时，红色圆圈警告标记 |
-| 悬停会话 | bg-第三级背景 |
-| 活跃项目 | 标头携带活动状态；顶栏跟随该工作区；输入框不公开任何工作区身份 |
+| 行悬停 | 项目标题与所有会话行共享整行 `--ds-bg-hover` 背景、圆角和过渡；会话选中背景优先 |
+| 当前工作区 | 项目标题通过圆点标记当前工作区，不绘制持久选中背景；顶栏跟随该工作区，输入框不公开工作区身份 |
+| 导航选中 | 仅聊天页当前会话使用 `--ds-bg-active`，包括置顶和独立会话；折叠分组不会把选中态转交给标题。没有选中会话或离开聊天页时，没有选中的会话行 |
+| 键盘焦点 | 焦点控件保留可见轮廓；项目标题按钮保持透明，独立操作按钮保留自己的悬停反馈 |
 | 崩溃的项目 | 标题保持可见；儿童对话被隐藏 |
 | 存档行 | 默认隐藏；在显式存档视图中可见 |
 | 无保留项目 | 紧凑的开放式项目入口；独立会话行仍然可用 |
@@ -450,6 +475,11 @@ Collapsed (48px):
 
 - 可见shell名称为`PI-Desktop`； Codex 不用作渲染器
   身份。
+- 没有文字标签的控件声明 `.icon-btn-square`，它把两个轴都固定到
+  `--ds-control-size`（28px）。单独的 `.icon-btn` 宽度来自图形加左右各 8px 内边距 ——
+  这对带文字的胶囊按钮是正确的，对没有文字的控件则是错误的 —— 因此侧边栏收起控件、
+  会话顶栏开关，以及输入框的添加/增强/撤销控件，都呈现与顶栏和工作面板操作一致的
+  28px 正方形点击区，而不是"宽大于高"的胶囊。
 - `BrandLogo` 通过 Vite 导入从规范母版派生的渲染器尺寸标记：
   `src/assets/brand/logo-light.png` 用于浅色模式，
   `src/assets/brand/logo-dark.png` 用于深色模式（192x192，可覆盖 3x 下的
@@ -583,7 +613,7 @@ expanded/collapsed 侧边栏仍为 20px/18px 且启动画面为 64 像素。
 |---|---|
 | 空 | 可滚动内容区域中的受约束的英雄+可选的入门清单，带有底部保留的主页输入框，没有入门卡或上下文快速操作层（D111/D204/D206） |
 | 流媒体 | 固定时自动滚动；追加新标记 |
-| 积极进展 | 发送后，在第一个助手或工具事件之前，会内联显示一个紧凑的本地化 `Working…` 状态以及经过的时间。它屈服于具体的思维、工具和答案行，而权限卡拥有批准状态；不会渲染大型通用进度卡。 |
+| 积极进展 | 发送后，在第一个助手或工具事件之前，会内联显示一个紧凑的本地化 `Working…` 状态以及经过的时间。它屈服于具体的思维、工具和答案行，而权限卡拥有批准状态；不会渲染大型通用进度卡。重试行在静止时保持紧凑；悬停或聚焦会弹出错误色 tooltip，底板为 `--ds-bg-elevated-opaque`，避免透出记录正文。 |
 | 回合结果 | 回合失败后，会话范围的恢复卡会总结中断和工具证据。已完成的轮次使用现有的记录和消息范围的 InlineReviewCard，无需额外的成功卡；失败的回合可以重试而不会丢失转录本。 |
 | 会话切换 | 首次打开的会话在它最新的记录处绘制；重新访问的面板在它自己保留的位置处绘制。有界的首次提交与全量历史展开显示同一个位置：绘制之后的高度校正不得在任何方向上移动可见行 |
 | 启动（发送/重试/重新生成） | 即使用户向上滚动，在绘制之前重新固定和定位最新内容；后来保留的用户消息事件不会在其顶部闪烁记录，并且发送期间的输入框折叠／指示器布局夹紧永远不会释放跟随模式 |
@@ -670,6 +700,14 @@ expanded/collapsed 侧边栏仍为 20px/18px 且启动画面为 64 像素。
 - 面板主体采用静音插页纸（`#fafafa`）； 46px 标题带和工具
   chrome（审阅工具栏、浏览器chrome、文件查看器标题）保持白色
 - 46px 标题是裁剪的标签条和紧贴的 `+` 入口。只有标签条滚动，入口始终固定。
+  头部为视口固定的折叠开关预留 44px 的右侧安全车道（28px 控件 + 12px 视口内缩
+  + 头部自身的 4px 控制间距 `--ds-work-panel-control-gap`），这一个间距同时
+  分隔整行：标签条到动作组、`+` 到最大化，以及最大化到开关。动作组不再有自己的
+  分隔线、内缩或外边距，因此三个按钮读作一组；`+` 与开关之间仍隔着最大化控件，
+  命中区域彼此独立且视觉间隔大于 24px。三者都是与其他 chrome 图标相同的控件：
+  28px 方形、透明底座，因此头部呈现的是安静的图标而不是填充方块。`+` 与最大化
+  从 `chrome.css` 的共享 chrome 控件组取得几何与悬停淡色，而不是自带的规则；
+  视口固定开关的 `aria-pressed` 状态只改变墨色与图形，绝不改变背景或阴影。
   菜单只有 Tools & panels 分组，Review 在前，插件视图按声明顺序排列；只有真实
   存在的快捷键才显示快捷键标签。
 - 标签在悬停、聚焦和活动时显示 `×`，中键也可关闭。面板溢出由标签条处理，
@@ -844,6 +882,45 @@ SESSIONS                                      [msg+][↕]
            Session title
 ```
 
+项目分组内的行按日期分桶。今天这一桶不绘制标题；
+昨天、过去 7 天、过去 14 天以及更早的每一桶都会在其行上方绘制一个弱化的全大写标签，
+且只有包含行的桶才会绘制：
+
+```text
+[folder] current-project                         [+]
+           YESTERDAY
+           Session title
+           Session title
+```
+
+该标签是列表节奏中的普通一行 —— 没有展开披露、没有状态、没有
+`aria-expanded` —— 不同于项目标题，后者才是真正的可折叠分组。
+
+侧边栏列表中的间距阶梯（按 `04-ux/07-ui-design-system.md` §6.1 使用
+`space-0.25` / `space-0.5` / `space-2`）：
+
+| 关系 | 间距 |
+|---|---|
+| 行与行之间，包括日期标签与“加载更多”行 | 1px |
+| 项目分组标题到其首行 | 2px |
+| 展开分组最后一行到下一个分组 | 8px |
+| 折叠分组到下一个分组 | 1px |
+| 分区标签到其首行 | 2px |
+| 侧边栏分区到侧边栏分区 | 8px |
+
+8px 的尾部间隙属于展开的分组本身，因此间距仅由前一个分组决定：
+展开的分组之后是 8px，无论下一个分组是展开还是折叠；折叠的分组之后
+则是 1px，两种情况都一样。
+
+折叠是一次运动，而不是两段。折叠的分组是一个单行网格，其行在 200ms 的正常时长内
+从 `1fr` 动画到 `0fr`，因此每一帧都是该分组实测高度的真实比例，而不再是
+`max-height` 夹取——后者的大部分曲线都落在内容高度之上，末端只能瞬间跳变。
+行由带 `min-height: 0` 的内层盒裁剪，绝不淡出：整个折叠过程中 opacity 始终为 1；
+2px / 7px 的内缩量位于该裁剪层内部的列表上，因此它随行一起消失，
+而不会把已关闭的行撑开。在 `prefers-reduced-motion: reduce` 下，折叠保留两端状态，
+并以接近零的时长完成。折叠的分组仍然挂载其行，并保持 `aria-hidden` 与
+`inert`，因此它们既离开可访问性树，也离开 Tab 顺序。
+
 ### 6.3 状态
 
 | 状态 | 外观 |
@@ -901,8 +978,8 @@ SESSIONS                                      [msg+][↕]
   本地视图控件而不是主机查询。
 - 临时意味着**不受项目约束**，不是临时存储；这些
   会话在重新启动后仍然有效。
-- 独立的会话主体最多显示五个紧凑的 28 像素行，并且
-  当存在更多行时在内部滚动。项目列表使用剩余的
+- 独立的会话主体是一个 146 像素的窗口，容纳五个紧凑的 28 像素行、它们之间的 1px 行间隙
+  以及 2px 的标签内缩；当存在更多行时在内部滚动。项目列表使用剩余的
   侧边栏高度和滚动独立；两个区域都不滚动页脚
   或主要导航。两个列表的滚动条与对话区和工作面板使用相同的全局规则：6px、
   无轨道、静止时透明；文字色滑块在其列表被悬停、聚焦或滚动时出现，拖动期间
@@ -1103,11 +1180,12 @@ tail 不得将该寻呼机从用户气泡中移动或分离。寻呼机是
   Fork 创建并激活一个独立的会话，其快照结束于
   选择辅助响应，需要一个空闲源，然后留下
   源的转录本、实时运行时和提供程序缓存状态保持不变 (D134)。
-  编辑属于用户回合：它将提示气泡替换为焦点
-  内联文本区域（Escape 取消，Cmd/Ctrl+Enter 重试；斜杠转为种子
-  输入 `command` 表单，重试后会重新扩展模板），扩大用户范围
-  打开时将列调整为助理阅读宽度，并隐藏操作
-  工具栏。内联控件显示本地化的“重试”和“取消”。重试运行同一会话的
+  编辑属于用户回合：它将提示气泡替换为与底部输入框同族的
+  composer 面板（`--ds-bg-composer` 填充、`--ds-composer-radius`，
+  无描边，无阴影，D297）。文本区域嵌在面板内不加第二层底；底部 28px 工具条放本地化的
+  “重试”和“取消”（Escape 取消，Cmd/Ctrl+Enter 重试；斜杠转为种子
+  输入 `command` 表单，重试后会重新扩展模板）。打开时把用户列加宽到
+  助理阅读宽度，并隐藏操作工具栏。重试运行同一会话的
   重新生成路径，即使文本没有变化也会执行，因此替换的提示及其整个答案
   尾部被存档为 D109 修订版，寻呼机可以返回原来的交换（D274）。
 - 工具介导的辅助输出使用前一用户的视觉转向
@@ -1197,7 +1275,7 @@ tail 不得将该寻呼机从用户气泡中移动或分离。寻呼机是
 
 ### 8.6 MVP 约束
 
-- 无消息 reactions/annotations
+- 无消息 reactions
 - 无法编辑用户消息（推迟）
 - 复制助手答案不包括思考文本
 
@@ -1215,9 +1293,11 @@ Renderer： `apps/desktop/src/components/Markdown.tsx` + `apps/desktop/src/lib/s
   直到其匹配的关闭栅栏到达；部分流图永远不会
   输入图表解析器。
 - **插件**：`remark-gfm`（表格、任务列表、删除线、自动链接），
-  `remark-math` + `rehype-katex`（内联 `$…$`，显示 `$$…$$`）。原始 HTML 是
+  `remark-math` + `rehype-katex`（内联 `$…$` 或 `\(…\)`，显示 `$$…$$`
+  或 `\[…\]`）。原始 HTML 是
   由 `rehype-raw` 解析并立即受扩展约束
-  `rehype-sanitize` 默认架构；仅渲染器拥有的 audio/video/source
+  `rehype-sanitize` 默认架构；仅渲染器拥有的 audio/video/source，以及
+  `code` 上的 `math-inline`/`math-display` 类（保证 TeX `\[…\]` 使用块级布局）
   允许添加。 KaTeX 的 Vite 内联 WOFF2 字体被允许
 渲染器的 `font-src 'self' data:` CSP 指令。
 - **美人鱼图（D165）**：助手中完成的 `mermaid` 围栏块
@@ -1899,7 +1979,9 @@ MainChat 底部的输入区域，用于撰写和发送提示。支持多行输�
 - Goal 共享 Plan 批准表面 (D198)。操作栏从以下位置读取其文案
   提案的 `kind`，因此目标合约显示匹配的批准标签和
   神器开启器，而布局和记住权限拆分按钮保持不变
-  相同。
+  相同。该栏位于透明 Composer 停靠栏上，因此使用
+  `--ds-bg-composer` 加 `--ds-shadow-composer`，而不是正文流里的
+  `--ds-tile` 薄洗。
 
 ### 11.6 辅助功能
 
@@ -1929,7 +2011,7 @@ MainChat 底部的输入区域，用于撰写和发送提示。支持多行输�
   代理用文件工具跟随路径。
 - 没有语音输入
 
-### 11.8 斜线命令、@ 文件与会话引用和剪贴板文件（D123–D125、D197、D209、D262、D362、D430、ADR 0024、ADR 0059、ADR 0070、ADR 0131、ADR 0266）
+### 11.8 斜线命令、@ 文件与会话引用和剪贴板文件（D123–D125、D197、D209、D262、D362、D442、ADR 0024、ADR 0059、ADR 0070、ADR 0131、ADR 0276）
 
 输入框拥有一个内联自动完成菜单——一个组件服务两个组件
 模式。焦点永远不会离开文本区域 (D125)。

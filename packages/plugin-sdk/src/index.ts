@@ -27,14 +27,37 @@ export const PLUGIN_ID_PATTERN = /^[a-z0-9]+(\.[a-z0-9_-]+)+$/;
 /** `author` may be a display string or a contact object (manifest schema §2). */
 export type PluginManifestAuthor =
   | string
+  | string
   | { name: string; email?: string; url?: string };
 
+/**
+ * One locale's display strings (`manifest.i18n`).
+ *
+ * `en` and `zh-CN` are the contract locales: the shell reads `zh-CN` for every
+ * Chinese locale and English for everything else. Every field is optional, and
+ * a partially translated block falls back per field, so a missing one keeps the
+ * author's own `name` / `description` instead of blanking it out.
+ */
+export type PluginDisplayI18n = {
+  name?: string;
+  description?: string;
+  safetyNotes?: string;
+};
+
+/** Locale id → display strings, as a plugin declares them in `manifest.i18n`. */
+export type PluginI18nMap = Record<string, PluginDisplayI18n>;
 export type PluginManifest = {
   schemaVersion: number;
   id: string;
   name: string;
   version: string;
   description?: string;
+  /**
+   * Display strings per locale. The flat `name`/`description` above stay the
+   * author's own language and remain the fallback; the shell shows the entry
+   * matching the app language and only reads these two contract locales.
+   */
+  i18n?: PluginI18nMap;
   author?: PluginManifestAuthor;
   homepage?: string;
   repository?: string;
@@ -51,6 +74,19 @@ export type PluginManifest = {
     width?: number;
     height?: number;
     title?: PluginLocalizedString | string;
+    /**
+     * Panel placement. `"panel"` (default) keeps the host-owned 46px titlebar
+     * band and its three-control capsule. `"widget"` opens the same sandboxed
+     * page as a transparent, frameless floating surface: no band, no capsule,
+     * a drag map over the whole window, and a host context menu that closes,
+     * minimizes, or pins it. A widget may be smaller than a panel — see
+     * `PLUGIN_PANEL_MIN_SIZE` / `PLUGIN_PANEL_WIDGET_MIN_SIZE` in the host.
+     */
+    shape?: "panel" | "widget";
+    /** Floating widget placement only: keep the surface above other windows. */
+    alwaysOnTop?: boolean;
+    /** Overrides the per-shape default: panels are resizable, widgets are not. */
+    resizable?: boolean;
   };
   contributes?: {
     commands?: Array<{
@@ -1176,8 +1212,16 @@ export function validateManifest(raw: unknown): {
       return { ok: false, error: `manifest.${field} must be a non-empty string` };
     }
   }
+  const i18nError = manifestI18nError((m as Record<string, unknown>).i18n);
+  if (i18nError) return { ok: false, error: i18nError };
   const ui = m.ui as
-    | { title?: unknown; panel?: unknown }
+    | {
+        title?: unknown;
+        panel?: unknown;
+        shape?: unknown;
+        alwaysOnTop?: unknown;
+        resizable?: unknown;
+      }
     | null
     | undefined;
   if (ui !== undefined) {
@@ -1192,6 +1236,15 @@ export function validateManifest(raw: unknown): {
       }
       const panelError = relativePathError(ui.panel, "manifest.ui.panel");
       if (panelError) return { ok: false, error: panelError };
+    }
+    if (ui.shape !== undefined && ui.shape !== "panel" && ui.shape !== "widget") {
+      return { ok: false, error: "manifest.ui.shape must be \"panel\" or \"widget\"" };
+    }
+    for (const key of ["alwaysOnTop", "resizable"] as const) {
+      const value = ui[key];
+      if (value !== undefined && typeof value !== "boolean") {
+        return { ok: false, error: `manifest.ui.${key} must be a boolean` };
+      }
     }
   }
   const contributesError = validateContributions(m.contributes);
@@ -1729,6 +1782,30 @@ function manifestAuthorError(value: unknown): string | undefined {
   return undefined;
 }
 
+/**
+ * `manifest.i18n` is display metadata: locale id → the strings that locale
+ * shows. Shape errors are refused because a malformed block would silently
+ * leave the shell on the author's own language with no way to tell why; a
+ * locale or field a plugin does not translate is fine and falls back.
+ */
+function manifestI18nError(value: unknown): string | undefined {
+  if (value === undefined) return undefined;
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return "manifest.i18n must be an object of locale → { name?, description?, safetyNotes? }";
+  }
+  for (const [locale, entry] of Object.entries(value as Record<string, unknown>)) {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+      return `manifest.i18n.${locale} must be an object`;
+    }
+    for (const field of ["name", "description", "safetyNotes"] as const) {
+      const text = (entry as Record<string, unknown>)[field];
+      if (text !== undefined && typeof text !== "string") {
+        return `manifest.i18n.${locale}.${field} must be a string`;
+      }
+    }
+  }
+  return undefined;
+}
 function relativePathError(value: string, field: string): string | undefined {
   if (/^[a-zA-Z]:[\\/]/.test(value) || value.startsWith("/") || value.startsWith("\\")) {
     return `${field} must not be an absolute path`;
