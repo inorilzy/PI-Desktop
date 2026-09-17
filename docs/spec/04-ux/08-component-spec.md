@@ -1519,7 +1519,7 @@ Single message render — either user (plaintext) or assistant (markdown streami
 ### 8.3 Layout
 
 - Max content band: 760px default, user-resizable via dual edge handles
-  (D439 / ADR 0274). Assistant, tool, and decision rows follow the band.
+  (D439 / ADR 0277). Assistant, tool, and decision rows follow the band.
   User plates stay `min(82%, 600px)`.
 - The live band is `min(available pane, preferred)`. Collapsing the sidebar
   no longer tightens a 640px ceiling; the outer pane stays fluid and the

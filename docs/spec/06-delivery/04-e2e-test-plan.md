@@ -4298,7 +4298,7 @@ identify the platform validation still needed.
   `min(available, preferred)` if the pane is narrower). It does not jump to
   640px. The transcript, empty-home stack, and Composer share that envelope.
 - **Specs linked**: `04-ux/01-ui-ia.md`, `04-ux/07-ui-design-system.md`,
-  `04-ux/08-component-spec.md`, ADR 0274, D439
+  `04-ux/08-component-spec.md`, ADR 0277, D439
 - **Acceptance**: Quality
 - **Milestone**: M5
 - **Status**: Unit-covered (`sidebar-collapse-animation.test.mjs`,
@@ -4320,7 +4320,7 @@ identify the platform validation still needed.
   User bubbles stay compact. Handles stay keyboard-accessible
   (`role="separator"`). Preference persists as `chatContentMaxWidth`.
 - **Specs linked**: `04-ux/01-ui-ia.md`, `04-ux/08-component-spec.md`,
-  ADR 0274, D439
+  ADR 0277, D439
 - **Acceptance**: C (conversation), Quality
 - **Milestone**: M5
 - **Status**: Unit-covered (`chat-content-width.test.mjs`,

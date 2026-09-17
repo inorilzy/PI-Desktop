@@ -5804,7 +5804,7 @@ that was sitting at the bottom — including after the turn had finished.
   so a squeezed sidebar or work panel compresses the band without rewriting
   the preference. The collapsed-sidebar 640px ceiling is removed.
 - Assistant, tool, and decision rows follow the band. User plates stay
-  `min(82%, 600px)`. Renderer only. See ADR 0274, E2E-208, and
+  `min(82%, 600px)`. Renderer only. See ADR 0277, E2E-208, and
   E2E-CHAT-content-width-handles.
 
 ## 2026-09-17 — Session and project rows delete on the second click (D441)
