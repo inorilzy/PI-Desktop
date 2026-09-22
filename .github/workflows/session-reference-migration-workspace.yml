@@ -17,10 +17,7 @@ jobs:
           git init workspace
           cd workspace
           git remote add upstream https://github.com/vastsa/PI-Desktop.git
-          git fetch --depth=512 upstream main feat/528-plugin-slots refs/pull/447/head
-          git branch source-main refs/remotes/upstream/main
-          git branch source-slots refs/remotes/upstream/feat/528-plugin-slots
-          git fetch --depth=512 upstream refs/pull/447/head:refs/heads/source-pr447
+          git fetch --depth=32 upstream main:refs/heads/source-main feat/528-plugin-slots:refs/heads/source-slots refs/pull/447/head:refs/heads/source-pr447
           git checkout source-main
           git log -1 --format='%H %s' source-main
           git log -1 --format='%H %s' source-slots
