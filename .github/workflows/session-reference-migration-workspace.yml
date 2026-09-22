@@ -1,0 +1,34 @@
+name: Session reference migration workspace
+on:
+  push:
+    branches: [work/447-slot-migration]
+    paths: [.github/workflows/session-reference-migration-workspace.yml]
+permissions:
+  contents: read
+jobs:
+  workspace:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Fetch public source revisions for the migration
+        env:
+          GIT_TERMINAL_PROMPT: '0'
+        run: |
+          git init workspace
+          cd workspace
+          git remote add upstream https://github.com/vastsa/PI-Desktop.git
+          git fetch --depth=512 upstream main feat/528-plugin-slots refs/pull/447/head
+          git branch source-main refs/remotes/upstream/main
+          git branch source-slots refs/remotes/upstream/feat/528-plugin-slots
+          git fetch --depth=512 upstream refs/pull/447/head:refs/heads/source-pr447
+          git checkout source-main
+          git log -1 --format='%H %s' source-main
+          git log -1 --format='%H %s' source-slots
+          git log -1 --format='%H %s' source-pr447
+          cd ..
+          tar -czf workspace.tar.gz workspace
+      - uses: actions/upload-artifact@v4
+        with:
+          name: session-reference-migration-source
+          path: workspace.tar.gz
+          retention-days: 1
