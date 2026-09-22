@@ -1,31 +1,127 @@
-name: Session reference migration workspace
+name: Validate PR 447 slot migration
 on:
   push:
     branches: [work/447-slot-migration]
-    paths: [.github/workflows/session-reference-migration-workspace.yml]
+    paths: ['.github/workflows/session-reference-migration-workspace.yml', '.github/447-patch/**']
 permissions:
-  contents: read
+  contents: write
 jobs:
-  workspace:
+  validate:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 30
+    env:
+      CI: 'true'
+      FORCE_COLOR: '0'
     steps:
-      - name: Fetch public source revisions for the migration
-        env:
-          GIT_TERMINAL_PROMPT: '0'
-        run: |
-          git init workspace
-          cd workspace
-          git remote add upstream https://github.com/vastsa/PI-Desktop.git
-          git fetch --depth=32 upstream main:refs/heads/source-main feat/528-plugin-slots:refs/heads/source-slots refs/pull/447/head:refs/heads/source-pr447
-          git checkout source-main
-          git log -1 --format='%H %s' source-main
-          git log -1 --format='%H %s' source-slots
-          git log -1 --format='%H %s' source-pr447
-          cd ..
-          tar -czf workspace.tar.gz workspace
-      - uses: actions/upload-artifact@v4
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
         with:
-          name: session-reference-migration-source
-          path: workspace.tar.gz
-          retention-days: 1
+          node-version: '24'
+      - name: Prepare exact candidate in a dedicated worktree
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/results"
+          cat .github/447-patch/part{1,2,3} | base64 --decode | xz -d > "$RUNNER_TEMP/447.patch"
+          echo '9c30379d306ef9b80da772198287a903eb17c58bacb7eb2dbbc7ee345252d557'"  $RUNNER_TEMP/447.patch" | sha256sum --check
+          git remote add upstream https://github.com/vastsa/PI-Desktop.git
+          git fetch --depth=64 upstream feat/528-plugin-slots refs/pull/447/head
+          git fetch --depth=64 upstream 9b9dfcb7736e9fd4281c13effdc2dbfff951cd11 a60c2fd1a258dccf372316a4dcbaed4dcee22c86
+          git worktree add -b validation/447 "$RUNNER_TEMP/candidate" 9b9dfcb7736e9fd4281c13effdc2dbfff951cd11
+          cd "$RUNNER_TEMP/candidate"
+          git apply --check "$RUNNER_TEMP/447.patch"
+          git apply "$RUNNER_TEMP/447.patch"
+          git add -A
+          git diff --cached --check
+          git diff --cached --stat > "$RUNNER_TEMP/results/diff-stat.txt"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          tree=$(git write-tree)
+          candidate=$(printf '%s\n' 'feat(plugins): migrate session mentions onto renderer and Before Send slots' '' 'Replace the direct host implementation from PR 447 with a plugin on the slot development branch. Preserve the original PR ancestry without rewriting shared history.' | git commit-tree "$tree" -p a60c2fd1a258dccf372316a4dcbaed4dcee22c86 -p 9b9dfcb7736e9fd4281c13effdc2dbfff951cd11)
+          git checkout --detach "$candidate"
+          echo "$candidate" | tee "$RUNNER_TEMP/results/candidate.sha"
+          echo "CANDIDATE=$candidate" >> "$GITHUB_ENV"
+      - name: Install the repository toolchain and locked dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm install --global pnpm@11.18.0
+          cd "$RUNNER_TEMP/candidate"
+          pnpm install --frozen-lockfile 2>&1 | tee "$RUNNER_TEMP/results/install.log"
+      - name: Compile and test the plugin
+        id: plugin
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/candidate"
+          pnpm exec tsc -p examples/plugins/session-mentions/tsconfig.json
+          node examples/plugins/session-mentions/test/run.mjs 2>&1 | tee "$RUNNER_TEMP/results/plugin.log"
+      - name: Build JavaScript workspace
+        id: build
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/candidate"
+          pnpm build:js 2>&1 | tee "$RUNNER_TEMP/results/build.log"
+      - name: Type-check desktop integration
+        id: desktop
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/candidate"
+          pnpm --filter @pi-desktop/desktop typecheck 2>&1 | tee "$RUNNER_TEMP/results/desktop-typecheck.log"
+      - name: Test actual extension runner
+        id: runner
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/candidate"
+          pnpm --filter @pi-desktop/agent-runtime exec vitest run src/extensions/runner.test.ts 2>&1 | tee "$RUNNER_TEMP/results/runner.log"
+      - name: Test actual runtime send and session slots
+        id: runtime
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/candidate"
+          pnpm --filter @pi-desktop/agent-runtime exec vitest run src/runtime.test.ts -t 'send-before and session-lifecycle' 2>&1 | tee "$RUNNER_TEMP/results/runtime.log"
+      - name: Test renderer reference admission
+        id: preflight
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/candidate"
+          node --test apps/desktop/test/plugin-reference-preflight.test.mjs apps/desktop/test/plugin-renderer-composer-slots.test.mjs apps/desktop/test/composer-send-state.test.mjs 2>&1 | tee "$RUNNER_TEMP/results/preflight.log"
+      - name: Publish tested candidate only to a temporary branch
+        if: steps.build.outcome == 'success' && steps.desktop.outcome == 'success' && steps.runner.outcome == 'success' && steps.runtime.outcome == 'success' && steps.preflight.outcome == 'success'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/candidate"
+          git push origin "$CANDIDATE:refs/heads/work/447-slot-candidate-$GITHUB_RUN_ID"
+          echo "work/447-slot-candidate-$GITHUB_RUN_ID" > "$RUNNER_TEMP/results/candidate-branch.txt"
+          tar -czf "$RUNNER_TEMP/results/session-mentions-plugin.tar.gz" -C examples/plugins session-mentions
+      - name: Upload validation evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pr447-slot-migration-validation
+          path: ${{ runner.temp }}/results
+          retention-days: 3
+      - name: Require all integration gates
+        if: always()
+        env:
+          PLUGIN: ${{ steps.plugin.outcome }}
+          BUILD: ${{ steps.build.outcome }}
+          DESKTOP: ${{ steps.desktop.outcome }}
+          RUNNER: ${{ steps.runner.outcome }}
+          RUNTIME: ${{ steps.runtime.outcome }}
+          PREFLIGHT: ${{ steps.preflight.outcome }}
+        run: |
+          for gate in "$PLUGIN" "$BUILD" "$DESKTOP" "$RUNNER" "$RUNTIME" "$PREFLIGHT"; do
+            test "$gate" = success || exit 1
+          done
