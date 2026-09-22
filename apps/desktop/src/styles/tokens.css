@@ -139,6 +139,18 @@
   --ds-send-disabled-bg: color-mix(in oklab, var(--ds-text-primary) 18%, transparent);
   --ds-send-disabled-fg: color-mix(in oklab, var(--gray-900) 70%, transparent);
   --ds-placeholder-ink: color-mix(in oklab, var(--gray-0) 42%, transparent);
+  /*
+    Vendor web search and the hosted-source citations it produces. The
+    composer's "search on" affordance keeps its own emerald pair instead of
+    the neutral status ramp, because it marks a mode rather than a state.
+  */
+  --ds-web-search-accent: #34d399;
+  /*
+    Hosted-search citation popover. The card floats above the transcript, so the
+    dark value sits one step above --ds-bg-elevated-opaque; the light rule keeps
+    that opaque white instead.
+  */
+  --ds-citation-card-bg: #1f2125;
   --ds-success: #40c977;
   --ds-warning: #ff8549;
   --ds-error: #ff6764;
@@ -259,6 +271,8 @@
   --ds-send-disabled-bg: #8e8e90; /* gold disabled send chip */
   --ds-send-disabled-fg: #ffffff;
   --ds-placeholder-ink: #4a4c4f;
+  /* Light keeps the deeper emerald of the pair painted on pale chrome. */
+  --ds-web-search-accent: #059669;
   --ds-field-inset-focus-bg: #ffffff;
   /* Off knob stays white on the pale track; on knob keeps white on near-black. */
   --ds-switch-track-off: color-mix(in oklab, #1a1c1f 10%, transparent);

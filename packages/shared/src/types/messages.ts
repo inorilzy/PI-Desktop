@@ -46,6 +46,15 @@ export function addUsage(
   };
 }
 
+/**
+ * A completed turn's usage as the host records it: the model's own totals plus
+ * the components that belong to someone else. `pluginToolUsage` is spend
+ * plugin tools reported through their result (ADR 0295 slot 5); it is kept
+ * beside `inputTokens` / `outputTokens` instead of summed into them, so a cost
+ * surface can show it as its own line rather than as model tokens.
+ */
+export type TurnUsageRecord = MessageUsage & { pluginToolUsage?: MessageUsage };
+
 export type MessageAttachment = {
   kind: "image" | "file";
   name: string;

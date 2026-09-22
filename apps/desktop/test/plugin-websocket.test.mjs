@@ -301,10 +301,19 @@ test("a timed-out connect refuses and leaves nothing behind", async () => {
     connectTimeoutMs: 20,
   });
 
-  await assert.rejects(
-    registry.connect({ pluginId: PLUGIN_ID, url: "wss://voice.example.com/live" }),
-    (error) => error.code === "TIMEOUT",
-  );
+  // The production connect timer is unref'd (plugin-websocket.ts), so nothing
+  // in the registry keeps the loop alive; hold a real handle across the await
+  // or Node resolves the loop with the promise still pending and cancels every
+  // later test in this file.
+  const hold = setTimeout(() => {}, 1_000);
+  try {
+    await assert.rejects(
+      registry.connect({ pluginId: PLUGIN_ID, url: "wss://voice.example.com/live" }),
+      (error) => error.code === "TIMEOUT",
+    );
+  } finally {
+    clearTimeout(hold);
+  }
   assert.deepEqual(registry.list(PLUGIN_ID), []);
   assert.deepEqual(transport.calls.terminates, ["wss://voice.example.com/live"]);
 });

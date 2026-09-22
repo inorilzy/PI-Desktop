@@ -469,6 +469,7 @@ fn write_and_index(
                 &prepared.session_id,
                 seq as i64,
                 None,
+                None,
                 record,
                 prepared.texts[seq].as_deref(),
             )?;
@@ -711,6 +712,7 @@ pub fn import_batch(db: &Database, plugin_id: &str, params: &Value) -> Result<Va
                     &tx,
                     &item.session_id,
                     seq as i64,
+                    None,
                     None,
                     record,
                     item.texts[seq].as_deref(),

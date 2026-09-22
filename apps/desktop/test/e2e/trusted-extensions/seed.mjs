@@ -81,7 +81,7 @@ export default function (pi: any) {
 write("bad.ts", `throw new Error("bad extension refuses to load");\n`);
 write("queue.ts", `export default function (pi: any) {
   pi.registerCommand("queue", { description: "Queues a follow-up prompt", async handler() {
-    await pi.sendUserMessage("please add 20 and 22 (queued)");
+    await pi.continueTurn("please add 20 and 22 (queued)");
   } });
 }
 `);
@@ -135,13 +135,31 @@ export default function (pi: any) {
 }
 `);
 
+/**
+ * Slot grants each fixture's hooks need (ADR 0295 rule 2). `agent.extension`
+ * says where the code runs; a wired event is skipped with a `permission_denied`
+ * diagnostic unless the plugin also holds the slot its event maps to. `fx`
+ * exercises the gated events the driver asserts on:
+ *   runtime.tool.gate      — tool_call, tool_result
+ *   runtime.turn.watch     — turn_start, turn_end, agent_end,
+ *                            after_provider_response
+ * It also registers slot-6 handlers (`before_agent_start`, `context`,
+ * `before_provider_*`) that slot 6's withdrawal makes inert, so the driver can
+ * prove the host never consults them. `runtime.request.before` is not offered.
+ */
+const SLOT_PERMISSIONS = {
+  // Slot 6 (runtime.request.before) is withdrawn; fx no longer gets it.
+  fx: ["runtime.tool.gate", "runtime.turn.watch"],
+  queue: ["runtime.turn.continue"],
+};
+
 /** Wrap one fixture module in a plugin directory holding `agent.extension`. */
 function pluginFor(name) {
   const dir = join(pluginsDir, name);
   mkdirSync(join(dir, "src"), { recursive: true });
   writeFileSync(join(dir, "src", `${name}.ts`), readFileSync(join(extDir, `${name}.ts`)));
   writeFileSync(join(dir, "main.js"), "module.exports = {};\n");
-  const permissions = ["agent.extension"];
+  const permissions = ["agent.extension", ...(SLOT_PERMISSIONS[name] ?? [])];
   const contributes = { agentExtensions: [`src/${name}.ts`] };
   // The agent fixture also declares a provider row (ADR 0259): the declaration
   // materializes in the native provider list, owned by this plugin.

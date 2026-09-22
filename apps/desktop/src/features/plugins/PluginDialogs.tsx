@@ -1,16 +1,20 @@
+import { bridgePlatform } from "../../lib/bridge";
 import { Button, cx } from "../../components/ui";
 import { IconCheck, IconShield, IconSparkles, IconTriangleAlert } from "../../components/icons";
+import { PluginInstallDialog } from "../../components/plugins/PluginInstallDialog";
 import { PluginSettingsSheet } from "../../components/plugins/PluginSettingsSheet";
 import { useAppStore } from "../../stores/app-store";
 import {
   RISK_LABEL_KEYS,
   RISK_TIERS,
   TEMPLATE_IDS,
+  declarationLabel,
   permissionLabel,
   permissionRisk,
+  rendererDeclaration,
 } from "./model";
 import type { PluginsPageModel } from "./usePluginsPage";
-import type { PluginPermissionReview } from "@pi-desktop/shared";
+import type { PluginManifestEntries, PluginPermissionReview } from "@pi-desktop/shared";
 
 export function PluginDialogs({
   t,
@@ -23,6 +27,10 @@ export function PluginDialogs({
   setAutoUpdate,
   busyId,
   confirmInstall,
+  installJob,
+  cancelInstallDownload,
+  retryInstall,
+  closeInstallDialog,
   settingsPlugin,
   setSettingsPlugin,
   refreshPlugins,
@@ -64,6 +72,8 @@ export function PluginDialogs({
 
             <div className="plugins-modal-body">
               <p className="plugins-modal-lede">{t("plugins.devReviewBody")}</p>
+              <RendererDeclaration t={t} plugin={pendingReview} />
+              <TrustTierNotice t={t} entries={pendingReview.entries} />
               <PermissionGroups
                 t={t}
                 permissions={pendingReview.permissions}
@@ -154,10 +164,18 @@ export function PluginDialogs({
           </div>
         </div>
     ) : null}
+      {installJob ? (
+        <PluginInstallDialog
+          job={installJob}
+          onCancel={cancelInstallDownload}
+          onRetry={retryInstall}
+          onClose={closeInstallDialog}
+        />
+      ) : null}
       {settingsPlugin ? (
         <PluginSettingsSheet
           plugin={settingsPlugin}
-          platform={(window.piDesktop?.platform ?? "darwin") as "darwin" | "win32" | "linux"}
+          platform={(bridgePlatform()) as "darwin" | "win32" | "linux"}
           onClose={() => setSettingsPlugin(null)}
           onSaved={async () => {
             await refreshPlugins();
@@ -224,6 +242,7 @@ export function PluginDialogs({
             <div className="plugins-modal-actions">
               <Button
                 variant="secondary"
+                data-action="cancel"
                 disabled={creating}
                 onClick={() => setTemplatePick(null)}
               >
@@ -307,5 +326,95 @@ function PermissionGroups({
         );
       })}
     </>
+  );
+}
+
+/**
+ * The trust tier an install is asking for (spec 07-plugins/16 §2A.1).
+ *
+ * Only entries that run outside a sandbox are listed, and they are listed
+ * before the permissions because this is the part a permission name cannot
+ * carry on its own: `renderer.extension` says "code in the app window", and
+ * what that means for the user is what this line is for. A base-tier plugin
+ * shows nothing here.
+ */
+function TrustTierNotice({
+  t,
+  entries,
+}: {
+  t: PluginsPageModel["t"];
+  entries?: PluginManifestEntries;
+}) {
+  const rows: Array<{ key: string; label: string; help: string }> = [];
+  if (entries?.renderer) {
+    rows.push({ key: "renderer", label: "renderer", help: "rendererHelp" });
+  }
+  if (entries?.agent) {
+    rows.push({ key: "agent", label: "agent", help: "agentHelp" });
+  }
+  if (!rows.length) return null;
+  return (
+    <div className="plugins-trust-tier" role="note">
+      {rows.map((row) => (
+        <p className="plugins-trust-tier-row" data-tier={row.key} key={row.key}>
+          <IconShield size={14} aria-hidden />
+          <strong>{t(`plugins.trustTier.${row.label}`)}</strong>
+          <span>{t(`plugins.trustTier.${row.help}`)}</span>
+        </p>
+      ))}
+    </div>
+  );
+}
+
+/**
+ * What the manifest being reviewed declares the plugin's own UI code will read
+ * and call (issue #528).
+ *
+ * An informational list, not a decision: the values the host understands are
+ * named, anything else is shown exactly as the author wrote it, and the block
+ * itself stays away when nothing was declared. It sits above the access list so
+ * "what it declared" and "what it may do" stay two separate questions.
+ *
+ * The prop is the review that carried the declarations, never an installed
+ * plugin's row: a review may only state what the manifest it is asking about
+ * declares, and the install and update reviews do not hold that manifest yet.
+ */
+function RendererDeclaration({
+  t,
+  plugin,
+}: {
+  t: PluginsPageModel["t"];
+  plugin?: PluginPermissionReview | null;
+}) {
+  const declaration = rendererDeclaration(plugin);
+  if (!declaration) return null;
+  return (
+    <div className="plugins-declaration" role="note">
+      <p className="plugins-declaration-title">{t("plugins.declaration.title")}</p>
+      {declaration.data.length ? (
+        <div className="plugins-declaration-group" data-kind="data">
+          <p className="plugins-declaration-label">
+            {t("plugins.declaration.dataLabel")}
+          </p>
+          <ul className="plugins-declaration-list">
+            {declaration.data.map((value) => (
+              <li key={value}>{declarationLabel("data", value, t)}</li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+      {declaration.actions.length ? (
+        <div className="plugins-declaration-group" data-kind="actions">
+          <p className="plugins-declaration-label">
+            {t("plugins.declaration.actionsLabel")}
+          </p>
+          <ul className="plugins-declaration-list">
+            {declaration.actions.map((value) => (
+              <li key={value}>{declarationLabel("actions", value, t)}</li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+    </div>
   );
 }

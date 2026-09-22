@@ -132,6 +132,90 @@ export function registerSessionIpc({
     });
   };
 
+  /**
+   * Session lifecycle notices (ADR 0295 slot 11, rule 11).
+   *
+   * The desktop owns these four moments, so it announces them here instead of
+   * pretending the kernel produced them: `created` and `deleted` have no kernel
+   * hook at all, and `switch` / `fork` are the kernel's own moments announced
+   * from the host side because the host is what knows them. Every notice is
+   * fire-and-forget — a plugin that stalls must never delay a switch, a delete
+   * or a fork — and a delivery failure is logged rather than thrown, because
+   * the session operation itself has already succeeded.
+   */
+  const notifyLifecycle = (
+    agentSidecar: AgentSidecar | null,
+    params: Record<string, unknown>,
+  ): void => {
+    if (!agentSidecar) return;
+    const failed = (error: unknown) => {
+      logger.app("plugin", "warn", "session lifecycle notice failed", {
+        sessionId: String(params.sessionId ?? ""),
+        data: String(error),
+      });
+    };
+    try {
+      // Immediate dispatch: the session operation never waits for a handler.
+      const pending = agentSidecar.call("agent.notifyLifecycle", params);
+      if (pending && typeof (pending as Promise<unknown>).catch === "function") {
+        void (pending as Promise<unknown>).catch(failed);
+      }
+    } catch (error) {
+      // A notice that cannot be delivered must never fail the switch, delete or
+      // fork it is about: those already succeeded, and the notice is
+      // informed-only (ADR 0295 rule 11).
+      failed(error);
+    }
+  };
+
+  /**
+   * The session's outgoing-message rewrites (ADR 0295 rule 5). The records live
+   * in host-core; this is only the transport that lets the transcript mark a
+   * rewritten row. A failed read warns instead of failing the session read: the
+   * audit trail is still in the store, so the next read marks the row.
+   */
+  const readOutgoingRewrites = async (
+    hostProcess: HostProcess,
+    sessionId: string,
+  ): Promise<unknown[]> => {
+    try {
+      const result = await hostProcess.call<{ rewrites?: unknown[] }>(
+        "plugin.rewrites.list",
+        { sessionId, kind: "outgoing_message", limit: 200 },
+      );
+      return Array.isArray(result?.rewrites) ? result.rewrites : [];
+    } catch (error) {
+      logger.app("plugin", "warn", "rewrite audit read failed", {
+        sessionId,
+        data: String(error),
+      });
+      return [];
+    }
+  };
+
+  /**
+   * when it is a change, so the previous session is what receives
+   * `session_before_switch` — the plugin of a session that is being left is the
+   * one with state to flush.
+   */
+  let lastActiveSessionId: string | undefined;
+  const announceActivation = (
+    agentSidecar: AgentSidecar | null,
+    sessionId: string,
+    reason: "new" | "resume",
+  ): void => {
+    const previous = lastActiveSessionId;
+    if (previous === sessionId) return;
+    lastActiveSessionId = sessionId;
+    if (!previous) return;
+    notifyLifecycle(agentSidecar, {
+      change: "switch",
+      sessionId: previous,
+      reason,
+      targetSessionId: sessionId,
+    });
+  };
+
   handle(IPC.invoke.sessionSearch, async (input) => {
     if (!host) throw new Error("host unavailable");
     return searchSessionsAcrossSources(host, sidecar, input);
@@ -170,6 +254,13 @@ export function registerSessionIpc({
     logger.app("session", "info", "session created", { sessionId: res.session?.id });
     if (!res.session) return res;
     const { providers, defaults } = await capabilityPromise;
+    // A new session appears: the sessions that are loaded right now are told
+    // (the created one has no runtime yet), and the one being left hears the
+    // switch. Neither waits on a plugin.
+    if (res.session.id) {
+      notifyLifecycle(sidecar, { change: "created", sessionId: res.session.id });
+      announceActivation(sidecar, res.session.id, "new");
+    }
     return { ...res, session: enrichSession(res.session, providers, defaults) };
   });
   handle(
@@ -218,6 +309,19 @@ export function registerSessionIpc({
       // Resolve enrichment before the mutation so a provider-list failure
       // cannot report a failed IPC after the child has already been committed.
       const { providers, defaults } = await sessionCapabilityContext();
+      // The fork's source session is told before the child exists, which is
+      // what `session_before_fork` means here. Informed-only and
+      // fire-and-forget: a plugin cannot cancel a fork (ADR 0295 rule 11).
+      // Native Pi sessions run outside the extension host, so only a
+      // host-core session has a plugin to tell.
+      notifyLifecycle(sidecar, {
+        change: "fork",
+        sessionId,
+        ...(String(input.throughMessageId ?? "").trim()
+          ? { entryId: String(input.throughMessageId).trim() }
+          : {}),
+        position: "before",
+      });
       let result: { session?: RuntimeSession | null };
       try {
         result = await host.call("session.fork", {
@@ -284,9 +388,20 @@ export function registerSessionIpc({
         }),
         sessionCapabilityContext(),
       ]);
-      return result.session
-        ? { ...result, session: enrichSession(result.session, providers, defaults) }
-        : result;
+      if (!result.session) return result;
+      // A full read also carries the session's outgoing-message rewrites, which
+      // is what the transcript row badge reads (ADR 0295 rule 5). Paged reads
+      // stay as they are: they answer a different question, and the badge does
+      // not change between pages.
+      const paged =
+        Number.isInteger(request.messageBefore) ||
+        (typeof request.messageAround === "string" && request.messageAround.trim() !== "");
+      const rewrites = paged ? undefined : await readOutgoingRewrites(host, id);
+      return {
+        ...result,
+        session: enrichSession(result.session, providers, defaults),
+        ...(rewrites ? { rewrites } : {}),
+      };
     },
   );
   handle(IPC.invoke.sessionCollaboration, async (input?: { sessionId?: unknown }) => {
@@ -320,6 +435,9 @@ export function registerSessionIpc({
         errorCode: ErrorCodes.NOT_FOUND,
       });
     }
+    // Opening a session is the desktop's switch signal: the session being left
+    // hears about it, and the notice never waits on a handler.
+    announceActivation(sidecar, sessionId, "resume");
     return { ...result, session: enrichSession(result.session, providers, defaults) };
   });
   handle(IPC.invoke.sessionDelete, async (id: string) => {
@@ -330,6 +448,9 @@ export function registerSessionIpc({
     }
     if (!host) throw new Error("host unavailable");
     const res = await host.call("session.delete", { id });
+    // A delete is informed-only (ADR 0295 rule 11): the session's plugin is
+    // told before its runtime goes away, and the delete never waits for it.
+    notifyLifecycle(sidecar, { change: "deleted", sessionId: id });
     await persistenceOutbox.dropSession(id);
     // Drop the session's pi-agent so a later session with the same id (or a
     // stale runtime) can't answer with this session's context.

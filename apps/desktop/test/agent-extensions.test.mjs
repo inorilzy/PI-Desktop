@@ -12,7 +12,19 @@ const {
   generateImportedExtensionPlugin,
   installExtensionDependencies,
 } = await import("../electron/main/agent-extensions.ts");
+const {
+  IMPORTED_PLUGIN_WRAPPER_SOURCE,
+  repairImportedExtensionWrapper,
+} = await import("../electron/main/imported-plugin-wrapper.ts");
 const { withRegistryOnlyProxy } = await import("../electron/main/npm-registry-proxy.ts");
+
+/**
+ * The dependency runner goes through a shell on Windows, and a shell cannot
+ * carry the space in a default `C:\Program Files\nodejs\node.exe` install —
+ * `cmd` reads the path's first token as the command. The bare name resolves on
+ * PATH on every platform, exactly as the real npm shim is invoked.
+ */
+const NODE_COMMAND = "node";
 
 function bridge(overrides = {}) {
   const events = { changed: 0, prompts: [], toasts: [], statuses: [] };
@@ -107,15 +119,17 @@ test("optional dependencies and overrides cannot escape the registry before npm 
     assert.match(String(result.error), /non-registry spec/);
     assert.equal(npmRan, false);
   }
-  let deepOverrides = {};
-  let cursor = deepOverrides;
-  for (let index = 0; index < 2000; index += 1) {
-    cursor[`package-${index}`] = {};
-    cursor = cursor[`package-${index}`];
-  }
-  cursor.evil = "git+ssh://git@evil.example/evil.git";
+  // Built as text: a 2000-level object is fine for JSON.parse but overflows
+  // the stack in this process's own JSON.stringify before npm ever sees it.
+  const DEEP_OVERRIDE_DEPTH = 2000;
+  const deepPackageJson =
+    '{"dependencies":{"ok":"^1"},"overrides":' +
+    '{"package":'.repeat(DEEP_OVERRIDE_DEPTH) +
+    '{"evil":"git+ssh://git@evil.example/evil.git"}' +
+    "}".repeat(DEEP_OVERRIDE_DEPTH) +
+    "}";
   const deepRoot = mkdtempSync(join(tmpdir(), "ext-deps-deep-overrides-"));
-  writeFileSync(join(deepRoot, "package.json"), JSON.stringify({ dependencies: { ok: "^1" }, overrides: deepOverrides }));
+  writeFileSync(join(deepRoot, "package.json"), deepPackageJson);
   const deepResult = await installExtensionDependencies(deepRoot, { runner: async () => ({ code: 0, stderr: "" }) });
   assert.equal(deepResult.state, "failed");
   assert.match(String(deepResult.error), /non-registry spec/);
@@ -254,6 +268,76 @@ test("ui requests: notify and status pass through; prompts round-trip, queue per
   await assert.rejects(headless.requestUi(envelope({ kind: "input", title: "x" })), (err) => err.errorCode === "UNSUPPORTED");
 });
 
+test("slot 1's audit write is forwarded through the bridge, and a malformed record is refused", async () => {
+  const seen = [];
+  const { b } = bridge({
+    recordRewrite: async (record) => {
+      seen.push(record);
+      return { id: 7 };
+    },
+  });
+  // The runtime hands the record over as `extensions.rewrites.record`; the
+  // bridge is the boundary that decides it is a rewrite and not a UI envelope.
+  const answer = await b.requestUi({
+    sessionId: "s1",
+    turnId: "t1",
+    pluginId: "acme.sender",
+    pluginLabel: "Acme Sender",
+    kind: "outgoing_message",
+    targetMessageId: "m-1",
+    before: "hello",
+    after: "hello there",
+  });
+  assert.deepEqual(answer, { kind: "rewriteRecorded", id: 7 });
+  assert.equal(seen.length, 1);
+  assert.equal(seen[0].pluginLabel, "Acme Sender");
+  assert.equal(seen[0].targetMessageId, "m-1");
+
+  // A plugin label the runtime omitted falls back to the id the store keeps.
+  await b.requestUi({
+    sessionId: "s1",
+    pluginId: "acme.sender",
+    kind: "outgoing_message",
+    targetMessageId: "m-2",
+    before: "a",
+    after: "b",
+  });
+  assert.equal(seen[1].pluginLabel, "acme.sender");
+  assert.equal(seen[1].turnId, undefined);
+
+  // Malformed records fail loudly and are never forwarded: a silently dropped
+  // audit write is exactly what ADR 0295 rule 5 forbids.
+  for (const record of [
+    { sessionId: "s1", pluginId: "acme.sender", kind: "system_prompt", targetMessageId: "m-1", before: "a", after: "b" },
+    { sessionId: "s1", pluginId: "acme.sender", kind: "outgoing_message", targetMessageId: "m-1", before: "a", after: 7 },
+    { sessionId: "s1", pluginId: "", kind: "outgoing_message", targetMessageId: "m-1", before: "a", after: "b" },
+    { sessionId: "s1", pluginId: "acme.sender", kind: "outgoing_message", before: "a", after: "b" },
+    { sessionId: "s1", turnId: 12, pluginId: "acme.sender", kind: "outgoing_message", targetMessageId: "m-1", before: "a", after: "b" },
+  ]) {
+    await assert.rejects(
+      b.requestUi(record),
+      (error) => error.errorCode === "INVALID_ARGUMENT",
+      JSON.stringify(record),
+    );
+  }
+  assert.equal(seen.length, 2, "a refused record never reaches the store");
+});
+
+test("a bridge with no audit store refuses the record instead of accepting it", async () => {
+  const { b } = bridge();
+  await assert.rejects(
+    b.requestUi({
+      sessionId: "s1",
+      pluginId: "acme.sender",
+      kind: "outgoing_message",
+      targetMessageId: "m-1",
+      before: "a",
+      after: "b",
+    }),
+    (error) => error.errorCode === "UNSUPPORTED",
+  );
+});
+
 test("importing a pi extension directory or file generates a plugin holding agent.extension", () => {
   const root = mkdtempSync(join(tmpdir(), "pi-ax-import-"));
   const importRoot = join(root, "imported");
@@ -270,7 +354,7 @@ test("importing a pi extension directory or file generates a plugin holding agen
   assert.deepEqual(manifest.permissions, ["agent.extension"]);
   assert.deepEqual(manifest.contributes, { agentExtensions: ["src/index.ts"] });
   assert.ok(existsSync(join(dir.path, "src", "lib", "util.ts")), "the whole directory is copied");
-  assert.match(readFileSync(join(dir.path, "main.js"), "utf8"), /module\.exports = \{\}/);
+  assert.match(readFileSync(join(dir.path, "main.cjs"), "utf8"), /module\.exports = \{\}/);
 
   const file = join(root, "solo.ts");
   writeFileSync(file, "export default function () {}\n");
@@ -285,6 +369,49 @@ test("importing a pi extension directory or file generates a plugin holding agen
 
   writeFileSync(join(root, "notes.md"), "# no");
   assert.throws(() => generateImportedExtensionPlugin(join(root, "notes.md"), importRoot), /no extension entry/);
+});
+
+test("repairImportedExtensionWrapper migrates the generated main.js no-op in place", () => {
+  const root = mkdtempSync(join(tmpdir(), "pi-ax-repair-"));
+  const dir = join(root, "imported-plugin");
+  mkdirSync(dir);
+  writeFileSync(join(dir, "manifest.json"), JSON.stringify({
+    schemaVersion: 1,
+    id: "imported.git-helper",
+    name: "git-helper",
+    version: "0.0.0",
+    main: "main.js",
+  }, null, 2) + "\n");
+  writeFileSync(join(dir, "main.js"), IMPORTED_PLUGIN_WRAPPER_SOURCE);
+  writeFileSync(join(dir, "package.json"), JSON.stringify({ name: "x", type: "module" }));
+  const originalPkg = readFileSync(join(dir, "package.json"), "utf8");
+
+  assert.equal(repairImportedExtensionWrapper(dir), true);
+  assert.equal(JSON.parse(readFileSync(join(dir, "manifest.json"), "utf8")).main, "main.cjs");
+  assert.equal(readFileSync(join(dir, "main.cjs"), "utf8"), IMPORTED_PLUGIN_WRAPPER_SOURCE);
+  assert.equal(existsSync(join(dir, "main.js")), false);
+  assert.equal(readFileSync(join(dir, "package.json"), "utf8"), originalPkg);
+  assert.equal(repairImportedExtensionWrapper(dir), false);
+
+  writeFileSync(join(dir, "main.js"), "// Generated by PI-Desktop: this plugin only contributes agent extensions.\nmodule.exports = {};\n");
+  const legacyComment = JSON.parse(readFileSync(join(dir, "manifest.json"), "utf8"));
+  legacyComment.main = "main.js";
+  writeFileSync(join(dir, "manifest.json"), JSON.stringify(legacyComment, null, 2) + "\n");
+  assert.equal(repairImportedExtensionWrapper(dir), true);
+  assert.equal(JSON.parse(readFileSync(join(dir, "manifest.json"), "utf8")).main, "main.cjs");
+
+  writeFileSync(join(dir, "main.js"), "module.exports = { custom: true };\n");
+  const custom = JSON.parse(readFileSync(join(dir, "manifest.json"), "utf8"));
+  custom.main = "main.js";
+  writeFileSync(join(dir, "manifest.json"), JSON.stringify(custom, null, 2) + "\n");
+  assert.equal(repairImportedExtensionWrapper(dir), false);
+  assert.equal(readFileSync(join(dir, "main.js"), "utf8"), "module.exports = { custom: true };\n");
+
+  custom.id = "demo.not-imported";
+  writeFileSync(join(dir, "manifest.json"), JSON.stringify(custom, null, 2) + "\n");
+  writeFileSync(join(dir, "main.js"), IMPORTED_PLUGIN_WRAPPER_SOURCE);
+  assert.equal(repairImportedExtensionWrapper(dir), false);
+  rmSync(root, { recursive: true, force: true });
 });
 
 test("importing a directory keeps its package.json at the plugin root and never copies node_modules", () => {
@@ -346,7 +473,7 @@ test("default runner caps captured stderr and escalates the timeout kill", async
   const { defaultDependencyRunner } = await import("../electron/main/agent-extensions.ts");
 
   const flooded = await defaultDependencyRunner(
-    process.execPath,
+    NODE_COMMAND,
     ["-e", "process.stderr.write('x'.repeat(40000)); process.exit(0)"],
     process.cwd(),
     30_000,
@@ -356,19 +483,26 @@ test("default runner caps captured stderr and escalates the timeout kill", async
   // 2× the keep size, regardless of how the pipe chunks the writes.
   assert.ok(flooded.stderr.length <= 16384, "stderr is capped to a bounded tail");
 
+  // The stall script is a file, not an inline `-e` payload: the runner goes
+  // through a shell on Windows, which eats the spaces and the `>` in
+  // `setTimeout(() => {}, 60000)` and lets the child exit as a syntax error
+  // before the kill timer can fire.
+  const stallDir = mkdtempSync(join(tmpdir(), "ext-deps-stall-"));
+  writeFileSync(join(stallDir, "hang.mjs"), "setTimeout(() => {}, 60000);\n");
   const stalled = await defaultDependencyRunner(
-    process.execPath,
-    ["-e", "setTimeout(() => {}, 60000)"],
-    process.cwd(),
+    NODE_COMMAND,
+    ["hang.mjs"],
+    stallDir,
     300,
   );
   assert.notEqual(stalled.code, 0, "a stalled install is killed");
   assert.match(stalled.stderr, /dependency install exceeded 300ms and was terminated/);
+  rmSync(stallDir, { recursive: true, force: true });
 });
 test("the default dependency runner isolates npm config sources and proxies", async () => {
   const { defaultDependencyRunner } = await import("../electron/main/agent-extensions.ts");
   const result = await defaultDependencyRunner(
-    process.execPath,
+    NODE_COMMAND,
     ["-e", "process.stderr.write(JSON.stringify(process.env))"],
     process.cwd(),
     30_000,

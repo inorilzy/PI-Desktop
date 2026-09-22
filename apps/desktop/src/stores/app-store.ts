@@ -101,11 +101,7 @@ import {
 import { settleStoppedAssistantMetrics } from "../lib/context-usage";
 import { formatToolValue } from "../lib/tool-display";
 import { withReviewChangeState } from "../lib/workspace-review";
-import {
-  fileWorkPanelTab,
-  shouldOpenReviewArtifact,
-  toolWorkPanelTab,
-} from "../lib/work-panel-tabs";
+import { preferredFileWorkPanelTab } from "../lib/work-panel-tabs";
 import {
   clearSessionPermissions,
   enqueuePermission,
@@ -180,6 +176,7 @@ import { createProjectSlice } from "./slices/project-slice";
 import { createCatalogSlice } from "./slices/catalog-slice";
 import { createEventsSlice } from "./slices/events-slice";
 import { createInteractionSlice } from "./slices/interaction-slice";
+import { createPluginRewritesSlice } from "./slices/plugin-rewrites-slice";
 import {
   createCatalogRuntime,
   type CatalogRuntime,
@@ -221,8 +218,6 @@ function promptAttachmentsFromDraft(
       (/\.(avif|bmp|gif|heic|jpe?g|png|tiff?|webp)$/i.test(reference.path)
         ? "image"
         : "file");
-    // Session chips expand at send time; they are never structured attachments.
-    if (kind === "session") return [];
     // Inline chips use tokens for both files and images. Ordinary file chips
     // already serialize to @path text (the model can Read them); only image
     // chips need the structured transport for vision/fallback handling.
@@ -318,12 +313,13 @@ export type AppState = import("./app-state").AppState;
 function openPlanArtifact(
   proposal: PlanProposal,
   openWorkPanelTabForSession: AppState["openWorkPanelTabForSession"],
+  pluginViews: AppState["pluginViews"],
 ) {
   const relativePath = proposal.artifact?.relativePath;
   if (!relativePath) return;
   openWorkPanelTabForSession(
     proposal.sessionId,
-    fileWorkPanelTab(relativePath),
+    preferredFileWorkPanelTab(relativePath, pluginViews),
   );
 }
 
@@ -525,6 +521,8 @@ export const useAppStore = create<AppState>((set, get) => {
     withCompactionMark,
   }),
 
+  ...createPluginRewritesSlice({ get, set }),
+
   ...createInteractionSlice({
     get,
     set,
@@ -677,8 +675,18 @@ export const useAppStore = create<AppState>((set, get) => {
         unreadNotificationCount: notifications.unreadCount,
         sessionOutcomes: latestSessionOutcomes(notifications.notifications),
       });
+
+      // The artifact's surface depends on which plugin views are launchable, and
+      // the launcher list is only read after `ready`. Resolve it before the
+      // restore, so the approval artifact does not fall back to the host file tab
+      // and then take a second tab from `selectSession`.
+      await get().refreshPluginViews();
       for (const proposal of activePendingPlans) {
-        openPlanArtifact(proposal, get().openWorkPanelTabForSession);
+        openPlanArtifact(
+          proposal,
+          get().openWorkPanelTabForSession,
+          get().pluginViews,
+        );
       }
       saveSidebarPreferences(preferencesFromState(get()));
       if (currentWorkspace?.path) {

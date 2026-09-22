@@ -123,8 +123,45 @@ test("marketplace source settings omit redundant explanatory copy", () => {
 
 test("installed plugin rows keep secondary detail behind a disclosure", () => {
   assert.match(pageSrc, /function PluginRowDetails/);
-  assert.match(pageSrc, /<details className="plugins-row-details">/);
+  assert.match(pageSrc, /<details className="plugins-row-details"/);
   assert.match(pageSrc, /<ScopeControl[\s\S]*?compact/);
+});
+
+
+test("the renderer row says whether the module is loaded, beside its diagnostics", () => {
+  // Loading a renderer module is lazy, so a plugin whose module was never
+  // triggered carries no diagnostics at all: without this line it looks exactly
+  // like one that works. The answer is renderer state the row already holds —
+  // the loader's live-module map — so the row asks no one over IPC.
+  assert.match(pageSrc, /import \{ isRendererPluginLoaded \}/);
+  assert.match(
+    pageSrc,
+    /const rendererLoaded = hasRenderer && isRendererPluginLoaded\(plugin\.id\)/,
+  );
+  assert.match(pageSrc, /data-renderer-loaded=\{rendererLoaded \? "true" : "false"\}/);
+  assert.match(
+    pageSrc,
+    /rendererLoaded\s*\n?\s*\? "plugins\.rendererModuleLoaded"\s*\n?\s*: "plugins\.rendererModuleNotLoaded"/,
+  );
+
+  // The block reads local renderer state and nothing else: no bridge call, no
+  // IPC channel of its own.
+  const start = pageSrc.indexOf("const rendererLoaded");
+  const end = pageSrc.indexOf("plugins.rendererDiagnosticsEmpty");
+  assert.ok(start >= 0 && end > start, "the renderer load-state block is missing");
+  assert.doesNotMatch(pageSrc.slice(start, end), /api\.|\binvoke\(/);
+
+  // Both states are stated in the plugin row's own vocabulary, in every locale
+  // this suite can read (the i18n package gate covers the other five).
+  for (const [id, catalog] of Object.entries(catalogs)) {
+    for (const key of [
+      "plugins.rendererModuleTitle",
+      "plugins.rendererModuleLoaded",
+      "plugins.rendererModuleNotLoaded",
+    ]) {
+      assert.equal(typeof lookup(catalog, key), "string", `${id} ${key}`);
+    }
+  }
 });
 
 test("extension row actions stay visible and labelled", () => {
@@ -172,7 +209,7 @@ test("skill import is one native file and physically targets the selected level"
   assert.doesNotMatch(handler, /\bmultiple\b/);
   assert.match(handler, /host\.call\("skills\.import"/);
   assert.match(settingsComponents.get("AgentSkillsPage.tsx"), /api\.importUserSkill\(/);
-  assert.match(hostCapabilitySources, /fs::copy\(&source_path, &target\)/);
+  assert.match(hostCapabilitySources, /fs::copy\(source, target\)/);
 });
 
 test("MCP management reuses the modal and validates its locked id and transport branches", () => {

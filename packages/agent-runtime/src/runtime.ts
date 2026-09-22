@@ -28,6 +28,7 @@ import {
   type Entry,
   type MessageEntry,
   type PrepareNextTurnContext,
+  type ShouldStopAfterTurnContext,
 } from "@earendil-works/pi-agent-core";
 import {
   isContextOverflow,
@@ -45,9 +46,18 @@ import {
 import {
   DEFAULT_COMMAND_TIMEOUT_MS,
   OAUTH_AUTH_KIND,
+  TRUSTED_EXTENSION_SESSION_LIFECYCLE_EVENT,
   type TrustedExtensionCommand,
+  type TrustedExtensionCompactionSegment,
   type TrustedExtensionDiagnostic,
+  type TrustedExtensionInputPayload,
+  type TrustedExtensionRewriteRecord,
+  type TrustedExtensionSessionBeforeForkPayload,
+  type TrustedExtensionSessionBeforeSwitchPayload,
+  type TrustedExtensionSessionLifecycleNotice,
+  type TrustedExtensionSessionLifecyclePayload,
   type TrustedExtensionSpec,
+  type TrustedExtensionTurnFacts,
   type TrustedExtensionUiRequest,
   type TrustedExtensionUiResponse,
 } from "@pi-desktop/shared";
@@ -55,7 +65,15 @@ import {
   TrustedExtensionRunner,
   type RegisteredTrustedExtensionAgent,
   type TrustedExtensionBridge,
+  type TrustedExtensionEventName,
 } from "./extensions/runner.js";
+import {
+  TRUSTED_EXTENSION_TURN_CLOSING_EVENT,
+  TRUSTED_EXTENSION_TURN_CLOSING_LIMIT,
+  foldTurnClosingResults,
+  turnClosingRequest,
+  type TrustedExtensionTurnClosingResult,
+} from "./extensions/turn-closing.js";
 import type {
   AgentActivity,
   AgentActivityAgent,
@@ -108,7 +126,7 @@ import {
 } from "@pi-desktop/shared";
 import { createStreamCoalescer, type StreamCoalescer } from "./stream-coalescer.js";
 import type { RuntimeHost } from "./host-client.js";
-import { classifyAgentError } from "./agent-errors.js";
+import { classifyAgentError, PLUGIN_HANDLED_PROMPT_CODE } from "./agent-errors.js";
 import {
   assistantContent,
   isRecord,
@@ -131,6 +149,16 @@ import {
   type RuntimeProviderConfig,
 } from "./provider-binding.js";
 import { PathMutex } from "./path-lock.js";
+import { DelegationChainRegistry } from "./delegation-chain.js";
+import {
+  extractReadFiles,
+  isReadOnlyToolName,
+  originalTaskFromTranscript,
+  rebuildChainsFromTranscript,
+  selectChainRows,
+  seedDelegateMessages,
+  type DelegationChain,
+} from "./delegation-history.js";
 import {
   composeSubagentSystemPrompt,
   SubagentRun,
@@ -165,6 +193,11 @@ import {
   withOpenCodeSessionHeaders,
 } from "./opencode-session-headers.js";
 import { withCompactionRequestHeaders } from "./compaction-request.js";
+import {
+  COMPACTION_SUMMARY_RETRY_POLICY,
+  estimateSummaryPromptTokens,
+  reduceSummaryInput,
+} from "./compaction-summary-input.js";
 import {
   mergeProviderHeaders,
   providerHeadersEqual,
@@ -308,8 +341,24 @@ function isMissingToolResultPlaceholder(
     content[0].text === MISSING_TOOL_RESULT_PLACEHOLDER
   );
 }
-export const ASK_TOOL_NAME = "asktool";
 
+/** Narrow view of the `tool_end` agent event; the envelope carries the rest. */
+type ToolEndEvent = {
+  type: "tool_end";
+  toolCallId: string;
+  result: unknown;
+  isError?: boolean;
+};
+
+/** Narrow view of the `tool_start` agent event; the envelope carries the rest. */
+type ToolStartEvent = {
+  type: "tool_start";
+  toolCallId: string;
+  toolName: string;
+  args?: unknown;
+};
+
+export const ASK_TOOL_NAME = "asktool";
 /**
  * Delegation lifecycle (ADR 0089): `Task` starts a subagent in the background
  * and returns immediately; `TaskWait` converges on running delegations;
@@ -372,7 +421,18 @@ export type DelegationRecord = {
    * `TaskWait` result or the resume-after-idle prompt. Auto-delivery is a
    * single shot per record. */
   reportDelivered: boolean;
+  /** Stable chain identity; never appears in a tool parameter (ADR 0279). */
+  delegateSessionId: string;
+  /** Prior `delegationId` this run continues, when `Task.resume` was set. */
+  resumedFrom?: string;
+  /** Model the run kept before the resume could not re-resolve it (ADR 0279
+   * §4): recorded so the parent can see that the delegate's binding moved. */
+  modelChangedFrom?: string;
+  /** `toolCallId`s of this run's calls that have not ended yet: dropped when the
+   * run settles, so an aborted call cannot pin its captured arguments. */
+  pendingToolCallIds?: Set<string>;
 };
+
 
 function delegationSummary(record: DelegationRecord): Record<string, unknown> {
   return {
@@ -388,6 +448,10 @@ function delegationSummary(record: DelegationRecord): Record<string, unknown> {
     ...(record.completedAt ? { completedAt: record.completedAt } : {}),
     ...(record.result?.modelFailures ? { modelFailures: record.result.modelFailures } : {}),
     ...(record.result?.error ? { error: record.result.error } : {}),
+    ...(record.resumedFrom ? { resumedFrom: record.resumedFrom } : {}),
+    ...(record.modelChangedFrom
+      ? { modelChangedFrom: record.modelChangedFrom }
+      : {}),
   };
 }
 
@@ -706,6 +770,84 @@ function turnAbortedError(message: string): Error {
   return error;
 }
 
+/**
+ * Outcome of the slot-1 consultation (ADR 0295 slot 1, `input`), before the
+ * audit records are built.
+ */
+type BeforeSendOutcome = {
+  /** The first handler that kept the message away from the model, if any. */
+  handled?: { pluginId: string; pluginLabel: string; reason?: string };
+  /** Text the model receives, when a handler changed it. */
+  text?: string;
+  /** One draft per transforming plugin, in load order. */
+  rewrites: Array<{ pluginId: string; pluginLabel: string; before: string; after: string }>;
+};
+
+/**
+ * Fold one `input` handler's answer (ADR 0295 slot 1).
+ *
+ * A transform writes the current text back into the shared payload, which is
+ * how transforms chain: the next handler reads the text this one produced. An
+ * answer that is not one of the three kernel actions, and a transform that did
+ * not change anything, count as having no opinion.
+ */
+function foldBeforeSend(
+  acc: BeforeSendOutcome | undefined,
+  next: unknown,
+  extensionId: string,
+  extensionLabel: string,
+  payload: { text: string },
+): BeforeSendOutcome {
+  const current = acc ?? { rewrites: [] };
+  // The first handler that takes the message away from the model wins; the
+  // ones after it are not asked to rewrite a message nobody will see.
+  if (current.handled) return current;
+  if (!next || typeof next !== "object") return current;
+  const result = next as { action?: unknown; text?: unknown; reason?: unknown };
+  if (result.action === "handled") {
+    const reason = typeof result.reason === "string" ? result.reason.trim() : "";
+    return {
+      ...current,
+      handled: {
+        pluginId: extensionId,
+        pluginLabel: extensionLabel,
+        ...(reason ? { reason } : {}),
+      },
+    };
+  }
+  if (result.action !== "transform" || typeof result.text !== "string") return current;
+  if (result.text === payload.text) return current;
+  const before = payload.text;
+  payload.text = result.text;
+  return {
+    ...current,
+    text: result.text,
+    rewrites: [
+      ...current.rewrites,
+      { pluginId: extensionId, pluginLabel: extensionLabel, before, after: result.text },
+    ],
+  };
+}
+
+/**
+ * The error a blocked prompt ends with (ADR 0295 slot 1). The message is what
+ * the user reads on the failed turn, so a plugin's own `reason` is preferred
+ * over the generic sentence; the code is the one `classifyAgentError` keeps.
+ */
+function pluginHandledPromptError(handled: {
+  pluginLabel: string;
+  reason?: string;
+}): Error & { errorCode: string } {
+  const reason = handled.reason?.trim();
+  return Object.assign(
+    new Error(
+      reason ||
+        `The plugin "${handled.pluginLabel}" handled this message instead of sending it to the model.`,
+    ),
+    { errorCode: PLUGIN_HANDLED_PROMPT_CODE },
+  );
+}
+
 const CONTEXT_COMPACTION_TOOL_NAME = "new_context";
 const CONTEXT_COMPACTION_TOOL_DESCRIPTION =
   "Start a new context window. Does not clear, reset, or otherwise affect environment state.";
@@ -856,13 +998,22 @@ export type RuntimeMatchConfig = {
   subagentModelKeys?: string[];
 };
 
+/**
+ * Trusted extensions and the grants they were loaded with, as one digest: the
+ * set is part of the runtime match, and a revoked slot permission has to retire
+ * the runtime with it so the next prompt reloads both (spec 16 §4.3, ADR 0295
+ * rule 2).
+ */
+function trustedExtensionDigest(specs: TrustedExtensionSpec[]): string {
+  return specs
+    .map((spec) => `${spec.id}\u0000${[...(spec.permissions ?? [])].sort().join(",")}`)
+    .sort()
+    .join("\n");
+}
+
 /** Tool calls ride in the assistant content array as `type: "toolCall"`. A
  * message that requested any is never a silent turn: the loop keeps going and
  * the user sees the tool activity. */
-function trustedExtensionIds(specs: TrustedExtensionSpec[]): string {
-  return specs.map((spec) => spec.id).sort().join("\n");
-}
-
 function messageRequestsTools(message: unknown): boolean {
   const content = isRecord(message) ? message.content : undefined;
   return (
@@ -963,6 +1114,12 @@ type CheckpointBuildFailure = {
    * durable boundary to anchor any checkpoint to.
    */
   recoverable: boolean;
+  /**
+   * True when a plugin cancelled the compaction (`session_before_compact`,
+   * ADR 0295 slot 11). A cancel is not a failure: nothing was attempted, so
+   * the caller reports no `compaction_end` failure and runs no fallback.
+   */
+  cancelled?: boolean;
 };
 
 type CheckpointBuild = CheckpointBuildSuccess | CheckpointBuildFailure;
@@ -1012,13 +1169,24 @@ const MAX_ACCEPTED_COMMAND_TIMEOUT = 100_000_000;
  * name. Every strong model has `file_path`/`query` burned in from pretraining
  * and sends them regardless of what the schema says, so the schema accepts both
  * spellings and {@link normalizeToolParams} folds the alias away before the
- * host sees the call (D273).
+ * host sees the call (D273). Weaker models — issue #454 pinned longcat 2.0 —
+ * reach for `filepath` / `filename` / `filePath` / `file` instead; folding
+ * those the same way rescues the turn before the model gives up on the tool
+ * and silently falls back to Bash.
  */
+const PATH_ARG_ALIASES = {
+  file_path: "path",
+  filepath: "path",
+  filePath: "path",
+  filename: "path",
+  fileName: "path",
+  file: "path",
+} as const;
 const TOOL_PARAM_ALIASES: Record<string, Record<string, string>> = {
-  Read: { file_path: "path" },
-  Write: { file_path: "path" },
-  Edit: { file_path: "path" },
-  BrowserPreview: { file_path: "path" },
+  Read: { ...PATH_ARG_ALIASES },
+  Write: { ...PATH_ARG_ALIASES },
+  Edit: { ...PATH_ARG_ALIASES },
+  BrowserPreview: { ...PATH_ARG_ALIASES },
   Glob: { query: "pattern" },
   Grep: { query: "pattern" },
 };
@@ -1104,9 +1272,22 @@ function requireAliasedParams(toolName: string, params: unknown): void {
   if (!aliases || !isRecord(params)) return;
   for (const canonical of new Set(Object.values(aliases))) {
     if (params[canonical] !== undefined) continue;
+    // A weaker model that keeps hitting this error gives up on the tool and
+    // silently switches to Bash (issue #454). Naming the accepted spellings and
+    // showing a minimal example lets the next call self-correct instead of the
+    // whole turn falling back to shell.
+    const acceptedAliases = Object.keys(aliases).filter(
+      (alias) => aliases[alias] === canonical,
+    );
+    const aliasHint =
+      acceptedAliases.length > 0
+        ? ` (the alias${acceptedAliases.length > 1 ? "es" : ""} ${acceptedAliases
+            .map((name) => `\`${name}\``)
+            .join(", ")} ${acceptedAliases.length > 1 ? "are" : "is"} also accepted)`
+        : "";
     throw Object.assign(
       new Error(
-        `Invalid arguments for ${toolName}: \`${canonical}\` is required`,
+        `Invalid arguments for ${toolName}: \`${canonical}\` is required${aliasHint}. Example: {"${canonical}": "..."}.`,
       ),
       { errorCode: "INVALID_ARGUMENT" },
     );
@@ -1382,6 +1563,63 @@ function estimateToolTokenUsage(
     estimated: true,
   };
 }
+/**
+ * The host-side spend of one plugin tool call, normalized to the host's own
+ * usage vocabulary (`packages/plugin-sdk`). Anything non-numeric or negative
+ * is dropped rather than trusted, and a record that reports nothing is
+ * `undefined`, so a malformed result cannot invent spend.
+ */
+function messageUsageFromPlugin(value: Record<string, unknown>): MessageUsage | undefined {
+  const count = (key: string): number | undefined => {
+    const raw = value[key];
+    return typeof raw === "number" && Number.isFinite(raw) && raw > 0
+      ? Math.round(raw)
+      : undefined;
+  };
+  const inputTokens = count("inputTokens") ?? 0;
+  const outputTokens = count("outputTokens") ?? 0;
+  const cacheReadTokens = count("cacheReadTokens");
+  const cacheWriteTokens = count("cacheWriteTokens");
+  const reasoningTokens = count("reasoningTokens");
+  const totalTokens =
+    count("totalTokens") ??
+    inputTokens + outputTokens + (cacheReadTokens ?? 0) + (cacheWriteTokens ?? 0);
+  if (totalTokens <= 0 && inputTokens <= 0 && outputTokens <= 0) return undefined;
+  return {
+    inputTokens,
+    outputTokens,
+    ...(cacheReadTokens !== undefined ? { cacheReadTokens } : {}),
+    ...(cacheWriteTokens !== undefined ? { cacheWriteTokens } : {}),
+    ...(reasoningTokens !== undefined ? { reasoningTokens } : {}),
+    totalTokens,
+  };
+}
+
+/**
+ * Slot 5 (`runtime.tool.extend`) fields of a plugin tool's result, or
+ * `undefined` when the result opts out of the kernel's `AgentToolResult`
+ * shape. Electron main refuses the fields for a plugin that does not hold the
+ * slot, so this reads only what the host already allowed.
+ */
+function pluginToolResultExtension(raw: Record<string, unknown>): {
+  addedToolNames?: string[];
+  usage?: MessageUsage;
+  terminate?: boolean;
+} | undefined {
+  const addedToolNames = Array.isArray(raw.addedToolNames)
+    ? raw.addedToolNames.filter(
+        (name: unknown): name is string => typeof name === "string" && name.length > 0,
+      )
+    : [];
+  const usage = isRecord(raw.usage) ? messageUsageFromPlugin(raw.usage) : undefined;
+  const terminate = raw.terminate === true;
+  if (addedToolNames.length === 0 && !usage && !terminate) return undefined;
+  return {
+    ...(addedToolNames.length > 0 ? { addedToolNames } : {}),
+    ...(usage ? { usage } : {}),
+    ...(terminate ? { terminate } : {}),
+  };
+}
 
 function estimateVisibleResponseOutputTokens(
   message: Pick<UiMessage, "content" | "thinking">,
@@ -1398,6 +1636,9 @@ export class DesktopAgentRuntime {
   private turnId?: string;
   private hostTurnId?: string;
   private disposed = false;
+  private promptPreparation: AbortController | null = null;
+  /** Unforgeable, one-use marker for inputs admitted before the sidecar acknowledges. */
+  private readonly preparedPromptInputs = new WeakSet<RuntimePrompt>();
   readonly sessionId: string;
   private mode: Mode;
   private provider: RuntimeProviderConfig;
@@ -1415,8 +1656,11 @@ export class DesktopAgentRuntime {
   private extensionRunner?: TrustedExtensionRunner;
   private extensionSessionName?: string;
   private extensionTurnIndex = 0;
-  /** Headers an extension edited in `before_provider_headers` for the current turn. */
-  private extensionProviderHeaders?: Record<string, string>;
+  /**
+   * `turn_closing` continuations granted in the current run. A run resets it in
+   * `resetRunRecoveryState`, so the ceiling is per run rather than per session.
+   */
+  private turnClosingContinuations = 0;
   /** Subagent definitions offered through the `Task` tool (ADR 0062). */
   private subagents: SubagentDefinition[];
   private subagentProviders: Record<string, RuntimeProviderConfig>;
@@ -1428,6 +1672,26 @@ export class DesktopAgentRuntime {
    * returns; `TaskWait`/`TaskList`/`TaskStop` drive it afterwards.
    */
   private delegations = new Map<string, DelegationRecord>();
+  /** Resumable chains rebuilt from the transcript and updated as Task settles. */
+  private readonly delegationChains = new DelegationChainRegistry();
+  /** Transcript rows used to rebuild a resumed delegate's context (ADR 0279):
+   * the seed history at launch plus every row this session's delegates emit. */
+  private readonly transcriptHistory: UiMessage[];
+  /** Row ids already in `transcriptHistory` from live delegate events, so a
+   * retried stream appends once. */
+  private readonly appendedDelegationRowIds = new Set<string>();
+  /** Name and arguments of a delegate's in-flight call: `tool_end` carries the
+   * result only, and the row a resume replays needs both. */
+  private readonly delegateToolCalls = new Map<
+    string,
+    { name: string; args: unknown }
+  >();
+  /** The prompt this runtime composed last, so a mid-turn refresh can tell its
+   * own prompt from a transient variant it must not clobber. */
+  private composedSystemPrompt?: string;
+  /** Set when a refresh was skipped because a transient prompt variant owned the
+   * live prompt; that variant's cleanup applies it once the prompt is restored. */
+  private resumablePromptStale = false;
   /** Set by `abort` / `dispose` so a finishing delegate cannot restart the parent. */
   private runCancelled = false;
   /**
@@ -1444,6 +1708,12 @@ export class DesktopAgentRuntime {
   private deferredToolNames = new Set<string>();
   /** Deferred tools loaded for the current user prompt. */
   private activeDeferredToolNames = new Set<string>();
+  /**
+   * Tools a plugin introduced through a tool result's `addedToolNames` (slot
+   * 5). Kept apart from the on-demand names so the catalogue can say where the
+   * tool came from (ADR 0295 slot 5).
+   */
+  private pluginIntroducedToolNames = new Set<string>();
   private scratchDir?: string;
   private projectPath?: string;
   private commandShell: CommandShellOption;
@@ -1507,6 +1777,12 @@ export class DesktopAgentRuntime {
    * One automatic re-run per prompt, then the failure becomes visible. */
   private pendingSilentTurnRerun = false;
   private silentTurnRerunAttempted = false;
+  /**
+   * The first settled reply to a current Host-ledger completion notice may
+   * need no acknowledgement (D446). Spent by that reply, and revoked as soon
+   * as accepted user steering enters the model context.
+   */
+  private allowSilentCompletion = false;
   private silentTurnRerunInProgress = false;
   private suppressSilentTurnRunEnd = false;
   /** Autonomous plan/goal execution: one progress-only continue (#43). */
@@ -1559,6 +1835,10 @@ export class DesktopAgentRuntime {
   private compactionInProgress = false;
   /** The in-flight checkpoint was cut short by Stop/dispose, not by a failure. */
   private compactionAborted = false;
+  /** True once an un-auditable rewrite has been reported for this session. */
+  private rewriteAuditWarned = false;
+  /** A plugin cancelled the in-flight compaction (ADR 0295 slot 11). */
+  private compactionCancelled = false;
   /** Set by the `new_context` tool, consumed at the next turn boundary. */
   private pendingModelCompaction = false;
   /** One-shot request to finish the current turn at the next boundary. */
@@ -1569,6 +1849,12 @@ export class DesktopAgentRuntime {
   private activeToolProgressCleanups = new Set<(flush: boolean) => void>();
   private hostCloseUnsubscribe?: () => void;
   private turnSubagentUsage?: MessageUsage;
+  /**
+   * Spend plugin tools reported for this turn via their result's `usage`
+   * (slot 5). It is a component of the turn's recorded usage, never merged
+   * into the model's own input/output token counts.
+   */
+  private turnPluginToolUsage?: MessageUsage;
 
   constructor(opts: AgentRuntimeOptions) {
     this.sessionId = opts.sessionId;
@@ -1613,8 +1899,12 @@ export class DesktopAgentRuntime {
     this.models = models;
     const runtimeApiKey = providerRequestKey(this.provider);
 
-    this.fullEntries = this.historyToEntries(opts.history ?? []);
+    this.transcriptHistory = [...(opts.history ?? [])];
+    this.fullEntries = this.historyToEntries(this.transcriptHistory);
     this.activeCompaction = opts.compaction;
+    this.delegationChains.hydrate(
+      rebuildChainsFromTranscript(this.transcriptHistory),
+    );
     const skillsPrompt = pluginSkillsPrompt(this.pluginSkills);
     const defaultSystemPrompt = [
       DEFAULT_RUNTIME_SYSTEM_PROMPT,
@@ -1761,6 +2051,11 @@ Delegation rules:
           convertToLlm(messages),
           this.reasoningReplayIdentity(),
         ),
+      // Slot 6 (`runtime.request.before`) is withdrawn. `transformContext` is
+      // the kernel's own hook before `convertToLlm`; it stays wired as the
+      // identity passthrough below, so no plugin can rewrite the message list
+      // the model reads.
+      transformContext: (messages) => this.transformExtensionContext(messages),
       prepareNextTurnWithContext: (context, signal) =>
         this.prepareNextTurn(context, signal),
       afterToolCall: async (context) => this.afterToolCall(context),
@@ -1782,14 +2077,22 @@ Delegation rules:
       // ordering guarantee is untouched.
       toolExecution: "parallel",
       steeringMode: "all",
-      // A queued renderer prompt asks the current run to finish normally at
-      // the next turn boundary. pi-agent-core evaluates this after the
-      // assistant response and completed tool batch, before another provider
-      // request, so no second concurrent durable turn is created.
-      shouldStopAfterTurn: async () => {
-        if (!this.gracefulStopRequested) return false;
-        this.gracefulStopRequested = false;
-        return true;
+      // `shouldStopAfterTurn` serves two callers at the same boundary. A queued
+      // renderer prompt asks the current run to finish normally at the next turn
+      // boundary (pi evaluates this after the assistant response and completed
+      // tool batch, before another provider request, so no second concurrent
+      // durable turn is created), and a trusted extension is asked whether the
+      // run should keep going (spec 16 section 6, `turn_closing`). The kernel
+      // resumes a run only through its steering queue, so a granted extension
+      // request answers "do not stop" here and queues the next turn's message;
+      // every other answer is `false`, exactly as before.
+      shouldStopAfterTurn: async (context) => {
+        if (this.gracefulStopRequested) {
+          this.gracefulStopRequested = false;
+          return true;
+        }
+        await this.extensionTurnClosing(context);
+        return false;
       },
     });
 
@@ -1843,15 +2146,52 @@ Delegation rules:
     const projectPrompt = projectInstructionsPrompt(this.projectInstructions);
     const memoryPrompt = projectMemoryPrompt(this.projectMemory);
     const optionalToolsPrompt = this.optionalToolsPrompt();
-    return composeModeSystemPrompt(
+    const resumablePrompt =
+      this.subagents.length > 0
+        ? this.delegationChains.promptBlock({
+            runningDelegationIds: this.runningDelegationIds(),
+          })
+        : "";
+    const composed = composeModeSystemPrompt(
       this.mode,
       [
         this.baseSystemPrompt,
         ...(optionalToolsPrompt ? [optionalToolsPrompt] : []),
         ...(projectPrompt ? [projectPrompt] : []),
         ...(memoryPrompt ? [memoryPrompt] : []),
+        ...(resumablePrompt ? [resumablePrompt] : []),
       ].join("\n\n"),
     );
+    this.composedSystemPrompt = composed;
+    return composed;
+  }
+
+  /**
+   * The resumable list changes when a delegation settles, so the prompt the
+   * parent reads on its next turn reflects it. Recomposing is only worth it
+   * when subagents exist at all, and only while the live prompt is still the
+   * one this runtime composed: a transient variant (the delegation nudge) owns
+   * it otherwise, and the next turn recomposes anyway.
+   */
+  private refreshResumablePrompt(): void {
+    if (this.subagents.length === 0) return;
+    if (!this.agent) return;
+    if (this.composedSystemPrompt === undefined) return;
+    if (this.agent.state.systemPrompt !== this.composedSystemPrompt) {
+      // A transient variant (the delegation nudge) owns the live prompt. Its
+      // own cleanup restores the composed text, and applies this refresh then,
+      // so a chain that settled mid-nudge is still listed on the next turn.
+      this.resumablePromptStale = true;
+      return;
+    }
+    this.agent.state.systemPrompt = this.composeSystemPrompt();
+  }
+
+  /** Apply a resumable-list refresh that a transient prompt variant deferred. */
+  private applyPendingResumablePrompt(): void {
+    if (!this.resumablePromptStale) return;
+    this.resumablePromptStale = false;
+    this.refreshResumablePrompt();
   }
 
   /**
@@ -1875,11 +2215,54 @@ Delegation rules:
     context: AfterToolCallContext,
   ): Promise<AfterToolCallResult | undefined> {
     const own = this.resolveOwnToolOutcome(context);
+    const fromCapabilities = this.applyExtensionToolCapabilities(context, own);
     const fromExtensions = await this.extensionToolResult(context, own);
-    if (!fromExtensions) return own;
-    return { ...(own ?? {}), ...fromExtensions };
+    const merged = { ...(own ?? {}), ...fromCapabilities };
+    if (!fromExtensions) return Object.keys(merged).length ? merged : undefined;
+    return { ...merged, ...fromExtensions };
   }
 
+  /**
+   * Slot 5 for extension tools (ADR 0295 rule 2): an extension tool's result
+   * may introduce tools, report its own spend, and request early termination
+   * only when its plugin holds `runtime.tool.extend`. `plugin_*` tools are
+   * gated in Electron main, which owns the plugin's grants, and host tools are
+   * the runtime's own business. A refused `terminate` has to be cleared
+   * explicitly, because the kernel reads an absent field as "keep the original
+   * hint" — but never over a termination the host itself resolved.
+   */
+  private applyExtensionToolCapabilities(
+    context: AfterToolCallContext,
+    own: AfterToolCallResult | undefined,
+  ): AfterToolCallResult | undefined {
+    const result = context.result;
+    // Callers that drive the fold directly (tests, recovery paths) may omit the
+    // kernel's result; with nothing to inspect there is nothing to gate.
+    if (!result) return undefined;
+    const usesSlotFields =
+      (result.addedToolNames?.length ?? 0) > 0 ||
+      result.usage !== undefined ||
+      result.terminate === true;
+    if (!usesSlotFields || context.isError) return undefined;
+    const verdict = this.extensionRunner?.toolResultExtensionAllowed(context.toolCall.name);
+    if (verdict === undefined) return undefined; // Not an extension tool.
+    if (!verdict) {
+      return result.terminate === true && own?.terminate !== true
+        ? { terminate: false }
+        : undefined;
+    }
+    this.activatePluginIntroducedTools(context.toolCall.name, result.addedToolNames);
+    if (result.usage) {
+      // Extension tools are not executed by the runtime's own `run()`, so
+      // their spend is accumulated here; a plugin tool's spend was accumulated
+      // where its result was translated.
+      this.turnPluginToolUsage = addUsage(
+        this.turnPluginToolUsage,
+        usageFromPi(result.usage),
+      );
+    }
+    return undefined;
+  }
   /** `tool_call` hook: an extension may block a call with a reason (spec 16 §6). */
   private async extensionToolCall(
     context: BeforeToolCallContext,
@@ -1896,7 +2279,12 @@ Delegation rules:
     return { block: true, reason: result.reason ?? "blocked by a trusted extension" };
   }
 
-  /** `tool_result` hook: an extension may replace content, details, or the error flag. */
+  /**
+   * `tool_result` hook: an extension may replace content, details, the error
+   * flag, and (slot 5) the tool's own spend and early-termination hint. The
+   * fold keeps every field the kernel's `AfterToolCallResult` understands, so
+   * `usage` and `terminate` are not dropped between the handlers and the loop.
+   */
   private async extensionToolResult(
     context: AfterToolCallContext,
     own: AfterToolCallResult | undefined,
@@ -1910,6 +2298,9 @@ Delegation rules:
       input: context.args,
       content: context.result.content,
       details: context.result.details,
+      usage: context.result.usage,
+      addedToolNames: context.result.addedToolNames,
+      terminate: context.result.terminate,
       isError: own?.isError ?? context.isError,
     }, (acc, next) => ({ ...(acc ?? {}), ...next }));
     if (!result) return undefined;
@@ -1917,20 +2308,67 @@ Delegation rules:
     if (result.content !== undefined) out.content = result.content;
     if (result.details !== undefined) out.details = result.details;
     if (result.isError !== undefined) out.isError = result.isError;
+    if (result.usage !== undefined) out.usage = result.usage;
+    // The kernel only stops a batch when every finalized result asks for it
+    // (`shouldTerminateToolBatch`); passing one tool's hint through is safe and
+    // is the only way a plugin's request can be counted at all.
+    if (result.terminate !== undefined) out.terminate = result.terminate;
     return Object.keys(out).length ? out : undefined;
   }
 
-  /** `context` hook: extensions may rewrite the message list before a provider request. */
-  private async extensionContext(update: AgentLoopTurnUpdate): Promise<AgentLoopTurnUpdate> {
+  /**
+   * The kernel's own `transformContext` hook, wired when the agent is created.
+   * Slot 6 (`runtime.request.before`) is withdrawn, so this is the identity
+   * passthrough: no plugin rewrites the message list the model reads, and
+   * nothing about that list is recorded.
+   */
+  private async transformExtensionContext(
+    messages: AgentMessage[],
+  ): Promise<AgentMessage[]> {
+    return messages;
+  }
+
+  /**
+   * `turn_closing` hook: asked once per completed turn, before the run is
+   * allowed to end there. A granted request queues the next turn's message,
+   * which is what makes the kernel start another provider request, and spends
+   * one unit of the per-run continuation budget. Refusals are logged, never
+   * thrown: the run must end normally either way.
+   */
+  private async extensionTurnClosing(context: ShouldStopAfterTurnContext): Promise<void> {
     const runner = this.extensionRunner;
-    if (!runner?.hasHandlers("context") || !update.context) return update;
-    const result = await runner.emit<{ messages?: AgentMessage[] }>(
-      "context",
-      { type: "context", messages: update.context.messages },
-      (_acc, next) => next,
+    if (!runner?.hasHandlers(TRUSTED_EXTENSION_TURN_CLOSING_EVENT)) return;
+    if (this.disposed || this.runCancelled) return;
+    let requestedBy: string | undefined;
+    const result = await runner.emit<TrustedExtensionTurnClosingResult>(
+      TRUSTED_EXTENSION_TURN_CLOSING_EVENT,
+      {
+        type: TRUSTED_EXTENSION_TURN_CLOSING_EVENT,
+        sessionId: this.sessionId,
+        turnIndex: this.extensionTurnIndex,
+        ...(typeof context?.message?.stopReason === "string"
+          ? { stopReason: context.message.stopReason }
+          : {}),
+      },
+      (acc, next, extensionId) => {
+        if (next?.continue === true) requestedBy = extensionId;
+        return foldTurnClosingResults(acc, next);
+      },
     );
-    if (!Array.isArray(result?.messages)) return update;
-    return { ...update, context: { ...update.context, messages: result.messages } };
+    const request = turnClosingRequest(result);
+    if (!request || !requestedBy) return;
+    if (this.turnClosingContinuations >= TRUSTED_EXTENSION_TURN_CLOSING_LIMIT) {
+      process.stderr.write(
+        `[agent-runtime] turn_closing continuation limit reached (session=${this.sessionId} ` +
+          `turn=${this.turnId} index=${this.extensionTurnIndex} limit=${TRUSTED_EXTENSION_TURN_CLOSING_LIMIT} ` +
+          `extension=${requestedBy}): the run ends here\n`,
+      );
+      return;
+    }
+    this.turnClosingContinuations += 1;
+    // Steering is the kernel's own resume mechanism at this boundary: the loop
+    // drains it immediately after this answer and starts the next turn.
+    this.agent.steer({ role: "user", content: request.message, timestamp: Date.now() });
   }
 
   /** Mirror pi-agent-core events to extension handlers (spec 16 §6). */
@@ -2081,10 +2519,11 @@ Delegation rules:
       safeJson(this.subagentProviders) === safeJson(config.subagentProviders ?? {}) &&
       safeJson([...this.subagentModelKeys].sort()) ===
         safeJson([...new Set(config.subagentModelKeys ?? [])].sort()) &&
-      // Enabling or disabling a trusted extension retires the runtime so the
-      // next prompt reloads the set (spec 16 §4.3).
-      trustedExtensionIds(this.trustedExtensionSpecs) ===
-        trustedExtensionIds(config.trustedExtensions ?? [])
+      // Enabling or disabling a trusted extension, and revoking a slot
+      // permission, retire the runtime so the next prompt reloads both
+      // (spec 16 §4.3, ADR 0295 rule 2).
+      trustedExtensionDigest(this.trustedExtensionSpecs) ===
+        trustedExtensionDigest(config.trustedExtensions ?? [])
     );
   }
 
@@ -2217,8 +2656,24 @@ Delegation rules:
         runtime.thinkingLevel = clampThinkingLevel(runtime.provider, level as ThinkingLevel);
       },
       isIdle: () => !runtime.agent.state.isStreaming,
+      /**
+       * Slot 3: the running turn's cancellation token. `Agent.signal` is the
+       * live run's token, so plugin work that keeps it stops exactly when the
+       * turn is stopped — by the user, by `abort()`, or by another plugin.
+       */
+      getAbortSignal: () => runtime.promptPreparation?.signal ?? runtime.agent.signal,
       abort: () => {
         void runtime.abort();
+        // Plugin tool work runs in the plugin process; Electron main cancels
+        // its invocations per session (the same path a user Stop takes), and
+        // the runtime's own abort cannot reach across that boundary. A failure
+        // here is not fatal: the turn is already stopping.
+        void runtime.host
+          .call("extensions.turnAbort", {
+            sessionId: runtime.sessionId,
+            reason: "Session turn was aborted by a plugin",
+          })
+          .catch(() => undefined);
       },
       hasPendingMessages: () => false,
       getContextUsage: () => {
@@ -2240,6 +2695,11 @@ Delegation rules:
           name: tool.name,
           description: tool.description,
           active: active.has(tool.name),
+          // The catalogue names the provenance of a tool a plugin introduced
+          // at runtime (ADR 0295 slot 5) instead of leaving it anonymous.
+          ...(runtime.pluginIntroducedToolNames.has(tool.name)
+            ? { introducedBy: "plugin" as const }
+            : {}),
         }));
       },
       setActiveTools: (names) => {
@@ -2259,24 +2719,18 @@ Delegation rules:
           name,
         });
       },
-      sendUserMessage: async (content, options) => {
-        const text = Array.isArray(content)
-          ? content
-              .map((part) => (isRecord(part) && typeof part.text === "string" ? part.text : ""))
-              .join("")
-          : String(content);
-        // Host-owned queue (D386): Electron main routes this to the Agent
-        // Host module, which drains it at the next turn boundary, or right
-        // away when the session is idle. `steer` moves it to the head.
-        const pushed = await runtime.host.call<{ id?: string }>("session.queuePush", {
-          sessionId: runtime.sessionId,
-          idempotencyKey: randomUUID(),
-          content: text,
-        });
-        if (options?.deliverAs === "steer" && pushed?.id) {
-          await runtime.host
-            .call("session.queuePrioritize", { sessionId: runtime.sessionId, id: pushed.id })
-            .catch(() => undefined);
+      aiComplete: async (input) => {
+        try {
+          return await runtime.host.call("ai.complete", {
+            sessionId: runtime.sessionId,
+            ...(input && typeof input === "object" ? input : {}),
+          });
+        } catch (error) {
+          return {
+            ok: false as const,
+            code: "PROVIDER_ERROR",
+            detail: error instanceof Error ? error.message : String(error),
+          };
         }
       },
       waitForIdle: () => runtime.agent.waitForIdle(),
@@ -2301,6 +2755,64 @@ Delegation rules:
         } catch {
           return { cancelled: true };
         }
+      },
+      /**
+       * Slot 9: the host's own facts for one turn, straight from `turn.facts`
+       * (ADR 0295 rule 8). The sidecar already reaches host-core through the
+       * same reverse proxy its other calls use — `turn.facts` is allowlisted
+       * there like `session.get`, so no second path is invented. `turnId`
+       * absent means the current turn; before any prompt there is none, so the
+       * host is never asked a turn-less question.
+       */
+      turnFacts: async ({ turnId, limit }) => {
+        const target = (turnId ?? runtime.turnId ?? "").trim();
+        if (!target) return undefined;
+        const result = await runtime.host.call<{ facts?: TrustedExtensionTurnFacts }>("turn.facts", {
+          sessionId: runtime.sessionId,
+          turnId: target,
+          ...(typeof limit === "number" ? { limit } : {}),
+        });
+        return result?.facts;
+      },
+      /**
+       * Slot 8: a session's newest transcript rows, windowed by the host
+       * (`session.get` with `messageLimit`, which host-core takes from the end
+       * of the transcript and flags with `hasMoreBefore`). This is the sidecar's
+       * established session read, not a second conversation store.
+       */
+      recapSession: async ({ limit, sessionId, before }) => {
+        const id = sessionId ?? runtime.sessionId;
+        const detail = await runtime.host.call<{
+          session?: { id?: string; title?: string; messages?: unknown[]; hasMoreBefore?: boolean;
+            messageStart?: number; messageEnd?: number } | null;
+        }>("session.get", { id, messageLimit: Math.max(1, limit),
+          ...(before === undefined ? {} : { messageBefore: before }) });
+        const session = detail?.session;
+        if (!session || (session.id !== undefined && session.id !== id) || !Array.isArray(session.messages)) {
+          throw new Error("Session recap source is unavailable");
+        }
+        return { messages: session.messages, truncated: session.hasMoreBefore === true,
+          ...(session.title === undefined ? {} : { title: session.title }),
+          ...(session.messageStart === undefined ? {} : { messageStart: session.messageStart }),
+          ...(session.messageEnd === undefined ? {} : { messageEnd: session.messageEnd }) };
+      },
+      /**
+       * Slot 10: a plugin's continuation takes the host-owned queue, the same
+       * path the desktop's own send uses (`session.queuePush`), so the turn is
+       * real, durable and drained at the next turn boundary — there is no quota
+       * (ADR 0295 rule 9). The plugin identity travels with the request so the
+       * host can attribute the row ADR 0293 asks for.
+       */
+      continueTurn: async ({ message, pluginId, pluginLabel }) => {
+        const pushed = await runtime.host.call<{ id?: string }>("session.queuePush", {
+          sessionId: runtime.sessionId,
+          idempotencyKey: randomUUID(),
+          content: message,
+          pluginId,
+          pluginLabel,
+        });
+        const queuedTurnId = typeof pushed?.id === "string" ? pushed.id : "";
+        return queuedTurnId ? { queuedTurnId } : undefined;
       },
       requestUi: (extension, request) =>
         runtime.host.call<TrustedExtensionUiResponse>("extensions.ui.request", {
@@ -2898,9 +3410,40 @@ Delegation rules:
         }
         const rawContent = result.content;
         const imageBlocks: Array<{ type: "image"; data: string; mimeType: string }> = [];
+        // Slot 5 (`runtime.tool.extend`): a plugin tool's result may carry the
+        // kernel's `AgentToolResult` fields. Electron main refuses them for a
+        // plugin that does not hold the slot, so what arrives here is already
+        // allowed; the result opts in by carrying one of them.
+        const rawRecord = isRecord(rawContent) ? rawContent : undefined;
+        const extended = rawRecord && this.pluginTools.some((tool) => tool.name === toolName)
+          ? pluginToolResultExtension(rawRecord)
+          : undefined;
         let text: string;
-        let details: unknown = rawContent;
-        if (typeof rawContent === "string") {
+        let details: unknown = extended && rawRecord ? rawRecord.details ?? rawRecord : rawContent;
+        if (extended && rawRecord) {
+          // The model reads the content blocks, not the wire object.
+          const parts = Array.isArray(rawRecord.content) ? rawRecord.content : [];
+          const texts: string[] = [];
+          const vision = visionFromModelConfig(this.provider.modelConfig);
+          for (const part of parts) {
+            if (!isRecord(part)) continue;
+            if (part.type === "text" && typeof part.text === "string") {
+              texts.push(part.text);
+            } else if (
+              part.type === "image" &&
+              typeof part.data === "string" &&
+              typeof part.mimeType === "string" &&
+              vision
+            ) {
+              imageBlocks.push({ type: "image", data: part.data, mimeType: part.mimeType });
+            }
+          }
+          text = texts.length > 0
+            ? texts.join("\n")
+            : typeof rawRecord.text === "string"
+              ? rawRecord.text
+              : JSON.stringify(rawRecord.content ?? rawRecord, null, 2);
+        } else if (typeof rawContent === "string") {
           text = rawContent;
         } else if (isRecord(rawContent) && Array.isArray(rawContent.images)) {
           text =
@@ -2938,9 +3481,20 @@ Delegation rules:
           text = JSON.stringify(rawContent, null, 2);
         }
         if (!result.ok) this.failedHostToolCalls.add(toolCallId);
+        if (extended?.usage) {
+          this.turnPluginToolUsage = addUsage(this.turnPluginToolUsage, extended.usage);
+        }
+        // Slot 5: the introduced names join the active set before the loop asks
+        // for the next turn, so they are in the tool list from that request on.
+        if (extended?.addedToolNames?.length) {
+          this.activatePluginIntroducedTools(toolName, extended.addedToolNames);
+        }
         return {
           content: [{ type: "text", text }, ...imageBlocks],
           details,
+          ...(extended?.addedToolNames?.length ? { addedToolNames: extended.addedToolNames } : {}),
+          ...(extended?.usage ? { usage: usageToPi(extended.usage) } : {}),
+          ...(extended?.terminate ? { terminate: true } : {}),
           ...(terminateAfterMutationFailure ? { terminate: true } : {}),
           isError: result.isError === true || result.ok === false,
         };
@@ -3144,9 +3698,17 @@ Delegation rules:
         (name) => !this.isCoreTool(name) && name !== TOOL_SEARCH_NAME,
       ),
     );
+    // A tool a plugin introduced disappears with its plugin: the catalog is
+    // rebuilt from the loaded plugins, so a name it no longer holds is pruned
+    // here together with its provenance mark (ADR 0295 slot 5).
     for (const name of this.activeDeferredToolNames) {
       if (!this.deferredToolNames.has(name)) {
         this.activeDeferredToolNames.delete(name);
+      }
+    }
+    for (const name of this.pluginIntroducedToolNames) {
+      if (!this.toolCatalog.has(name)) {
+        this.pluginIntroducedToolNames.delete(name);
       }
     }
     if (this.deferredToolNames.size > 0) {
@@ -3232,9 +3794,14 @@ Delegation rules:
     if (entries.length === 0) return "";
 
     const visibleEntries = entries.slice(0, MAX_ON_DEMAND_TOOL_PROMPT_ENTRIES);
-    const lines = visibleEntries.map(
-      (entry) => `- ${entry.name}: ${this.compactToolDescription(entry.description)}`,
-    );
+    // The catalogue the model reads says where a tool came from: one a plugin
+    // introduced at runtime is marked as such (ADR 0295 slot 5).
+    const lines = visibleEntries.map((entry) => {
+      const introduced = this.pluginIntroducedToolNames.has(entry.name)
+        ? " (introduced by a plugin)"
+        : "";
+      return `- ${entry.name}${introduced}: ${this.compactToolDescription(entry.description)}`;
+    });
     if (entries.length > visibleEntries.length) {
       lines.push(
         `- ... ${entries.length - visibleEntries.length} more; search by exact name or capability`,
@@ -3294,9 +3861,17 @@ Delegation rules:
         const available = [...this.deferredToolNames];
         const availablePreview = available.slice(0, MAX_TOOL_SEARCH_RESULT_NAMES);
         const remaining = available.length - availablePreview.length;
+        // The model's own answer says where a newly available tool came from:
+        // a name another plugin introduced is marked as such (ADR 0295 slot 5).
+        const pluginIntroduced = activated.filter((name) =>
+          this.pluginIntroducedToolNames.has(name),
+        );
         const text =
           activated.length > 0
-            ? `Activated on-demand tools: ${activated.join(", ")}. They are available on the next model turn.`
+            ? `Activated on-demand tools: ${activated.join(", ")}. They are available on the next model turn.` +
+              (pluginIntroduced.length > 0
+                ? ` Introduced by a plugin: ${pluginIntroduced.join(", ")}.`
+                : "")
             : matches.length > 0
               ? `These tools are already active: ${matches.join(", ")}.`
               : `No matching on-demand tool. Available names: ${availablePreview.join(", ")}${remaining > 0 ? `, and ${remaining} more` : ""}.`;
@@ -3561,6 +4136,148 @@ Delegation rules:
     };
   }
 
+  /** Every delegation still working; a resume of one is a queueing attempt. */
+  private runningDelegationIds(): Set<string> {
+    return new Set(
+      this.runningDelegations().map((record) => record.delegationId),
+    );
+  }
+
+  /**
+   * Resolve a `Task.resume` id to its chain, or fail with a message that tells
+   * the model how to proceed (ADR 0276). The parent only ever sees
+   * `delegationId`; the chain identity behind it stays internal.
+   */
+  private resolveResumeChain(
+    resume: string,
+    agentName: string,
+  ):
+    | { ok: true; chain: DelegationChain }
+    | { ok: false; message: string } {
+    const lookup = this.delegationChains.resolveResume({
+      resume,
+      agentName,
+      runningDelegationIds: this.runningDelegationIds(),
+    });
+    if (lookup.ok) return lookup;
+    const error = lookup.error;
+    switch (error.kind) {
+      case "unknown":
+        return { ok: false, message: this.unknownResumeMessage(resume) };
+      case "running":
+        return {
+          ok: false,
+          message: `Delegation ${error.delegationId} is still running. Call TaskWait to converge with it first, or start a new delegation. Resuming a running delegation is not queued.`,
+        };
+      case "not-resumable":
+        return {
+          ok: false,
+          message:
+            error.status === "interrupted"
+              ? `Delegation ${resume} was interrupted — the app closed while it worked — so there is nothing to continue. Start a new delegation instead.`
+              : `Delegation ${resume} ended as "${error.status}" and cannot be resumed. Only completed or failed delegations continue; start a new delegation instead.`,
+        };
+      case "agent-mismatch":
+        return {
+          ok: false,
+          message: `Delegation ${resume} belongs to the ${error.expected} subagent, not ${error.actual}. Resume it with the matching agent name, or start a new delegation.`,
+        };
+      case "over-budget":
+        return {
+          ok: false,
+          message: `Delegation ${resume} has read too much to resume cheaply. Start a new delegation and point it at the specific files it should re-read.`,
+        };
+    }
+  }
+
+  private unknownResumeMessage(resume: string): string {
+    return this.delegationChains.unknownResumeError(
+      resume,
+      this.delegationChains.resumableList({
+        runningDelegationIds: this.runningDelegationIds(),
+      }),
+    );
+  }
+
+  /**
+   * A chain resolved but has nothing to replay. The caller drops it first, so
+   * the id can never be advertised as reusable in its own error (ADR 0279 §4).
+   */
+  private noHistoryResumeMessage(resume: string): string {
+    return this.delegationChains.noHistoryResumeError(
+      resume,
+      this.delegationChains.resumableList({
+        runningDelegationIds: this.runningDelegationIds(),
+      }),
+    );
+  }
+
+  /**
+   * The binding a resumed run keeps (ADR 0279 §4). A live chain records the
+   * `providerId/modelId` key it resolved, which is preferred here; a chain
+   * rebuilt from the transcript only knows the model id, matched against what
+   * is configured in this session. `undefined` means the binding is gone.
+   */
+  private resumedChainProvider(
+    chain: DelegationChain,
+  ): RuntimeProviderConfig | undefined {
+    const modelId = chain.latestModelId?.trim().toLowerCase();
+    if (!modelId) return undefined;
+    const candidates: RuntimeProviderConfig[] = [];
+    if (chain.latestModelKey) {
+      const keyed =
+        this.subagentProviders[chain.latestModelKey] ??
+        this.subagentOverrideProviders[chain.latestModelKey];
+      if (keyed) candidates.push(keyed);
+    }
+    candidates.push(
+      ...Object.values(this.subagentProviders),
+      ...Object.values(this.subagentOverrideProviders),
+      this.provider,
+    );
+    return candidates.find(
+      (candidate) => candidate.modelId.trim().toLowerCase() === modelId,
+    );
+  }
+
+  /** The delegation-model key a resolved binding is registered under, if any. */
+  private delegationModelKeyFor(
+    provider: RuntimeProviderConfig,
+  ): string | undefined {
+    for (const [key, candidate] of Object.entries(this.subagentProviders)) {
+      if (candidate === provider) return key;
+    }
+    for (const [key, candidate] of Object.entries(
+      this.subagentOverrideProviders,
+    )) {
+      if (candidate === provider) return key;
+    }
+    return undefined;
+  }
+
+  /**
+   * Rebuild the delegate's prior conversation from its transcript rows. The
+   * rows carry `parentToolCallId` for exactly the chain's `Task` calls, so the
+   * replay never picks up the parent's own rows or a sibling delegate's.
+   */
+  private seedResumedDelegate(
+    chain: DelegationChain,
+    provider: RuntimeProviderConfig,
+  ): AgentMessage[] | undefined {
+    const originalTask =
+      chain.originalTask ??
+      originalTaskFromTranscript(this.transcriptHistory, chain);
+    if (!originalTask) return undefined;
+    const rows = selectChainRows(this.transcriptHistory, chain);
+    if (rows.length === 0) return undefined;
+    return seedDelegateMessages({
+      originalTask,
+      rows,
+      provider,
+      model: buildProviderModel(provider),
+    });
+  }
+
   /**
    * `Task`: delegate one bounded piece of work to a subagent (ADR 0062).
    *
@@ -3594,6 +4311,7 @@ Delegation rules:
             ]),
         "`task` is the delegate's only instruction. It cannot see this conversation, and you cannot correct it while it runs, so state the goal, the paths and facts it cannot infer, and exactly what to report back.",
         "To run delegates concurrently, emit several Task calls in one assistant message. A message that mixes Task with any other tool runs one call at a time. You may keep working or talk to the user while they run; the runtime delivers their reports when they finish. Call TaskStop only to cancel.",
+        "To continue a previous subagent, pass its `resume` id (the `delegationId` returned by Task). Saying \"reuse\" in prose is not enough. Do not pass `model` when resuming; start a new delegation to change models.",
         `Available subagents:\n${catalog}`,
       ].join("\n\n"),
       parameters: Type.Object({
@@ -3613,7 +4331,13 @@ Delegation rules:
         model: Type.Optional(
           Type.String({
             description:
-              "Override the delegate's model for this run, e.g. 'anthropic/claude-sonnet-4-20250514'. Omit to use the subagent's default. Repeating the definition's own Default model key is the same as omitting this parameter. Only choose a different override from the available delegation model catalog.",
+              "Override the delegate's model for this run, e.g. 'anthropic/claude-sonnet-4-20250514'. Omit to use the subagent's default. Repeating the definition's own Default model key is the same as omitting this parameter. Only choose a different override from the available delegation model catalog. Forbidden when `resume` is set.",
+          }),
+        ),
+        resume: Type.Optional(
+          Type.String({
+            description:
+              "delegationId of a settled subagent in this conversation to continue. Omit to start a new session.",
           }),
         ),
       }),
@@ -3635,17 +4359,28 @@ Delegation rules:
           isRecord(params) && typeof params.task === "string"
             ? params.task.trim()
             : "";
+        const resume =
+          isRecord(params) && typeof params.resume === "string"
+            ? params.resume.trim()
+            : "";
+        // Model override: Task.model > definition.model pin > session model.
+        const modelOverride =
+          isRecord(params) && typeof params.model === "string"
+            ? params.model.trim()
+            : "";
+        // Resume keeps the chain's model; a new delegation is the way to switch.
+        if (resume && modelOverride) {
+          return this.subagentToolError(
+            toolCallId,
+            `Resuming a subagent cannot change its model. Omit \`model\` to continue ${resume}, or start a new delegation to pick a different model.`,
+          );
+        }
         if (!task) {
           return this.subagentToolError(
             toolCallId,
             `Delegating to ${definition.name} needs a non-empty \`task\` brief.`,
           );
         }
-        // Model override: Task.model > definition.model pin > session model.
-        const modelOverride =
-          isRecord(params) && typeof params.model === "string"
-            ? params.model.trim()
-            : "";
         let provider: RuntimeProviderConfig | undefined;
         if (modelOverride) {
           if (this.isDefinitionPinOverride(definition, modelOverride)) {
@@ -3712,6 +4447,42 @@ Delegation rules:
         }
         // The delegate runs in the background (ADR 0089): `Task` returns
         // immediately with a delegation id, and TaskWait converges later.
+        const resumeLookup = resume
+          ? this.resolveResumeChain(resume, definition.name)
+          : undefined;
+        if (resume && resumeLookup && !resumeLookup.ok) {
+          return this.subagentToolError(toolCallId, resumeLookup.message);
+        }
+        const resumedChain = resumeLookup?.ok ? resumeLookup.chain : undefined;
+        // A resume keeps the chain's own binding (ADR 0279 §4): changing the
+        // parent's session model must not strand a chain, and a delegate must
+        // never swap models by accident. When the recorded binding is gone the
+        // run continues on the definition's current one and says so in its
+        // lifecycle details, because refusing would strand the chain forever.
+        const resumedProvider = resumedChain
+          ? this.resumedChainProvider(resumedChain)
+          : undefined;
+        if (resumedProvider) provider = resumedProvider;
+        const modelChangedFrom =
+          resumedChain?.latestModelId && !resumedProvider
+            ? resumedChain.latestModelId
+            : undefined;
+        const initialMessages = resumedChain
+          ? this.seedResumedDelegate(resumedChain, provider)
+          : undefined;
+        if (resume && !initialMessages) {
+          // The chain resolved but has nothing left to replay. Drop it so the
+          // prompt stops advertising an id that can never be continued, and
+          // report the drop without listing that same id as reusable.
+          if (resumedChain) {
+            this.delegationChains.drop(resumedChain.delegateSessionId);
+            this.refreshResumablePrompt();
+          }
+          return this.subagentToolError(
+            toolCallId,
+            this.noHistoryResumeMessage(resume),
+          );
+        }
         const delegationId = randomUUID();
         const controller = new AbortController();
         const thinkingLevel: SubagentThinkingLevel =
@@ -3729,6 +4500,22 @@ Delegation rules:
         let resolveCompletion: () => void = () => {};
         const completion = new Promise<void>((resolve) => {
           resolveCompletion = resolve;
+        });
+        const objective =
+          isRecord(params) && typeof params.description === "string"
+            ? params.description.trim()
+            : task;
+        const providerKey = this.delegationModelKeyFor(provider);
+        const chain = this.delegationChains.start({
+          delegateSessionId: resumedChain?.delegateSessionId ?? delegationId,
+          delegationId,
+          toolCallId,
+          agentName: definition.name,
+          originalTask: resumedChain?.originalTask ?? task,
+          objective,
+          latestModelId: provider.modelId,
+          ...(providerKey ? { latestModelKey: providerKey } : {}),
+          resumedFrom: resumedChain,
         });
         const record: DelegationRecord = {
           delegationId,
@@ -3748,6 +4535,9 @@ Delegation rules:
           lastPhase: "waiting-model",
           startedEpoch: this.turnEpoch,
           reportDelivered: false,
+          delegateSessionId: chain.delegateSessionId,
+          ...(resumedChain ? { resumedFrom: resume } : {}),
+          ...(modelChangedFrom ? { modelChangedFrom } : {}),
         };
         this.delegations.set(delegationId, record);
         const scopedTools = this.scopeDelegateTools(tools, definition);
@@ -3767,6 +4557,10 @@ Delegation rules:
           onModelChange: (next, level) => {
             record.modelId = next.modelId;
             record.thinkingLevel = level;
+            this.delegationChains.retarget(record.delegateSessionId, {
+              modelKey: this.delegationModelKeyFor(next),
+              modelId: next.modelId,
+            });
             this.publishDelegationSettlement(record);
           },
           systemPrompt: composeSubagentSystemPrompt({
@@ -3783,6 +4577,8 @@ Delegation rules:
           // through the same bookkeeping the parent uses.
           resolveToolOutcome: (context) => this.resolveOwnToolOutcome(context),
           signal: abortSignal,
+          // A resumed run replays its chain before this turn's `task` (ADR 0276).
+          ...(initialMessages ? { initialMessages } : {}),
         })
           .run()
           .then(
@@ -3826,6 +4622,7 @@ Delegation rules:
             startedAt,
             modelId: provider.modelId,
             thinkingLevel,
+            ...(resumedChain ? { resumedFrom: resume } : {}),
           },
         };
       },
@@ -3869,9 +4666,17 @@ Delegation rules:
     if (result.usage) {
       this.turnSubagentUsage = addUsage(this.turnSubagentUsage, result.usage);
     }
+    this.delegationChains.settle(record.delegateSessionId, record.status);
+    // An aborted call never sends `tool_end`, so a settled run drops whatever
+    // its calls left behind rather than pinning those arguments for the session.
+    for (const toolCallId of record.pendingToolCallIds ?? []) {
+      this.delegateToolCalls.delete(toolCallId);
+    }
+    record.pendingToolCallIds = undefined;
     this.publishDelegationSettlement(record);
     record.resolveCompletion();
     this.refreshDelegationWait();
+    this.refreshResumablePrompt();
     this.pruneFinishedDelegations();
   }
 
@@ -3981,11 +4786,25 @@ Delegation rules:
     if (event.type === "tool_start") {
       record.toolCalls += 1;
       this.touchDelegationPhase(record, "tool", event.toolName);
+      // The row a later `resume` replays needs the call's arguments, and
+      // `tool_end` carries only the result (ADR 0279 §3).
+      this.delegateToolCalls.set(event.toolCallId, {
+        name: event.toolName,
+        args: (envelope.event as ToolStartEvent).args,
+      });
+      (record.pendingToolCallIds ??= new Set()).add(event.toolCallId);
       return;
     }
     if (event.type === "tool_end") {
       this.touchDelegationPhase(record, "waiting-model");
+      this.appendDelegationRow(record, envelope, this.toolRowFromEnvelope(envelope));
+      // The call is finished; its arguments are no longer needed.
+      this.delegateToolCalls.delete(event.toolCallId);
+      record.pendingToolCallIds?.delete(event.toolCallId);
       return;
+    }
+    if (event.type === "message_end" && event.message.role === "assistant") {
+      this.appendDelegationRow(record, envelope, event.message);
     }
     if (
       (event.type === "message_start" || event.type === "message_update") &&
@@ -4001,6 +4820,56 @@ Delegation rules:
       );
       if (thinking && !text) this.touchDelegationPhase(record, "thinking");
     }
+  }
+
+  /**
+   * Keep `transcriptHistory` current with what a delegate produced, so a later
+   * `Task.resume` in the same session replays the chain without waiting on
+   * persistence (ADR 0276). A retried stream reuses the row id and appends once.
+   */
+  private appendDelegationRow(
+    record: DelegationRecord,
+    envelope: AgentEventEnvelope,
+    row: UiMessage,
+  ): void {
+    const tagged: UiMessage = {
+      ...row,
+      parentToolCallId: envelope.parentToolCallId ?? row.parentToolCallId,
+      agentName: envelope.agentName ?? row.agentName,
+    };
+    const key =
+      tagged.role === "tool"
+        ? `tool:${tagged.toolCallId ?? ""}`
+        : `message:${tagged.id ?? ""}`;
+    if (key.endsWith(":")) return;
+    if (this.appendedDelegationRowIds.has(key)) return;
+    this.appendedDelegationRowIds.add(key);
+    this.transcriptHistory.push(tagged);
+    if (tagged.role === "tool" && isReadOnlyToolName(tagged.toolName ?? "")) {
+      const { files, lineCount } = extractReadFiles([tagged]);
+      this.delegationChains.noteReads(record.delegateSessionId, files, lineCount);
+    }
+  }
+
+  private toolRowFromEnvelope(envelope: AgentEventEnvelope): UiMessage {
+    const event = envelope.event as ToolEndEvent;
+    const call = this.delegateToolCalls.get(event.toolCallId);
+    const ts = new Date(envelope.ts ?? Date.now()).toISOString();
+    return {
+      id: `delegate-tool-${event.toolCallId}`,
+      role: "tool",
+      content: "",
+      createdAt: ts,
+      toolCompletedAt: ts,
+      toolCallId: event.toolCallId,
+      toolName: call?.name ?? "",
+      toolArgs: call?.args,
+      toolResult: event.result,
+      toolStatus: event.isError ? "error" : "success",
+      isError: Boolean(event.isError),
+      parentToolCallId: envelope.parentToolCallId,
+      agentName: envelope.agentName,
+    };
   }
 
   private touchDelegationPhase(
@@ -4419,8 +5288,49 @@ Delegation rules:
 
   private resetDeferredToolsForPrompt(): void {
     this.activeDeferredToolNames.clear();
+    this.pluginIntroducedToolNames.clear();
     this.restoreDeferredToolsFromContext();
     this.agent.state.tools = this.activeTools();
+  }
+
+  /**
+   * Slot-5 gate (ADR 0295 rule 2): may the tool that produced this result
+   * introduce tools, report spend, and request early termination?
+   *
+   * An extension tool is checked here, because the runner owns the plugin's
+   * granted set and its diagnostics channel. A `plugin_*` tool was already
+   * checked by Electron main, which holds the plugin's grants and refuses the
+   * fields before they cross into the sidecar. A host tool (Read, Bash, ...)
+   * extends nothing: `addedToolNames` is a slot-5 capability and only a plugin
+   * can hold the slot.
+   */
+  private toolResultCapabilityAllowed(toolName: string): boolean {
+    const extensionVerdict = this.extensionRunner?.toolResultExtensionAllowed(toolName);
+    if (extensionVerdict !== undefined) return extensionVerdict;
+    return this.pluginTools.some((def) => def.name === toolName);
+  }
+
+  /**
+   * Slot-5 activation (ADR 0295): tools a plugin's result introduced become
+   * available from the next provider request onward, and stay available for as
+   * long as that result remains part of the context. Returns the names that
+   * actually entered the catalog, which is what the tool-search answer and the
+   * on-demand catalogue mark as plugin-introduced.
+   */
+  private activatePluginIntroducedTools(
+    toolName: string,
+    addedToolNames: readonly string[] | undefined,
+  ): string[] {
+    if (!addedToolNames || addedToolNames.length === 0) return [];
+    if (!this.toolResultCapabilityAllowed(toolName)) return [];
+    const activated: string[] = [];
+    for (const name of addedToolNames) {
+      if (!this.deferredToolNames.has(name)) continue;
+      this.activeDeferredToolNames.add(name);
+      this.pluginIntroducedToolNames.add(name);
+      activated.push(name);
+    }
+    return activated;
   }
 
   /**
@@ -4446,6 +5356,13 @@ Delegation rules:
         if (this.deferredToolNames.has(name)) {
           this.activeDeferredToolNames.add(name);
         }
+      }
+      // A plugin's tool result may have introduced further tools (slot 5);
+      // the names travel on the tool-result row and are re-applied here so a
+      // rehydrated transcript keeps the same catalogue. ToolSearch has its own
+      // path above and is not a plugin.
+      if (message.toolName !== TOOL_SEARCH_NAME) {
+        this.activatePluginIntroducedTools(message.toolName, message.addedToolNames);
       }
     }
   }
@@ -4941,6 +5858,7 @@ Delegation rules:
     this.suppressProviderRetryRunEnd = false;
     this.pendingSilentTurnRerun = false;
     this.silentTurnRerunAttempted = false;
+    this.allowSilentCompletion = false;
     this.silentTurnRerunInProgress = false;
     this.suppressSilentTurnRunEnd = false;
     this.pendingProgressTurnRerun = false;
@@ -4953,6 +5871,7 @@ Delegation rules:
     this.mutationRecoveryGraces.clear();
     this.pendingMutationTermination = undefined;
     this.terminatingToolCalls.clear();
+    this.turnClosingContinuations = 0;
     this.turnHadError = false;
   }
 
@@ -5050,6 +5969,7 @@ Delegation rules:
       if (this.agent.state.systemPrompt === promptWithNudge) {
         this.agent.state.systemPrompt = promptBefore;
       }
+      this.applyPendingResumablePrompt();
       this.silentTurnRerunInProgress = false;
       this.suppressSilentTurnRunEnd = false;
     }
@@ -5158,6 +6078,7 @@ Delegation rules:
       if (this.agent.state.systemPrompt === promptWithNudge) {
         this.agent.state.systemPrompt = promptBefore;
       }
+      this.applyPendingResumablePrompt();
       this.progressTurnRerunInProgress = false;
       this.suppressProgressTurnRunEnd = false;
     }
@@ -5348,18 +6269,22 @@ Delegation rules:
   }
 
   /**
-   * Shape the next in-run assistant turn. pi 0.84.4+ calls this only after
-   * `shouldStopAfterTurn` and queued-message checks decide the loop will start
-   * another assistant turn, including between a tool batch and the follow-up
-   * model request. A new user prompt compacts separately in `prompt()` via
-   * `automaticCompactionNeeded`, because that first turn does not go through
-   * this hook.
+   * Shape the next in-run assistant turn: compaction only. pi 0.84.4+ calls
+   * this only after `shouldStopAfterTurn` and queued-message checks decide the
+   * loop will start another assistant turn, including between a tool batch and
+   * the follow-up model request. A new user prompt compacts separately in
+   * `prompt()` via `automaticCompactionNeeded`, because that first turn does
+   * not go through this hook.
+   *
+   * No plugin is consulted for the next request: slot 6
+   * (`runtime.request.before`) is withdrawn, so neither the message list nor
+   * the per-request model and thinking level can come from an extension.
    */
   private async prepareNextTurn(
     turn: PrepareNextTurnContext,
     signal?: AbortSignal,
   ): Promise<AgentLoopTurnUpdate> {
-    return this.extensionContext(await this.prepareNextTurnWithoutExtensions(turn, signal));
+    return this.prepareNextTurnWithoutExtensions(turn, signal);
   }
 
   private async prepareNextTurnWithoutExtensions(
@@ -5477,20 +6402,19 @@ Delegation rules:
     });
     try {
       const runner = this.extensionRunner;
-      if (runner?.hasHandlers("session_before_compact")) {
-        const decision = await runner.emit<{ cancel?: boolean }>(
-          "session_before_compact",
-          { type: "session_before_compact", reason, retentionMode },
-          (acc, next) => (acc?.cancel ? acc : next),
-        );
-        if (decision?.cancel) return false;
-      }
+      // `session_before_compact` is emitted from the compaction itself, once
+      // the segment about to be replaced is known (ADR 0295 slot 11, rule 7).
+      // A plugin that cancelled it is not a failure, so nothing is reported
+      // and no fallback runs.
+      this.compactionCancelled = false;
       const compacted = await this.performCompaction(reason, willRetry, retentionMode);
+      if (this.compactionCancelled) return false;
       if (runner) {
         void runner.emit(compacted ? "session_compact" : "session_compact_failed", {
           type: compacted ? "session_compact" : "session_compact_failed",
           reason,
           aborted: this.compactionAbort?.signal.aborted === true,
+          ...(this.activeCompaction ? { tokensBefore: this.activeCompaction.tokensBefore } : {}),
         });
       }
       return compacted;
@@ -5722,15 +6646,32 @@ Delegation rules:
     // The summary now covers the whole boundary range, so its input is the
     // context that tripped the hard limit. On a window whose headroom leaves
     // less room for the summary request than the hard limit allows, this is the
-    // guard that routes the turn to retained-tail recovery instead.
-    const historyTokens = preparation.messagesToSummarize.reduce(
-      (total, message) => total + estimateTokens(message),
-      0,
-    );
-    const previousSummaryTokens = preparation.previousSummary
-      ? Math.ceil(preparation.previousSummary.length / 4)
-      : 0;
-    return historyTokens + previousSummaryTokens >= summaryInputLimit;
+    // guard that routes the turn to retained-tail recovery instead. It sizes
+    // the prompt the way pi serializes it — tool results already capped —
+    // rather than the raw messages, which overstated tool-heavy sessions by
+    // several times and skipped summaries that would have fit (#543).
+    return estimateSummaryPromptTokens(preparation) >= summaryInputLimit;
+  }
+
+  /**
+   * Fit the summary input under the provider budget. The full input is tried
+   * first; when it is too large, one reduced pass (tool results cut to a short
+   * prefix, thinking dropped) is tried before giving up. The reduced input
+   * still covers every message the checkpoint files behind its boundary, so
+   * nothing is silently dropped from the summary's scope (ADR 0282).
+   */
+  private fitSummaryInputToBudget(
+    preparation: ShapedPreparation,
+    budget: { hardLimit: number; requestHeadroom: number },
+  ): ShapedPreparation | undefined {
+    if (!this.compactionSummaryWouldExceedBudget(preparation, budget)) {
+      return preparation;
+    }
+    const reduced = reduceSummaryInput(preparation);
+    if (!reduced || this.compactionSummaryWouldExceedBudget(reduced, budget)) {
+      return undefined;
+    }
+    return reduced;
   }
 
   private async persistCheckpoint(
@@ -5896,7 +6837,10 @@ Delegation rules:
       this.model,
       undefined,
       this.thinkingLevel,
-      undefined,
+      // Without a policy pi-ai returns the first failed response as-is, which
+      // made a single dropped stream or 503 discard the whole summary (#543).
+      // pi's classifier decides what is transient; the waits honour `signal`.
+      COMPACTION_SUMMARY_RETRY_POLICY,
       undefined,
       withAbortSignal(signal, BACKGROUND_CONTEXT),
     );
@@ -5907,9 +6851,15 @@ Delegation rules:
    * `activeCompaction` mutation, no events. Keeping generation separate from
    * installation is what lets a failed build fall through to the retained-tail
    * recovery path without having already changed the session.
+   *
+   * `session_before_compact` is asked here rather than at the top of the
+   * compaction, because this is where the segment about to be replaced is
+   * known: a plugin that cancels sees the conversation it is cancelling for
+   * (ADR 0295 slot 11, rule 7).
    */
   private async buildCheckpoint(
     signal: AbortSignal,
+    reason: ContextCompactionReason,
     retentionMode: CompactionRetentionMode,
   ): Promise<CheckpointBuild> {
     const entries = this.entriesWithCompaction();
@@ -5932,12 +6882,25 @@ Delegation rules:
         recoverable: true,
       };
     }
+    if (!(await this.extensionSessionBeforeCompact(preparation.value, reason, retentionMode))) {
+      this.compactionCancelled = true;
+      return {
+        ok: false,
+        entries,
+        budget,
+        preparation: preparation.value,
+        tokensBefore: preparation.value.tokensBefore,
+        message: "Context compaction was cancelled by a plugin",
+        recoverable: false,
+        cancelled: true,
+      };
+    }
 
     if (this.compactionStrategy === "fresh_window") {
       return this.buildRolloverCheckpoint(entries, budget, preparation.value);
     }
-
-    if (this.compactionSummaryWouldExceedBudget(preparation.value, budget)) {
+    const summaryInput = this.fitSummaryInputToBudget(preparation.value, budget);
+    if (!summaryInput) {
       return {
         ok: false,
         entries,
@@ -5951,7 +6914,7 @@ Delegation rules:
 
     let result: Awaited<ReturnType<typeof compact>>;
     try {
-      result = await this.generateCompaction(preparation.value, signal);
+      result = await this.generateCompaction(summaryInput, signal);
     } catch (error) {
       return {
         ok: false,
@@ -6096,11 +7059,14 @@ Delegation rules:
     this.compactionAbort = new AbortController();
     let build: CheckpointBuild;
     try {
-      build = await this.buildCheckpoint(this.compactionAbort.signal, retentionMode);
+      build = await this.buildCheckpoint(this.compactionAbort.signal, reason, retentionMode);
     } finally {
       this.compactionAbort = undefined;
     }
     if (!build.ok) {
+      // A plugin cancelled the compaction before anything was attempted: no
+      // failure event and no retained-tail fallback, because nothing failed.
+      if (build.cancelled) return false;
       if (!build.recoverable) {
         this.emitCompactionFailure(reason, build.tokensBefore, build.message);
         return false;
@@ -6255,8 +7221,15 @@ Delegation rules:
         if (event.message.role === "user") {
           const steeringId = this.pendingSteering.get(event.message);
           const id = steeringId ?? this.pendingUserMessageId ?? randomUUID();
-          if (steeringId) this.pendingSteering.delete(event.message);
-          else this.pendingUserMessageId = undefined;
+          if (steeringId) {
+            this.pendingSteering.delete(event.message);
+            // User input is now part of the model context: whatever the model
+            // says next answers the user, not a completion notice, so the
+            // ordinary response contract applies again.
+            this.allowSilentCompletion = false;
+          } else {
+            this.pendingUserMessageId = undefined;
+          }
           this.appendLiveEntry(id, event.message);
           break;
         }
@@ -6341,11 +7314,20 @@ Delegation rules:
           // leaving the user with nothing: the reasoning that may hold the
           // answer is never rendered. Re-run once with a nudge before letting
           // that surface as a finished turn.
-          const silentTurn =
+          const silence =
             !failed &&
             !aborted &&
             responseText.trim().length === 0 &&
             !messageRequestsTools(event.message);
+          // A completion notice needs no acknowledgement, so its own reply may
+          // stay silent (D446). The exception covers exactly that reply: the
+          // first settled response spends it, whether silent, textual, or a
+          // tool batch, so later replies in the same run answer tool results
+          // or user input under the ordinary contract. A provider failure
+          // keeps it for the retried attempt.
+          const exemptSilence = silence && this.allowSilentCompletion;
+          if (!failed && !aborted) this.allowSilentCompletion = false;
+          const silentTurn = silence && !exemptSilence;
           if (silentTurn && !this.silentTurnRerunAttempted) {
             this.silentTurnRerunAttempted = true;
             this.pendingSilentTurnRerun = true;
@@ -6490,7 +7472,18 @@ Delegation rules:
             this.compactionEnabled &&
             overflow &&
             !this.overflowRecoveryAttempted;
-          if (!failed && !aborted && !emptyResponse) {
+          if (exemptSilence) {
+            // Accepted silence is still nothing worth resending: keep it out
+            // of the runtime entries, exactly as a restored transcript would,
+            // and out of pi's transcript state so the next request carries no
+            // empty assistant message. pi appends the message before it
+            // notifies listeners; the identity check keeps this from touching
+            // anything else should that order ever change.
+            const messages = this.agent.state.messages;
+            if (messages.at(-1) === event.message) {
+              this.agent.state.messages = messages.slice(0, -1);
+            }
+          } else if (!failed && !aborted && !emptyResponse) {
             this.appendLiveEntry(assistantId, event.message);
           } else {
             this.turnHadError = true;
@@ -6592,9 +7585,14 @@ Delegation rules:
           break;
         const subagentUsage = this.turnSubagentUsage;
         this.turnSubagentUsage = undefined;
+        const pluginToolUsage = this.turnPluginToolUsage;
+        this.turnPluginToolUsage = undefined;
         this.emit({
           type: "turn_end",
           ...(subagentUsage ? { subagentUsage } : {}),
+          // Slot 5: a plugin tool's own spend is a component of the turn's
+          // recorded usage, never part of the model's token counts.
+          ...(pluginToolUsage ? { pluginToolUsage } : {}),
         });
         break;
       case "agent_end":
@@ -6765,6 +7763,7 @@ Delegation rules:
     this.pendingUserMessageId = undefined;
     this.gracefulStopRequested = false;
     this.runCancelled = false;
+    this.turnPluginToolUsage = undefined;
     this.resetRunRecoveryState();
     this.turnEpoch += 1;
     this.abortDelegationsFromPreviousTurns();
@@ -6823,6 +7822,30 @@ Delegation rules:
     return { turnId: this.turnId };
   }
 
+  /** Consult Before Send before the sidecar acknowledges. No provider work starts here. */
+  async preparePromptInput(input: RuntimePrompt, turnId: string, userMessageId?: string): Promise<RuntimePrompt> {
+    if (this.disposed) throw new Error("runtime disposed");
+    this.assertNotRunning();
+    if (this.promptPreparation) throw Object.assign(new Error("Prompt preparation is already running"), {
+      errorCode: "AGENT_BUSY",
+    });
+    const controller = new AbortController();
+    this.promptPreparation = controller;
+    try {
+      const normalized = input.sessionMessage
+        ? { ...input, text: formatSessionMessage(input.text, input.sessionMessage) }
+        : input;
+      const outgoing = await this.extensionBeforeSend(normalized, turnId, userMessageId);
+      if (controller.signal.aborted) throw turnAbortedError("Prompt preparation was cancelled");
+      if (outgoing.handled) throw pluginHandledPromptError(outgoing.handled);
+      const prepared = { ...normalized, text: outgoing.text ?? normalized.text };
+      this.preparedPromptInputs.add(prepared);
+      return prepared;
+    } finally {
+      if (this.promptPreparation === controller) this.promptPreparation = null;
+    }
+  }
+
   async prompt(
     input: string | RuntimePrompt,
     userMessageId?: string,
@@ -6830,7 +7853,8 @@ Delegation rules:
   ): Promise<{ turnId: string }> {
     if (this.disposed) throw new Error("runtime disposed");
     this.assertNotRunning();
-    const modelInput = typeof input !== "string" && input.sessionMessage
+    const prepared = typeof input !== "string" && this.preparedPromptInputs.delete(input);
+    const modelInput = !prepared && typeof input !== "string" && input.sessionMessage
       ? { ...input, text: formatSessionMessage(input.text, input.sessionMessage), sessionMessage: undefined }
       : input;
     this.retainPendingSteering();
@@ -6841,18 +7865,44 @@ Delegation rules:
     this.gracefulStopRequested = false;
     this.runCancelled = false;
     this.turnSubagentUsage = undefined;
+    this.turnPluginToolUsage = undefined;
     // Capabilities and path-scoped instruction claims belong to one prompt.
     this.resetDeferredToolsForPrompt();
     this.pathInstructionClaims.clear();
     this.pendingUserMessageId = userMessageId;
     this.resetRunRecoveryState();
     this.autonomousExecution = false;
+    // Main resolves this provenance from the Host ledger. Never infer it from
+    // prompt text, model output, extension content, or restored history.
+    const origin = typeof input === "string" ? undefined : input.sessionMessage;
+    this.allowSilentCompletion = origin?.kind === "completion" &&
+      origin.targetSessionId === this.sessionId &&
+      Boolean(origin.messageId?.trim() && origin.replyToMessageId?.trim());
     this.turnEpoch += 1;
     this.abortDelegationsFromPreviousTurns();
     this.requestStartedAt = Date.now();
     this.setAgentActivity({ phase: "starting", since: Date.now() });
     try {
-      const content = promptContent(modelInput);
+      // Slot 1 (ADR 0295 `runtime.send.before`): the desktop has accepted and
+      // persisted the user's message and echoed it to the transcript, and the
+      // message has not reached the agent yet. This is the only point where the
+      // runner can be consulted — Electron main owns the send path but holds no
+      // extension context — and it is late enough that the user's own row
+      // already exists, so a rewrite changes what the model reads while the text
+      // the user typed stays on that row.
+      const outgoing: BeforeSendOutcome = prepared ? { rewrites: [] }
+        : await this.extensionBeforeSend(modelInput, nextTurnId, userMessageId);
+      if (outgoing.handled) throw pluginHandledPromptError(outgoing.handled);
+      // A rewrite applies to the model's copy only: everything below (the
+      // pre-flight checkpoint and the prompt itself) sees the text the plugin
+      // produced.
+      const queuedInput: string | RuntimePrompt =
+        outgoing.text === undefined
+          ? modelInput
+          : typeof modelInput === "string"
+            ? outgoing.text
+            : { ...modelInput, text: outgoing.text };
+      const content = promptContent(queuedInput);
       const incomingUserMessage: AgentMessage = {
         role: "user",
         content,
@@ -6885,11 +7935,10 @@ Delegation rules:
           return { turnId: this.turnId };
         }
       }
-      await this.extensionBeforeAgentStart(modelInput);
-      if (typeof modelInput === "string") {
-        await this.agent.prompt(modelInput);
+      if (typeof queuedInput === "string") {
+        await this.agent.prompt(queuedInput);
       } else {
-        await this.agent.prompt(modelInput.text, promptImages(modelInput));
+        await this.agent.prompt(queuedInput.text, promptImages(queuedInput));
       }
       await this.waitForIdleAndSteering();
       void this.extensionRunner?.emit("agent_settled", { type: "agent_settled" });
@@ -6923,37 +7972,176 @@ Delegation rules:
     return { turnId: this.turnId };
   }
 
-  /** `before_agent_start` hook: extensions may replace the system prompt for this turn. */
-  private async extensionBeforeAgentStart(input: string | RuntimePrompt): Promise<void> {
+  /**
+   * `input` hook — slot 1 (ADR 0295). One consultation per prompt, after the
+   * send and before the message is queued for the model.
+   *
+   * The kernel's three actions are honoured. `continue` (or no answer) passes
+   * the message through; `transform` replaces the text the model reads and
+   * chains, so a later handler sees the text an earlier one produced; `handled`
+   * keeps the message away from the model and names the plugin that did it,
+   * because the user has to be able to read who stopped their message.
+   *
+   * Every `transform` that changed something produces one audit draft, in load
+   * order, so two plugins that both rewrote the message are two records rather
+   * than one attributed to whoever happened to answer last (rule 5).
+   */
+  private async extensionBeforeSend(
+    input: string | RuntimePrompt,
+    turnId: string,
+    userMessageId: string | undefined,
+  ): Promise<BeforeSendOutcome> {
     const runner = this.extensionRunner;
-    if (!runner) return;
-    this.extensionProviderHeaders = undefined;
-    if (runner.hasHandlers("before_provider_headers")) {
-      // Handlers edit the headers object in place, as they do in the pi CLI.
-      const headers: Record<string, string> = { ...(this.provider.headers ?? {}) };
-      await runner.emit("before_provider_headers", { type: "before_provider_headers", headers });
-      this.extensionProviderHeaders = headers;
+    if (!runner?.hasHandlers("input")) return { rewrites: [] };
+    const attachments = typeof input === "string" ? [] : input.attachments ?? [];
+    const payload: TrustedExtensionInputPayload = {
+      type: "input",
+      sessionId: this.sessionId,
+      turnId,
+      text: typeof input === "string" ? input : input.text,
+      images: attachments
+        .filter(
+          (attachment) =>
+            attachment.kind === "image" &&
+            typeof attachment.data === "string" &&
+            attachment.data.length > 0,
+        )
+        .map((attachment) => ({
+          name: attachment.name,
+          ...(attachment.mimeType ? { mimeType: attachment.mimeType } : {}),
+          data: attachment.data!,
+        })),
+      attachments: attachments.map((attachment) => ({
+        name: attachment.name,
+        ref: attachment.path,
+        kind: attachment.kind,
+        ...(attachment.mimeType ? { mimeType: attachment.mimeType } : {}),
+        ...(attachment.size !== undefined ? { size: attachment.size } : {}),
+      })),
+      source: "rpc",
+    };
+    const outcome =
+      (await runner.emit<BeforeSendOutcome>(
+        "input",
+        payload as unknown as Record<string, unknown>,
+        (acc, next, extensionId, extensionLabel) =>
+          foldBeforeSend(acc, next, extensionId, extensionLabel, payload),
+      )) ?? { rewrites: [] };
+    // The records are published without blocking the prompt: an audit write is
+    // a record, never a gate on what the user asked for.
+    if (userMessageId?.trim()) {
+      for (const rewrite of outcome.rewrites) {
+        void this.publishRewrite({
+          sessionId: this.sessionId,
+          turnId,
+          pluginId: rewrite.pluginId,
+          pluginLabel: rewrite.pluginLabel,
+          kind: "outgoing_message",
+          targetMessageId: userMessageId,
+          before: rewrite.before,
+          after: rewrite.after,
+        });
+      }
     }
-    if (!runner.hasHandlers("before_agent_start")) return;
-    const base = this.composeSystemPrompt();
-    const result = await runner.emit<{ systemPrompt?: string }>(
-      "before_agent_start",
-      {
-        type: "before_agent_start",
-        prompt: typeof input === "string" ? input : input.text,
-        systemPrompt: base,
-        systemPromptOptions: {},
-      },
-      (acc, next) => ({ ...(acc ?? {}), ...next }),
-    );
-    this.agent.state.systemPrompt =
-      typeof result?.systemPrompt === "string" ? result.systemPrompt : base;
+    return outcome;
   }
 
   /**
-   * `before_provider_request` rides pi-ai's `onPayload`, `after_provider_response`
-   * its `onResponse`, and the per-turn `before_provider_headers` result merges
-   * into the request headers (spec 16 §6).
+   * Hand one rewrite to the host that owns the audit store (ADR 0295 rule 5).
+   *
+   * The record carries both full texts plus the transcript row it belongs to;
+   * the character-level diff is computed by the owner of `plugin_rewrites`, so
+   * that algorithm stays in one place. A sink that cannot take the record is
+   * reported once per session and never fails the turn: an un-audited rewrite
+   * must not break the prompt it rewrote.
+   */
+  private async publishRewrite(record: TrustedExtensionRewriteRecord): Promise<void> {
+    try {
+      await this.host.call("extensions.rewrites.record", record);
+    } catch (error) {
+      if (this.rewriteAuditWarned) return;
+      this.rewriteAuditWarned = true;
+      process.stderr.write(
+        `[agent-runtime] rewrite not audited (session=${this.sessionId} ` +
+          `plugin=${record.pluginId} kind=${record.kind}): ` +
+          `${error instanceof Error ? error.message : String(error)}\n`,
+      );
+    }
+  }
+
+  /**
+   * Emit one session lifecycle notice (ADR 0295 slot 11, rule 11).
+   *
+   * The embedding host calls this at the moment it owns — creating, deleting,
+   * switching away from or forking a session — because the kernel has a hook
+   * for at most two of those moments and the runner lives here. Every notice is
+   * informed-only and fire-and-forget: nothing is awaited, so a plugin that
+   * stalls cannot delay a session switch, a delete or a fork, and whatever a
+   * handler returns is ignored. Only `session_before_compact` cancels anything,
+   * and that hook is emitted from the compaction itself.
+   */
+  notifySessionLifecycle(notice: TrustedExtensionSessionLifecycleNotice): void {
+    const runner = this.extensionRunner;
+    if (!runner || this.disposed) return;
+    const base = { sessionId: notice.sessionId };
+    const payload:
+      | TrustedExtensionSessionBeforeSwitchPayload
+      | TrustedExtensionSessionBeforeForkPayload
+      | TrustedExtensionSessionLifecyclePayload =
+      notice.change === "switch"
+        ? {
+            type: "session_before_switch",
+            reason: notice.reason,
+            ...base,
+            ...(notice.targetSessionId ? { targetSessionId: notice.targetSessionId } : {}),
+          }
+        : notice.change === "fork"
+          ? {
+              type: "session_before_fork",
+              ...base,
+              ...(notice.entryId ? { entryId: notice.entryId } : {}),
+              position: notice.position,
+            }
+          : { type: TRUSTED_EXTENSION_SESSION_LIFECYCLE_EVENT, change: notice.change, ...base };
+    const event = payload.type as TrustedExtensionEventName;
+    if (!runner.hasHandlers(event)) return;
+    void runner.emit(event, payload as unknown as Record<string, unknown>);
+  }
+
+  /**
+   * `session_before_compact` hook with the segment (ADR 0295 slot 11, rule 7).
+   *
+   * The payload carries the conversation the checkpoint is about to replace,
+   * which exists for exactly this moment: that is what a "rescue before
+   * compaction" plugin needs. `false` means a plugin cancelled the compaction;
+   * an over-budget handler counts as no opinion and is reported by the runner.
+   */
+  private async extensionSessionBeforeCompact(
+    preparation: ShapedPreparation,
+    reason: ContextCompactionReason,
+    retentionMode: CompactionRetentionMode,
+  ): Promise<boolean> {
+    const runner = this.extensionRunner;
+    if (!runner?.hasHandlers("session_before_compact")) return true;
+    const segment: TrustedExtensionCompactionSegment = {
+      messages: preparation.messagesToSummarize,
+      messageCount: preparation.messagesToSummarize.length,
+      tokensBefore: preparation.tokensBefore,
+      retained: preparation.retainedTail,
+    };
+    const decision = await runner.emit<{ cancel?: boolean }>(
+      "session_before_compact",
+      { type: "session_before_compact", reason, retentionMode, segment },
+      (acc, next) => (acc?.cancel ? acc : next),
+    );
+    return decision?.cancel !== true;
+  }
+
+
+  /**
+   * `after_provider_response` rides pi-ai's `onResponse` (spec 16 §6). Slot 6
+   * (`runtime.request.before`) is withdrawn, so neither a payload rewrite nor a
+   * per-turn header merge is wired here.
    */
   private withExtensionProviderHooks(
     options: SimpleStreamOptions,
@@ -6962,21 +8150,6 @@ Delegation rules:
     const runner = this.extensionRunner;
     if (!runner) return options;
     const next: SimpleStreamOptions = { ...options };
-    if (this.extensionProviderHeaders) {
-      next.headers = mergeProviderHeaders(options.headers, this.extensionProviderHeaders);
-    }
-    if (runner.hasHandlers("before_provider_request")) {
-      next.onPayload = async (payload, payloadModel) => {
-        const base = await options.onPayload?.(payload, payloadModel);
-        const current = base ?? payload;
-        const replaced = await runner.emit<unknown>(
-          "before_provider_request",
-          { type: "before_provider_request", payload: current },
-          (_acc, value) => value,
-        );
-        return replaced ?? base;
-      };
-    }
     if (runner.hasHandlers("after_provider_response")) {
       next.onResponse = async (response, responseModel) => {
         await options.onResponse?.(response, responseModel);
@@ -7017,6 +8190,14 @@ Delegation rules:
       });
     }
     return { projectPath: this.projectPath, supportsVision: this.model.input.includes("image") };
+  }
+
+  async prepareSteering(input: RuntimePrompt, expectedTurnId: string, messageId: string): Promise<RuntimePrompt> {
+    this.steeringContext(expectedTurnId);
+    const outgoing = await this.extensionBeforeSend(input, expectedTurnId, messageId);
+    this.steeringContext(expectedTurnId);
+    if (outgoing.handled) throw pluginHandledPromptError(outgoing.handled);
+    return outgoing.text === undefined ? input : { ...input, text: outgoing.text };
   }
 
   steer(input: RuntimePrompt, expectedTurnId: string, message: UiMessage): { accepted: boolean; turnId: string } {
@@ -7066,6 +8247,7 @@ Delegation rules:
   }
 
   async abort(): Promise<void> {
+    this.promptPreparation?.abort();
     this.acceptingSteering = false;
     this.gracefulStopRequested = false;
     this.runCancelled = true;
@@ -7111,6 +8293,7 @@ Delegation rules:
     if (runner) await runner.dispose().catch(() => undefined);
     this.streamSink.dispose();
     this.disposed = true;
+    this.promptPreparation?.abort();
     this.acceptingSteering = false;
     this.runCancelled = true;
     this.resolvePendingAskTools();
@@ -7122,6 +8305,8 @@ Delegation rules:
     this.mutationRecoveryGraces.clear();
     this.pendingMutationTermination = undefined;
     this.terminatingToolCalls.clear();
+    this.delegateToolCalls.clear();
+    this.appendedDelegationRowIds.clear();
     this.gracefulStopRequested = false;
     this.hostCloseUnsubscribe?.();
     this.hostCloseUnsubscribe = undefined;

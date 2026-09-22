@@ -1,0 +1,403 @@
+<!-- status: draft · issue #545 · branch feat/528-plugin-slots -->
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>输入区 · 数据流</title>
+<style>
+  :root{
+    --bg:#0e0e0e; --surface:#161616; --surface-2:#101010; --line:#2a2a2a; --line-2:#353535;
+    --text:#ededed; --text-2:#b0b0b0; --muted:#7d7d7d; --faint:#5c5c5c;
+    --ok:#40c977; --ok-bg:rgba(64,201,119,.10);
+    --warn:#ff8549; --warn-bg:rgba(255,133,73,.10);
+    --ui:#c27aff; --ui-bg:rgba(194,122,255,.10);
+    --host:#40c977; --slot:#c27aff; --plugin:#ff8549;
+    --font:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;
+    --mono:ui-monospace,"SF Mono","Cascadia Code",Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0}
+  body{background:var(--bg);color:var(--text);font-family:var(--font);font-size:14px;line-height:1.65;-webkit-font-smoothing:antialiased}
+  code{font-family:var(--mono);font-size:12.5px;color:var(--text-2)}
+  pre{background:var(--surface-2);border:1px solid var(--line);border-radius:10px;padding:13px 15px;overflow:auto;font-family:var(--mono);font-size:12.5px;line-height:1.6;color:var(--text-2);margin:0 0 14px}
+  pre .k{color:var(--ui)}
+  pre .c{color:var(--faint)}
+  .plan-nav{display:flex;flex-wrap:wrap;align-items:center;gap:4px;padding:10px 28px;background:#0c0c0c;border-bottom:1px solid var(--line);font-size:13px}
+  .plan-nav a{color:var(--text-2);text-decoration:none;padding:3px 8px;border-radius:6px}
+  .plan-nav a:hover{background:var(--surface);color:var(--text)}
+  .plan-nav a[aria-current="page"]{background:var(--surface);color:var(--text);box-shadow:inset 0 0 0 1px var(--line-2)}
+  .plan-nav .sep{color:var(--faint);padding:0 2px}
+  .plan-nav .spacer{flex:1}
+  .top{border-bottom:1px solid var(--line);padding:24px 28px 20px;background:linear-gradient(180deg,#141414,#0e0e0e)}
+  .top .crumb{font-family:var(--mono);font-size:11.5px;color:var(--faint);letter-spacing:.06em}
+  .top h1{margin:6px 0 6px;font-size:21px;letter-spacing:-.01em}
+  .top p{margin:0;color:var(--text-2);max-width:80ch}
+  .top .meta{margin-top:8px;color:var(--faint);font-size:12.5px}
+  main{max-width:920px;margin:0 auto;padding:24px 28px 80px}
+  section{margin:0 0 40px}
+  section > h2{display:flex;align-items:baseline;gap:8px;margin:0 0 10px;font-size:17px;border-top:1px solid var(--line);padding-top:14px}
+  section > h2 .n{font-family:var(--mono);font-size:11px;color:var(--faint)}
+  section > h2 .tag{font-family:var(--mono);font-size:11px;padding:1px 6px;border-radius:4px}
+  .tag.decided{color:var(--ok);background:var(--ok-bg)}
+  .tag.proposal{color:var(--warn);background:var(--warn-bg)}
+  .tag.open{color:var(--ui);background:var(--ui-bg)}
+  h3{margin:22px 0 8px;font-size:14.5px;color:var(--text)}
+  p{margin:0 0 10px}
+  ul{margin:0 0 12px;padding-left:1.2em}
+  li{margin:4px 0}
+  table{width:100%;border-collapse:collapse;font-size:13.5px;margin:0 0 14px}
+  th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{color:var(--muted);font-weight:500;font-size:12px;letter-spacing:.03em;text-transform:uppercase}
+  td.id{font-family:var(--mono);font-size:12.5px;color:var(--text-2);white-space:nowrap}
+  .callout{margin:0 0 14px;padding:11px 13px;border-radius:9px;background:var(--surface);color:var(--text-2);font-size:13px}
+  .callout.decided{border-left:2px solid var(--ok)}
+  .callout.warn{border-left:2px solid var(--warn)}
+  .callout.open{border-left:2px solid var(--ui)}
+  .callout b{color:var(--text);font-weight:560}
+  /* 三泳道图（同 ui/user-message 的画法） */
+  .flow{border:1px solid var(--line);border-radius:12px;overflow:hidden;margin:0 0 14px}
+  .flow-head{display:grid;grid-template-columns:1fr 1fr 1fr;background:var(--surface-2);font-size:12.5px;font-weight:560}
+  .flow-head div{padding:9px 14px}
+  .flow-head div + div{border-left:1px solid var(--line)}
+  .flow-head .h{color:var(--host)}
+  .flow-head .s{color:var(--slot)}
+  .flow-head .p{color:var(--plugin)}
+  .flow-body{display:grid;grid-template-columns:1fr 1fr 1fr}
+  .lane{padding:12px 14px;font-size:13px}
+  .lane + .lane{border-left:1px solid var(--line)}
+  .lane ul{margin:0;padding:0;list-style:none}
+  .lane li{padding:5px 0;border-bottom:1px dashed var(--line)}
+  .lane li:last-child{border-bottom:0}
+  .lane .what{display:block;font-family:var(--mono);font-size:12px;color:var(--text)}
+  .lane .why{display:block;color:var(--muted);font-size:12px}
+  .arrow-row{display:grid;grid-template-columns:1fr 1fr 1fr;border-top:1px solid var(--line);background:var(--surface-2);font-family:var(--mono);font-size:12px;color:var(--muted)}
+  .arrow-row div{padding:8px 14px}
+  .arrow-row div + div{border-left:1px solid var(--line)}
+  .arrow-row .x{color:var(--host)}.arrow-row .y{color:var(--plugin)}
+  /* 带步骤号的流 */
+  .steps{list-style:none;margin:0 0 14px;padding:0;counter-reset:step}
+  .steps > li{position:relative;padding:10px 13px 10px 44px;margin:0 0 8px;background:var(--surface);border-radius:9px}
+  .steps > li::before{counter-increment:step;content:counter(step);position:absolute;left:13px;top:11px;display:grid;place-items:center;width:20px;height:20px;border-radius:99px;background:var(--ui-bg);color:var(--ui);font-family:var(--mono);font-size:11px}
+  .steps b{color:var(--text)}
+</style>
+</head>
+<body>
+
+<nav class="plan-nav">
+  <a href="../../index.html">插件插槽目录</a>
+  <span class="sep">/</span>
+  <a href="index.html">输入区</a>
+  <span class="spacer"></span>
+  <a href="index.html">目录</a>
+  <a href="requirements.html">需求</a>
+  <a href="demo.html">演示</a>
+  <a href="data-flow.html" aria-current="page">数据流</a>
+</nav>
+
+<header class="top">
+  <div class="crumb">docs/plugin-plan · ui/composer</div>
+  <h1>输入区 · 数据流</h1>
+  <p>数据怎么在宿主、输入框和插件之间流动：四个界面槽、读写草稿两个方法和附件三动作、记号的一生，以及发送时发生什么。每个接口写清传什么、返回什么、错误情况，配调用示例和示例场景。字段名是建议值，结构是拍板的。</p>
+  <div class="meta">status: draft · issue #545 · 对照 requirements.html 与 demo.html</div>
+</header>
+
+<main>
+
+<!-- ============ 1 接口约定 ============ -->
+<section>
+  <h2><span class="n">1</span>接口约定 <span class="tag decided">已定</span></h2>
+
+  <p>每个接口三件套：传什么 / 返回什么（含错误）、调用示例、示例场景（文字场景，不是界面演示）。字段名是建议值，结构是拍板的。</p>
+
+  <h3>四个界面槽</h3>
+  <table>
+    <thead><tr><th>槽</th><th>插件拿到什么</th><th>插件能做什么</th></tr></thead>
+    <tbody>
+      <tr><td class="id">composer.left</td><td>所在会话、当前草稿文字</td><td>在左排固定件（附件 / 模式 / 权限）右边加自己的按钮和弹层</td></tr>
+      <tr><td class="id">composer.middle</td><td>所在会话、当前草稿文字</td><td>加自己的按钮；通过排序声明处置宿主现成组件 <code>ContextUsage</code>——可隐藏、可显示、可重排（契约见下）</td></tr>
+      <tr><td class="id">composer.trigger</td><td>用户打出符号后的筛选文字</td><td>返回列表行和状态之一（见下面的形状）</td></tr>
+      <tr><td class="id">composer.content</td><td>触发符选中项的数据</td><td>给出记号的 icon 和文字。记号外形宿主固定，【icon | 文字】（拍板）</td></tr>
+    </tbody>
+  </table>
+
+  <h3>中槽 composer.middle（拍板：排序权归插件；写法对齐 ui/user-message）</h3>
+
+  <p><b>插件能拿到的数据</b></p>
+  <pre><span class="c">// 槽输入（宿主 → 插件）</span>
+{
+  <span class="k">sessionId</span>,
+  <span class="k">draftText</span>                    <span class="c">// 当前草稿文字。用量数据不随槽给——组件自己有</span>
+}</pre>
+
+  <p><b>宿主提供的现成组件</b>（插件可以直接用，也可以不用、自己画；不是必须套的外壳）</p>
+  <table>
+    <thead><tr><th>组件</th><th>画什么</th><th>不用它的话，插件要自己做什么</th></tr></thead>
+    <tbody>
+      <tr><td class="id">ContextUsage</td><td>上下文用量：圆环 + 百分比，点开有明细弹层。数据、交互、样子都是组件自带的，默认装在中槽里</td><td>用量显示和明细弹层全部自己画；数据可以找宿主要（usedTokens / maxTokens / percent / cacheHitPercent，字段名是建议值）</td></tr>
+    </tbody>
+  </table>
+
+  <p><b>插件交回的：一次排序声明</b></p>
+  <pre>{
+  <span class="k">order</span>: [ <span class="c">"ContextUsage"</span>, <span class="c">"self.polish"</span>, <span class="c">"self.undo"</span> ]
+  <span class="c">// ContextUsage = 宿主的现成组件，写在哪它就排在哪</span>
+  <span class="c">// self.*       = 本插件的按钮，按数组顺序排</span>
+  <span class="c">// 不写进数组 = 隐藏。不写 ContextUsage 就是把它藏掉，</span>
+  <span class="c">// 再画自己的等效显示，就是「替换」（demo 场景 4）</span>
+}</pre>
+  <div class="callout decided"><b>多个插件怎么合成一个中槽。</b>插件之间按声明（安装）顺序依次展开各自的 <code>order</code> 数组；对 <code>ContextUsage</code> 的处置以<b>声明顺序第一个表态的插件为准</b>，后面的插件再声明无效——和触发符「先装者为准」同一个思路。插件出错或卸载时，按<b>剩余插件</b>的声明顺序重算；没人表态，ContextUsage 回默认位置。</div>
+
+  <p><b>不提供什么</b></p>
+  <table>
+    <thead><tr><th>不给</th><th>为什么</th></tr></thead>
+    <tbody>
+      <tr><td class="id">ContextUsage 的内部样子</td><td>组件长什么样、点开弹层里有什么，是宿主的；插件只能决定摆不摆、摆在哪，不能改它的内部</td></tr>
+      <tr><td class="id">中槽里的其他宿主控件</td><td>中槽里宿主的东西只有 ContextUsage 一个；模型选择、发送 / 停止不在中槽范围</td></tr>
+      <tr><td class="id">草稿与附件</td><td>中槽只管这一段按钮的摆法；读写草稿和附件走三个方法，不挂在槽上</td></tr>
+    </tbody>
+  </table>
+  <p><b>示例场景</b>：草稿统计插件在默认顺序里加一个自己的按钮（demo 场景 7），或把 ContextUsage 排到自己按钮后面（demo 场景 8）；用量增强插件把 ContextUsage 藏掉，换成自己画的更细用量（demo 场景 4）。</p>
+
+  <h3>方法 ① 读草稿（权限 <code>composer.readDraft</code>）</h3>
+  <pre><span class="c">// 请求：无参数</span>
+composer.readDraft()
+
+<span class="c">// 返回</span>
+{
+  <span class="k">sessionId</span>,                <span class="c">// 当前会话 id；没有会话时整次调用报错</span>
+  <span class="k">version</span>,                  <span class="c">// 草稿版本号；每次草稿变化后 +1（用户打字、删改、插件写入都算），按会话计</span>
+  <span class="k">text</span>,                     <span class="c">// 输入框当前文字，每个记号占一个内部字符</span>
+  <span class="k">tokens</span>: [                 <span class="c">// 记号列表，按在 text 里出现的顺序</span>
+    { <span class="k">key</span>, <span class="k">label</span>, <span class="k">send</span>, <span class="k">payload</span>, <span class="k">at</span> }
+    <span class="c">// key = 宿主登记记号时分配的稳定 id，全程不变</span>
+    <span class="c">// at  = 记号内部字符在 text 里的位置，仅用于展示 / 统计</span>
+    <span class="c">// payload 只还给写入它的那个插件；别家记号此字段省略</span>
+  ]
+}</pre>
+  <p><b>示例场景</b>：草稿统计插件（demo 场景 7）每次草稿变化后读一次，算出字数和 token 估算画在自己按钮上；增强类插件把快照原样存下来，供自己的撤销用。</p>
+
+  <h3>方法 ② 写草稿（权限 <code>composer.writeDraft</code>）</h3>
+  <pre><span class="c">// 请求</span>
+composer.writeDraft({
+  <span class="k">sessionId</span>,               <span class="c">// 必须是 read 时的会话；对不上当前会话整次拒绝</span>
+  <span class="k">baseVersion</span>,               <span class="c">// 之前 readDraft 拿到的版本号；提交时刻比对，先到先得</span>
+  <span class="k">text</span>,                      <span class="c">// 可混排三种内容：普通文字、{{t1}} 新记号占位符、</span>
+                             <span class="c">// read 给过的内部字符（记号引用，原样放回即可）</span>
+  <span class="k">tokens</span>: [                  <span class="c">// 两种形态</span>
+    { <span class="k">key</span> },                               <span class="c">// 引用：既有记号，宿主用登记表里的原 label / send / payload</span>
+    { <span class="k">key</span>: <span class="c">"t1"</span>, <span class="k">label</span>, <span class="k">send</span>, <span class="k">payload</span> }   <span class="c">// 新记号：对应 text 里的 {{t1}}，宿主分配内部字符和正式 key</span>
+  ],
+  <span class="k">mode</span>: <span class="c">"replace"</span> | <span class="c">"insert"</span>   <span class="c">// 整体替换 / 光标处插入</span>
+})
+
+<span class="c">// 返回</span>
+{ <span class="k">version</span> }                  <span class="c">// 写入后的新版本号</span></pre>
+  <ul>
+    <li><b>replace 是「所见即所写」</b>：新 text 里没有出现的既有记号就是被删了；要保住（自己的、别人的、用户的 <code>@文件</code>）就把它作为引用放进 tokens，内部字符原样留在 text 里。</li>
+    <li>引用的 key 不在登记表里 → 整次拒绝。insert 的 text 只允许普通文字和 <code>{{t1}}</code> 新记号，不接受引用。</li>
+    <li>占位符只在<b>本次请求的 tokens 里</b>解析；正文里其他 <code>{{…}}</code> 按普通文字保留——想要字面的 <code>{{t1}}</code> 文字，就不要在 tokens 里声明 t1（不提供转义语法）。text 里出现某个占位符但 tokens 没给对应数据 → 整次拒绝。</li>
+    <li>宿主分配内部字符和正式 key。<b>登记表</b>按会话只增不删（内存，重开应用即清）：草稿里的记号可以删，登记表留着，被删的记号凭 key 引用还能还原（撤销依赖这一点）。插件写入里的 <code>{{t1}}</code> 只是本次的临时名。</li>
+    <li><b>版本号在每次草稿变化后 +1</b>：用户打字、删改、插件写入都算。baseVersion 比对发生在宿主提交的那一刻，单线程先到先得，后到整次拒绝——不会静默覆盖别人的写入或用户刚打的字。</li>
+    <li>text 里的内部字符只认<b>当前会话</b>登记表里的，对不上 → 整次拒绝（防旧快照串会话）。</li>
+    <li>宿主自己的记号（编辑锚点）插件<b>动不了</b>：replace 的 text 里丢掉它 → 整次拒绝，也不能引用它。</li>
+    <li>写入必须在约 0.5 秒内被输入框真正显示，否则整次作废并报错。</li>
+  </ul>
+  <p><b>示例场景</b>：常用语插件（demo 场景 5）用 insert 在光标处插一段模板；润色插件（demo 场景 4）用 replace 换成润色后的整段文字，把用户原有的 <code>@文件</code> 记号作为引用带回去；撤销时重新 read 拿新 baseVersion，把旧快照原样回写。</p>
+
+  <h3>附件三动作（一个权限 <code>composer.attachments</code>）</h3>
+  <pre><span class="c">// ③ 加 —— 内容由插件自己存（存哪里由插件开发者决定），宿主只登记一条</span>
+composer.attachments.add({
+  <span class="k">name</span>: <span class="c">"chart.png"</span>,        <span class="c">// 显示名，必须带扩展名</span>
+  <span class="k">mimeType</span>: <span class="c">"image/png"</span>,     <span class="c">// 决定画图片缩略还是文件芯片</span>
+  <span class="k">ref</span>                        <span class="c">// 插件侧的地址（本地路径或 URL），指向内容本体</span>
+})
+<span class="c">// 返回</span>
+{ <span class="k">id</span> }                        <span class="c">// 登记成功才有 id，移除和记号引用都要用</span>
+<span class="c">// 错误：名字没有扩展名 → 整次拒绝</span>
+
+<span class="c">// ④ 列 —— 当前输入框里的全部附件</span>
+composer.attachments.list()
+<span class="c">// 返回</span>
+[{ <span class="k">id</span>, <span class="k">name</span>, <span class="k">kind</span>: <span class="c">"image" | "file"</span>, <span class="k">mimeType</span>, <span class="k">size</span>,
+   <span class="k">source</span>: <span class="c">"user" | 插件名</span> }]   <span class="c">// source 标记谁加的</span>
+
+<span class="c">// ⑤ 移</span>
+composer.attachments.remove(id)
+<span class="c">// 返回</span>
+{ <span class="k">ok</span>: <span class="c">true</span> }
+<span class="c">// 错误：id 不存在，或那条不是本插件加的（用户加的、别的插件加的）→ 拒绝，列表不变</span></pre>
+  <div class="callout decided"><b>插件附件的存法（拍板）。</b>内容确实是插件生成的，但存在<b>插件自己决定的地方</b>，插件拿到地址后只把地址登记进附件区。宿主不存内容、没有暂存副本；发送时宿主按地址把内容取回来，当正常附件随消息发送，地址取不到 → 阻断这次发送并报错。大小上限在发送取内容时校验。内容本体的生命周期由插件自己管。附件登记<b>随会话走</b>：切会话即清空，随会话删除。</div>
+  <p><b>示例场景</b>：图表插件生成 chart.png 存到自己管理的目录，add 登记地址拿到 id，list 把当前附件画进左槽按钮的弹层给用户看（demo 场景 6）；清理时只能 remove 自己加的那条登记。</p>
+
+  <h3>触发符：注册与回答</h3>
+  <pre><span class="c">// 清单里声明：一个触发符号（单个字符）。/ 和 @ 不开放；</span>
+<span class="c">// 安装时查冲突，先装者为准，后装者该符号不生效</span>
+{ <span class="k">"composer.trigger"</span>: <span class="c">"#"</span> }
+
+<span class="c">// 宿主 → 插件：用户打出符号后，每次筛选变化传一次</span>
+{ <span class="k">symbol</span>: <span class="c">"#"</span>, <span class="k">query</span>: <span class="c">"数据"</span> }   <span class="c">// query 为空串 = 刚打出符号，还没输入</span>
+
+<span class="c">// 插件 → 宿主：四态回答，每次问询答一次</span>
+{ <span class="k">state</span>: <span class="c">"loading"</span> }
+{ <span class="k">state</span>: <span class="c">"ready"</span>, <span class="k">items</span>: [
+    { <span class="k">icon</span>, <span class="k">title</span>, <span class="k">description</span>, <span class="k">hint</span>,
+      <span class="k">token</span>: { <span class="k">label</span>, <span class="k">send</span>, <span class="k">payload</span> } }   <span class="c">// 选中就用它，不再问第二次</span>
+] }
+{ <span class="k">state</span>: <span class="c">"empty"</span>, <span class="k">hint</span> }
+{ <span class="k">state</span>: <span class="c">"error"</span>, <span class="k">message</span>, <span class="k">retry</span> }   <span class="c">// retry = 是否给重试按钮</span></pre>
+  <ul>
+    <li>符号后面的文字是筛选条件；文字里出现空白，弹层关闭。</li>
+    <li>弹层的外观、键盘交互是宿主的；四态回答协议与各状态样式、输入防抖均已按建议值拍板。</li>
+  </ul>
+  <p><b>示例场景</b>：数据源插件（demo 场景 3）收到 query 后去远程拉匹配项，先答 loading、拉到答 ready；失败答 error 并带重试按钮。</p>
+
+  <h3>记号（chip）：插件一次给三样</h3>
+  <pre>{
+  <span class="k">label</span>: <span class="c">"知识库1"</span>,                    <span class="c">// 给人看，画在 chip 上，宿主不解析</span>
+  <span class="k">send</span>:                                   <span class="c">// 给 AI，发送时替换记号所在位置</span>
+    { <span class="k">mode</span>: <span class="c">"text"</span>, <span class="k">text</span>: <span class="c">"#datadb:type2:id:1"</span> }   <span class="c">// 展开成文字插回原位</span>
+  | { <span class="k">mode</span>: <span class="c">"attachment"</span>, <span class="k">id</span> }           <span class="c">// 变成结构化附件，引用本插件登记的那个（别家的 id 拒绝）</span>
+  | { <span class="k">mode</span>: <span class="c">"none"</span> }                      <span class="c">// 不发送，只是输入框里的元信息（编辑锚点用）</span>
+  <span class="k">payload</span>: { … }                          <span class="c">// 插件自己的数据，宿主原样存、原样还，永不解析</span>
+}</pre>
+  <p><b>示例场景</b>：知识库引用。用户在触发符列表里选中「产品手册」，插件交 <code>label: "产品手册"</code>、<code>send.text: "#datadb:type2:id:1"</code>、<code>payload: { kbId, docId }</code>；发送时宿主把文字插回记号位置，payload 从不进消息。</p>
+  <div class="callout decided"><b>key 由宿主分配（拍板）。</b>插件交的只有 label / send / payload；宿主登记记号时分配内部字符和稳定 key（触发符选中的记号同样有），readDraft 返回的就是它。插件写入里的 <code>{{名字}}</code> 只是本次写入的临时名。</div>
+  <div class="callout decided"><b>记号外形宿主固定（拍板）。</b>样子是【icon | 文字】：icon 用选中列表项时的图标，文字是 label。插件不能换外形，和 <code>@文件</code> 引用一致。记号随历史消息持久化的契约对齐斜杠命令的存法，实现排在最后；之前编辑旧消息看到的是展开后的文字。</div>
+</section>
+
+<!-- ============ 2 数据怎么走 ============ -->
+<section>
+  <h2><span class="n">2</span>数据怎么走 <span class="tag decided">已定</span></h2>
+
+  <div class="flow">
+    <div class="flow-head">
+      <div class="h">宿主（输入框）</div>
+      <div class="s">插槽边界</div>
+      <div class="p">插件</div>
+    </div>
+    <div class="flow-body">
+      <div class="lane">
+        <ul>
+          <li><span class="what">草稿文字 + 记号表</span><span class="why">输入框的本体，宿主持有</span></li>
+          <li><span class="what">附件区登记</span><span class="why">显示、随消息发送是宿主的；插件附件的内容存在插件侧</span></li>
+          <li><span class="what">固定件</span><span class="why">附件 / 模式 / 权限 / 模型 / 发送</span></li>
+          <li><span class="what">弹层 chrome 和 chip 外形</span><span class="why">键盘、回车、删除是宿主的</span></li>
+          <li><span class="what">出错隔离</span><span class="why">每个位置单独隔开</span></li>
+        </ul>
+      </div>
+      <div class="lane">
+        <ul>
+          <li><span class="what">位置</span><span class="why">左排固定件后 / 模型选择前 / 弹层 / 记号</span></li>
+          <li><span class="what">顺序</span><span class="why">插件之间按声明顺序；槽内顺序由插件的排序声明决定</span></li>
+          <li><span class="what">出错兜底</span><span class="why">报错就画回宿主自己的控件</span></li>
+          <li><span class="what">插件卸载后</span><span class="why">位置收回；残留记号退化成普通文字，显示 label</span></li>
+        </ul>
+      </div>
+      <div class="lane">
+        <ul>
+          <li><span class="what">注册槽和触发符号</span><span class="why">清单声明 + 运行时注册</span></li>
+          <li><span class="what">答筛选 → 给列表行</span><span class="why">可以去远程拉</span></li>
+          <li><span class="what">选中时给 label / send / payload</span><span class="why">一次给全，之后不再被问</span></li>
+          <li><span class="what">调三个方法</span><span class="why">读草稿 / 写草稿 / 附件三动作</span></li>
+        </ul>
+      </div>
+    </div>
+    <div class="arrow-row">
+      <div class="x">数据往下传 →</div>
+      <div class="x">同一个页面进程，直接传 →</div>
+      <div class="y">← 方法调用回调</div>
+    </div>
+  </div>
+
+  <h3>记号的一生</h3>
+  <ol class="steps">
+    <li><b>选中</b> — 插件交回 label、send、payload。宿主分配内部字符，把记号画进输入框，登记进记号表。</li>
+    <li><b>存在草稿里</b> — 记号表跟草稿存在同样的地方：内存，随会话切换保留，重开应用即清空。不落盘。</li>
+    <li><b>读出来</b> — readDraft 把文字和记号表一起交回，payload 原样还原。</li>
+    <li><b>发送</b> — 宿主机械展开，<b>不问插件</b>：<code>text</code> 的把文字插回原位；<code>attachment</code> 的让那个附件随消息走（同一附件不会发两份）；<code>none</code> 的直接消失。消息里存的是展开后的文字。</li>
+  </ol>
+
+  <h3>插件附件的一生</h3>
+  <ol class="steps">
+    <li><b>生成并自存</b> — 插件生成内容，存到自己决定的位置（自己的数据目录、服务端……），拿到一个地址。</li>
+    <li><b>登记</b> — attachments.add 交 { name, mimeType, ref }；宿主登记一条、画缩略，返回 id。宿主不存内容。</li>
+    <li><b>引用或发送</b> — 记号的 <code>send.attachment</code> 用 id 引用它；或用户直接带着它发送。发送时宿主按地址取回内容，当正常附件随消息走。</li>
+    <li><b>清理</b> — 内容本体由插件自己管；宿主侧只有登记条目，随附件区的移除而消失。</li>
+  </ol>
+
+  <h3>编辑历史消息</h3>
+  <ol class="steps">
+    <li><b>点「编辑」</b> — 正文回填到底部输入框，前面出现一个宿主自己的<b>锚点记号</b>（原文预览，超长隐藏；和 <code>@文件</code> 引用同一套机制）。原消息里的记号还原成 chip。</li>
+    <li><b>删锚点</b> — 退出编辑，剩下的文字变回一条普通新消息。</li>
+    <li><b>再点另一条的「编辑」</b> — 直接清空输入框、回填新的，未发送的改动直接丢弃（拍板：不保护）。</li>
+    <li><b>发送</b> — 走普通发送逻辑。有锚点时先删掉被编辑那条及之后的对话，再把编辑后的内容作为那条消息重发（拍板：截断重跑）。</li>
+  </ol>
+
+  <div class="callout decided"><b>手打的 <code>#知识库1</code> 不是记号。</b>只有触发符选中、或插件通过占位符写入产生的才算。按文字样式反推记号要处理歧义和输入法，不做。</div>
+</section>
+
+<!-- ============ 3 出错怎么办 ============ -->
+<section>
+  <h2><span class="n">3</span>出错怎么办 <span class="tag decided">一定会遇到</span></h2>
+  <table>
+    <thead><tr><th>情况</th><th>结果</th><th>靠什么保证</th></tr></thead>
+    <tbody>
+      <tr><td class="id">插件界面抛错</td><td>只有出错的那一小块收起来，宿主把这个位置上自己的控件按默认布局画回来；其余插件不受影响</td><td>每个位置独立的出错隔离</td></tr>
+      <tr><td class="id">排序声明有问题</td><td>整份声明作废，中槽按宿主默认布局画回</td><td>order 里只能引用 <code>ContextUsage</code> 和本插件自己的按钮</td></tr>
+      <tr><td class="id">列表拉取失败</td><td>插件答 <code>error</code> 状态和文案，宿主用固定样式画出来；重试按钮由插件决定</td><td>四态回答里的 error</td></tr>
+      <tr><td class="id">写草稿超时</td><td>整次写入作废，给插件一个明确的错误</td><td>写入必须在约 0.5 秒内被输入框消费</td></tr>
+      <tr><td class="id">插件自己做撤销</td><td>可行：旧快照原样回写（既有记号按 key 引用带上），写回前重新读一次拿新版本号</td><td>每次写入推进版本号；<code>baseVersion</code> 对不上整次拒绝</td></tr>
+      <tr><td class="id">附件地址取不到 / 超限 / 登记已被移除</td><td>阻断这次发送并报错；登记条目保留，移除后可重试</td><td>发送时统一校验：地址可达、大小上限、id 还在附件区</td></tr>
+      <tr><td class="id">移除别人的附件</td><td>拒绝，输入框内容不变</td><td>remove 只能动自己加的（source 校验）</td></tr>
+      <tr><td class="id">插件被卸载</td><td>位置收回，宿主控件画回来；草稿里残留的插件记号退化成普通文字，显示 label（txt）</td><td>锚点记号是宿主的，不受影响</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<!-- ============ 4 不提供什么 ============ -->
+<section>
+  <h2><span class="n">4</span>不提供什么 <span class="tag decided">已定</span></h2>
+  <table>
+    <thead><tr><th>不给</th><th>为什么</th></tr></thead>
+    <tbody>
+      <tr><td class="id">发送前的拦截点</td><td>解析只在选中那一刻做一次，发送是宿主机械展开</td></tr>
+      <tr><td class="id">宿主级撤销</td><td>插件配合 readDraft 自己实现</td></tr>
+      <tr><td class="id"><code>/</code> 和 <code>@</code> 两个符号</td><td>宿主自己的，不对插件开放</td></tr>
+      <tr><td class="id">payload 的内容</td><td>宿主不看、不理解，只搬运</td></tr>
+      <tr><td class="id">别家记号的 payload</td><td>payload 只还给写入它的那个插件（拍板）；别的插件读草稿时此字段省略。label / send 可见是有意的：宿主渲染和发送都要用</td></tr>
+      <tr><td class="id">历史消息</td><td>三个方法只针对当前输入框</td></tr>
+      <tr><td class="id">别人的附件</td><td>remove 只能动自己加的；用户加的、别的插件加的动不了</td></tr>
+      <tr><td class="id">编辑切换的保护</td><td>拍板：切换编辑对象直接清空，不提示、不还原</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<!-- ============ 5 相关条目 ============ -->
+<section>
+  <h2><span class="n">5</span>相关条目</h2>
+  <table>
+    <thead><tr><th>谁</th><th>关系</th><th>位置</th></tr></thead>
+    <tbody>
+      <tr><td class="id">ui/user-message</td><td>发出去之后的消息卡；记号展开后的文字存进消息里</td><td><code>ui/user-message/</code></td></tr>
+      <tr><td class="id">ui/tool-card</td><td>工具调用卡，同一套信任档和出错规则</td><td><code>ui/tool-card/</code></td></tr>
+      <tr><td class="id">ui/block-renderer</td><td>代码块渲染</td><td><code>ui/block-renderer/</code></td></tr>
+      <tr><td class="id">api/composer-read-draft</td><td>读草稿方法的独立条目</td><td>文件夹还没建</td></tr>
+      <tr><td class="id">api/composer-write-draft</td><td>写草稿方法的独立条目</td><td>文件夹还没建</td></tr>
+      <tr><td class="id">api/composer-attachments</td><td>附件加 / 列 / 移的独立条目</td><td>文件夹还没建</td></tr>
+      <tr><td class="id">renderer 宿主</td><td>这些槽的前提：插件代码能跑进宿主页面、共用同一个 React</td><td>批次 0（#528）</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<!-- ============ 6 还没定的事 ============ -->
+<section>
+  <h2><span class="n">6</span>还没定的事</h2>
+  <ul>
+    <li>触发符号的字符集：emoji、全角等算不算「单个字符」，SDK 定字段前要拍板。</li>
+  </ul>
+</section>
+
+</main>
+</body>
+</html>

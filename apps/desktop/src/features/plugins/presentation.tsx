@@ -1,7 +1,9 @@
-import { useRef } from "react";
+import { useRef, useSyncExternalStore } from "react";
 import { useTranslation } from "react-i18next";
 import { TooltipButton, cx } from "../../components/ui";
 import { IconChevronDown, IconSearch, IconX } from "../../components/icons";
+import { isRendererPluginLoaded } from "../../plugins/renderer-host/loader";
+import { pluginSlots } from "../../plugins/renderer-slots/registry";
 import type {
   PluginAgentExtensionStatus,
   PluginCapability,
@@ -213,11 +215,32 @@ export function PluginRowDetails({
   const legacyFs = (plugin.permissions ?? []).filter((permission) =>
     LEGACY_FS_PERMISSIONS.includes(permission),
   );
+  const registryVersion = useSyncExternalStore(
+    pluginSlots.subscribe,
+    pluginSlots.snapshot,
+    pluginSlots.snapshot,
+  );
+  // Renderer-slot diagnostics live in the slot registry, not the plugin row.
+  const slotDiagnostics = pluginSlots.listDiagnostics(plugin.id);
+  const hasRenderer = (plugin.capabilities ?? []).includes("renderer");
+  // Loading a renderer module is lazy, so "no diagnostics" says nothing about
+  // whether the module is live: a plugin whose module was never triggered looks
+  // exactly like one that works. The answer is renderer-side state, read from
+  // the loader — the same renderer that drew this row.
+  const rendererLoaded = hasRenderer && isRendererPluginLoaded(plugin.id);
 
-  if (!hasCapabilities && !hasServices && !hasPermissions && !hasAgentExtension) return null;
+  if (
+    !hasCapabilities &&
+    !hasServices &&
+    !hasPermissions &&
+    !hasAgentExtension &&
+    slotDiagnostics.length === 0
+  ) {
+    return null;
+  }
 
   return (
-    <details className="plugins-row-details">
+    <details className="plugins-row-details" data-registry-version={registryVersion}>
       <summary
         className="plugins-row-details-toggle"
         aria-label={t("plugins.viewDetailsOf", { name: plugin.name })}
@@ -261,6 +284,45 @@ export function PluginRowDetails({
             <span className="plugins-row-detail-label">{t("plugins.fileAccessTitle")}</span>
             <FsScopeChips policy={plugin.fs} />
           </div>
+        ) : null}
+        {slotDiagnostics.length ? (
+          <div className="plugins-row-detail">
+            <span className="plugins-row-detail-label">
+              {t("plugins.rendererDiagnosticsTitle")}
+            </span>
+            <ul className="plugins-perm-chips" aria-label={t("plugins.rendererDiagnosticsTitle")}>
+              {slotDiagnostics.slice(-8).map((entry, index) => (
+                <li
+                  key={`${entry.code}:${entry.ts}:${index}`}
+                  className="plugins-perm-chip risk-high"
+                  title={entry.detail ?? entry.code}
+                >
+                  <code>{entry.code}</code>
+                  {entry.detail ? <span> · {entry.detail}</span> : null}
+                </li>
+              ))}
+            </ul>
+          </div>
+        ) : null}
+        {hasRenderer ? (
+          <div className="plugins-row-detail">
+            <span className="plugins-row-detail-label">
+              {t("plugins.rendererModuleTitle")}
+            </span>
+            <p
+              className="plugins-row-detail-note"
+              data-renderer-loaded={rendererLoaded ? "true" : "false"}
+            >
+              {t(
+                rendererLoaded
+                  ? "plugins.rendererModuleLoaded"
+                  : "plugins.rendererModuleNotLoaded",
+              )}
+            </p>
+          </div>
+        ) : null}
+        {hasRenderer && !slotDiagnostics.length ? (
+          <p className="plugins-row-detail-note">{t("plugins.rendererDiagnosticsEmpty")}</p>
         ) : null}
         {legacyFs.length ? (
           // The plugin still loads, with less reach than its author expected.

@@ -123,6 +123,15 @@ pub struct PendingChange {
     before_copied: bool,
 }
 
+impl PendingChange {
+    /// Whether the file existed before the tool ran. The artifact op needs this
+    /// fact to tell `create` from `write` (ADR 0295 rule 8); the pre-tool
+    /// snapshot is the only place that knows it.
+    pub fn before_exists(&self) -> bool {
+        self.before_exists
+    }
+}
+
 #[derive(Debug, Clone)]
 enum DiffOp {
     Equal(String),

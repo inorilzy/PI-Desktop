@@ -427,6 +427,9 @@ function panelHtml(vars: TemplateVars): string {
         document.documentElement.dataset.base = base === "light" || base === "dark"
           ? base
           : window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
+        if (typeof appearance?.locale === "string" && appearance.locale) {
+          document.documentElement.lang = appearance.locale;
+        }
       };
       window.pluginBridge?.on("appearance:changed", applyAppearance);
       window.pluginBridge?.invoke("app.getAppearance").then(applyAppearance).catch(() => applyAppearance(null));
@@ -491,7 +494,7 @@ ${contributions.join("\n")}
 
 ## Develop
 
-1. Open the Plugins page and use **Load development plugin**, pointing at this
+1. Open the Extensions page and use **Load local plugin**, pointing at this
    directory. PI-Desktop reloads the plugin whenever you save a file here.
 2. Verify the contributions from the command palette.
 3. Validate and package:

@@ -1,10 +1,9 @@
-import { IPC, ErrorCodes, isGlobalPermissionMode, type AgentEventEnvelope, type AgentPromptRequest, type AgentSteerRequest, type UiMessage, type AgentQueuePushRequest, type AgentStopRequest, type AskToolResolution, type GlobalPermissionMode, type MessageUsage, type PlanExecutionFinishStatus, type PlanResolutionResult, type PlanResolveRequest, type PromptEnhancementRequest, type SessionSummarizeTitleRequest } from "@pi-desktop/shared";
+import { IPC, ErrorCodes, isGlobalPermissionMode, type AgentEventEnvelope, type AgentPromptRequest, type AgentSteerRequest, type UiMessage, type AgentQueuePushRequest, type AgentStopRequest, type AskToolResolution, type GlobalPermissionMode, type MessageUsage, type PermissionDecision, type PlanExecutionFinishStatus, type PlanResolutionResult, type PlanResolveRequest, type PromptEnhancementRequest, type SessionSummarizeTitleRequest, type ThinkingLevel } from "@pi-desktop/shared";
 import type { FinishTurn } from "../runtime/plans";
 import { expandSlashInvocation, enhancePromptDraft, summarizeSessionTitle, visionFromModelConfig, type ComposerTemplate, type RuntimeProviderConfig } from "@pi-desktop/agent-runtime";
 import { OAUTH_AUTH_KIND, type VendorOAuth } from "../oauth";
 import { appendPromptFallbackPaths, durableUserMessageId, preparePromptAttachments, type PreparedPromptAttachment } from "../prompt-attachments";
-import { executionFromResponse } from "../plan-execution";
-import { resolveSessionMessageInput } from "../session-message-input";
+import { executionFromResponse, listPendingToolRequests, resolveSessionMessageInput } from "@pi-desktop/host-runtime";
 import type { AgentExtensionBridge } from "../agent-extensions";
 import type { AgentHostBridge } from "../agent-host-bridge";
 import type { AgentSidecar } from "../agent-sidecar";
@@ -13,6 +12,8 @@ import type { Logger } from "../logger";
 import type { PersistenceOutbox } from "../persistence-outbox";
 import type { ComposerCommandService } from "./composer-ipc";
 import type { IpcRegistrar } from "./types";
+import { withPromptEnhancementTimeout } from "../prompt-enhancement-timeout";
+import type { ToolPermissionConsentRequest } from "../tool-permission-consent";
 
 export type AgentIpcDependencies = {
   registrar: IpcRegistrar;
@@ -44,10 +45,23 @@ export type AgentIpcDependencies = {
   dispatchApprovedPlan: (execution: unknown) => Promise<void>;
   dispatchExecutionForProposal: (proposalId: string) => Promise<void>;
   emitAgentEvent: (envelope: AgentEventEnvelope) => void;
+  /**
+   * Slot #10 (ADR 0295 rule 9): a queue-drained continuation just wrote the
+   * durable user row that names its plugin. Main tells the renderer, which
+   * re-reads that session's attributions so the row's badge appears without
+   * waiting for the next session read; a row nobody asked for never fires it.
+   */
+  notePluginContinuation?: (sessionId: string, pluginId: string) => void;
   setNotificationViewingSessionId: (sessionId: string | null) => void;
   optionalWorkspaceRoot: () => Promise<string | null>;
   composerCommandService: Pick<ComposerCommandService, "buildComposerCommands">;
   loadComposerTemplatesCached: (root: string | null) => Promise<ComposerTemplate[]>;
+  /**
+   * Main-owned user answer for a tool-permission allow (ADR 0291). Never the
+   * renderer's decision: plugin code shares the renderer realm, so only a
+   * main-process dialog can carry a real user gesture.
+   */
+  confirmToolPermission: (request: ToolPermissionConsentRequest) => Promise<PermissionDecision>;
 };
 
 function rejectNativeAgentOperation(sessionId: string): void {
@@ -81,10 +95,12 @@ export function registerAgentIpc({
   dispatchApprovedPlan,
   dispatchExecutionForProposal,
   emitAgentEvent,
+  notePluginContinuation,
   setNotificationViewingSessionId,
   optionalWorkspaceRoot,
   composerCommandService,
   loadComposerTemplatesCached,
+  confirmToolPermission,
 }: AgentIpcDependencies): void {
   let host: HostProcess | null = null;
   let sidecar: AgentSidecar | null = null;
@@ -123,29 +139,73 @@ export function registerAgentIpc({
     }
     const settings = await host.call<any>("settings.get");
     const launchSessionId = sessionId || `prompt-enhancement:${crypto.randomUUID()}`;
-    const launch = await resolveAgentRuntimeLaunch(
-      launchSessionId,
-      session ?? {},
-      settings,
-      {
+    // A pinned enhancement model is a preference, not a hard requirement: a
+    // pin whose provider was disabled, whose account was signed out, or whose
+    // binding no longer exists must not take the action down. Try the pin,
+    // fall back to the Composer's current model, and record why (ADR 0121).
+    const pinnedProviderId =
+      typeof settings?.promptEnhancementProviderId === "string"
+        ? settings.promptEnhancementProviderId.trim()
+        : "";
+    const pinnedModelId =
+      typeof settings?.promptEnhancementModelId === "string"
+        ? settings.promptEnhancementModelId.trim()
+        : "";
+    const composerProviderId =
+      typeof req.providerId === "string" ? req.providerId.trim() : undefined;
+    const composerModelId =
+      typeof req.modelId === "string" ? req.modelId.trim() : undefined;
+    // The enhancement carries its own reasoning level and never follows the
+    // conversation's: an unset value means "off", because a rewrite rarely
+    // benefits from reasoning and reasoning is the slow path.
+    const enhancementThinkingLevel =
+      typeof settings?.promptEnhancementThinkingLevel === "string"
+        ? settings.promptEnhancementThinkingLevel.trim()
+        : "";
+    const launchFor = (providerId?: string, modelId?: string) =>
+      resolveAgentRuntimeLaunch(launchSessionId, session ?? {}, settings, {
         mode: "agent",
-        providerId:
-          typeof req.providerId === "string" ? req.providerId.trim() : undefined,
-        modelId: typeof req.modelId === "string" ? req.modelId.trim() : undefined,
-        thinkingLevel: req.thinkingLevel,
-      },
-    );
+        providerId,
+        modelId,
+        thinkingLevel: (enhancementThinkingLevel || "off") as ThinkingLevel,
+      });
+    let launch: Awaited<ReturnType<typeof launchFor>>;
+    if (pinnedProviderId) {
+      try {
+        launch = await launchFor(pinnedProviderId, pinnedModelId || undefined);
+      } catch (error) {
+        logger.app("session", "warn", "prompt enhancement model unavailable", {
+          data: {
+            pinnedProviderId,
+            pinnedModelId: pinnedModelId || undefined,
+            error: error instanceof Error ? error.message : String(error),
+          },
+        });
+        launch = await launchFor(composerProviderId, composerModelId);
+      }
+    } else {
+      launch = await launchFor(composerProviderId, composerModelId);
+    }
     const runtimeProvider = {
       ...launch.sidecarParams.provider,
       ...(launch.sidecarParams.provider.authKind === OAUTH_AUTH_KIND
         ? { resolveAuth: () => vendorOAuth.resolveAuth(launch.providerId) }
         : {}),
     } as RuntimeProviderConfig;
-    const enhancedDraft = await enhancePromptDraft(
-      runtimeProvider,
-      draft,
-      launch.sidecarParams.thinkingLevel,
-      { sessionId: launchSessionId },
+    // A pin, a slow gateway, or a stalled connection would otherwise hold this
+    // promise open indefinitely. Aborting is best-effort (the transport only
+    // consults the signal between provider retries); racing the promise is what
+    // actually guarantees the caller is released on time.
+    const enhancedDraft = await withPromptEnhancementTimeout((signal) =>
+      enhancePromptDraft(runtimeProvider, draft, launch.sidecarParams.thinkingLevel, {
+        signal,
+        sessionId: launchSessionId,
+        customTemplate: settings?.promptEnhancementCustomTemplate === true,
+        userTemplate:
+          typeof settings?.promptEnhancementUserTemplate === "string"
+            ? settings.promptEnhancementUserTemplate
+            : undefined,
+      }),
     );
     logger.app("session", "info", "prompt enhanced", {
       sessionId: sessionId || undefined,
@@ -547,6 +607,11 @@ export function registerAgentIpc({
               data: attachment.inlineData,
             })),
           userMessageId: userMessage.id,
+          // Per-turn permission ceiling override (R1 leftover; spec §7.3). The
+          // sidecar records it on the turn context; enforcement of a NARROWER
+          // ceiling still routes through the session's stored mode until
+          // host-core `session.beginTurn` accepts the scoped param.
+          ...(req.permissionMode ? { permissionMode: req.permissionMode } : {}),
         },
       );
     } catch (e) {
@@ -692,22 +757,99 @@ export function registerAgentIpc({
     },
   );
 
+  /**
+   * Only `allow-once` and `allow-session` grant anything; anything else the
+   * renderer sends reads as a refusal.
+   */
+  const normalizeToolPermissionDecision = (
+    decision: unknown,
+  ): PermissionDecision =>
+    decision === "allow-once" || decision === "allow-session"
+      ? decision
+      : "deny";
+
+  /**
+   * One dialog per request: a renderer that asks again for the same request id
+   * joins the prompt that is already open instead of stacking a second one for
+   * the user to dismiss. The answer is the same real user gesture either way.
+   */
+  const openToolPermissionPrompts = new Map<
+    string,
+    Promise<PermissionDecision>
+  >();
+
+  /**
+   * Turn a renderer-originated resolution into the answer that counts.
+   *
+   * Plugin code shares the renderer realm with the host UI, so a decision
+   * arriving on this channel carries no user gesture no matter which button it
+   * looks like. A denial is honored as-is: it grants nothing, and the approval
+   * card's Deny button and countdown auto-deny must stay instant. Anything
+   * that would allow a tool needs the user's answer from the main-owned
+   * dialog, which names the tool from host state — so a forged request id can
+   * neither approve a request nor pop a dialog for one that is not pending.
+   */
+  const confirmToolPermissionForRenderer = (
+    requestId: string,
+    requested: PermissionDecision,
+  ): Promise<PermissionDecision> => {
+    if (requested === "deny") return Promise.resolve("deny");
+    const open = openToolPermissionPrompts.get(requestId);
+    if (open) return open;
+    // The slot is claimed before the first read, so a duplicate call arriving
+    // while the host is answering joins this prompt instead of opening one more.
+    const prompt = (async (): Promise<PermissionDecision> => {
+      const pending = await listPendingToolRequests(() => host, undefined);
+      const request = pending.find((entry) => entry.requestId === requestId);
+      // Nothing is open under this id: there is nothing to confirm. Forward the
+      // request unchanged so the host answers NOT_FOUND exactly as it did before.
+      if (!request) return requested;
+      if (!confirmToolPermission) {
+        // A composition that forgot the confirmation service must fail closed.
+        logger.app("permission", "warn", "tool permission confirmation unavailable", {
+          data: { requestId },
+        });
+        return "deny";
+      }
+      logger.app("permission", "info", "tool permission confirmation requested", {
+        data: { requestId, toolName: request.toolName, requested },
+      });
+      return confirmToolPermission({
+        toolName: request.toolName,
+        argsPreview: request.argsPreview,
+        risk: request.risk,
+        reason: request.reason,
+      });
+    })();
+    openToolPermissionPrompts.set(requestId, prompt);
+    return prompt.finally(() => {
+      openToolPermissionPrompts.delete(requestId);
+    });
+  };
+
+  // The renderer may ask; it never decides (ADR 0291). The main-owned native
+  // dialog is the only user gesture that can allow a tool.
   handle(IPC.invoke.toolResolvePermission, async (resolution: {
     requestId: string;
     decision: string;
   }) => {
     if (!host) throw new Error("host unavailable");
+    const requestId = String(resolution?.requestId ?? "").trim();
+    if (!requestId) {
+      throw Object.assign(new Error("requestId required"), {
+        errorCode: ErrorCodes.INVALID_ARGUMENT,
+      });
+    }
+    const requested = normalizeToolPermissionDecision(resolution?.decision);
+    const decision = await confirmToolPermissionForRenderer(requestId, requested);
     logger.app("permission", "info", "permission resolved", {
-      data: { requestId: resolution.requestId, decision: resolution.decision },
+      data: { requestId, requested, decision },
     });
-    const resolved = await host.call("permissions.resolve", resolution);
-    agentHostBridge?.settleApproval(resolution.requestId, {
-      ...(resolution.decision === "allow-once" ||
-      resolution.decision === "allow-session" ||
-      resolution.decision === "deny"
-        ? { decision: resolution.decision }
-        : {}),
+    const resolved = await host.call("permissions.resolve", {
+      requestId,
+      decision,
     });
+    agentHostBridge?.settleApproval(requestId, { decision });
     return resolved;
   });
 

@@ -66,6 +66,7 @@ export function createInitialState(): AppStateData {
     plugins: [],
     pluginThemes: [],
     pluginViews: [],
+    pluginRewrites: {},
     pendingPermissions: {},
     pendingAsks: {},
     queuedPrompts: {},

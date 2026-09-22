@@ -1,0 +1,166 @@
+<!-- status: draft · issue #561 · branch feat/528-plugin-slots -->
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>turn-watch · 需求</title>
+<style>
+  :root{
+    --bg:#0e0e0e; --surface:#161616; --line:#2a2a2a; --line-2:#353535;
+    --text:#ededed; --text-2:#b0b0b0; --muted:#7d7d7d; --faint:#5c5c5c;
+    --ok:#40c977; --ok-bg:rgba(64,201,119,.10);
+    --warn:#ff8549; --warn-bg:rgba(255,133,73,.10);
+    --ui:#c27aff; --ui-bg:rgba(194,122,255,.10);
+    --font:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;
+    --mono:ui-monospace,"SF Mono","Cascadia Code",Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0}
+  body{background:var(--bg);color:var(--text);font-family:var(--font);font-size:14px;line-height:1.65;-webkit-font-smoothing:antialiased}
+  .top{border-bottom:1px solid var(--line);padding:24px 28px 20px;background:linear-gradient(180deg,#141414,#0e0e0e)}
+  .top .crumb{font-family:var(--mono);font-size:11.5px;color:var(--faint);letter-spacing:.06em}
+  .top h1{margin:6px 0 6px;font-size:21px;letter-spacing:-.01em}
+  .top p{margin:0;color:var(--text-2);max-width:80ch}
+  .top .meta{margin-top:8px;color:var(--faint);font-size:12.5px}
+  code{font-family:var(--mono);font-size:12.5px;color:var(--text-2)}
+  main{max-width:920px;margin:0 auto;padding:24px 28px 80px}
+  section{margin:0 0 40px}
+  section > h2{display:flex;align-items:baseline;gap:8px;margin:0 0 10px;font-size:17px;border-top:1px solid var(--line);padding-top:14px}
+  section > h2 .tag{font-family:var(--mono);font-size:11px;padding:1px 6px;border-radius:4px}
+  .tag.verified{color:var(--ok);background:var(--ok-bg)}
+  .tag.proposal{color:var(--warn);background:var(--warn-bg)}
+  .tag.open{color:var(--ui);background:var(--ui-bg)}
+  h3{margin:22px 0 6px;font-size:14.5px;color:var(--text)}
+  p{margin:0 0 10px}
+  ul{margin:0 0 12px;padding-left:1.2em}
+  li{margin:3px 0}
+  table{width:100%;border-collapse:collapse;font-size:13.5px;margin:0 0 14px}
+  th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{color:var(--muted);font-weight:500;font-size:12px;letter-spacing:.03em;text-transform:uppercase}
+  td.id{font-family:var(--mono);font-size:12.5px;color:var(--text-2);white-space:nowrap}
+  .callout{margin:0 0 14px;padding:11px 13px;border-radius:9px;background:var(--surface);color:var(--text-2);font-size:13px}
+  .callout.verified{border-left:2px solid var(--ok)}
+  .callout.warn{border-left:2px solid var(--warn)}
+  .callout.open{border-left:2px solid var(--ui)}
+  .callout b{color:var(--text);font-weight:560}
+  .plan-nav{display:flex;flex-wrap:wrap;align-items:center;gap:4px;padding:10px 28px;background:#0c0c0c;border-bottom:1px solid var(--line);font-size:13px}
+  .plan-nav a{color:var(--text-2);text-decoration:none;padding:3px 8px;border-radius:6px}
+  .plan-nav a:hover{background:var(--surface);color:var(--text)}
+  .plan-nav a[aria-current="page"]{background:var(--surface);color:var(--text);box-shadow:inset 0 0 0 1px var(--line-2)}
+  .plan-nav .sep{color:var(--faint);padding:0 2px}
+  .plan-nav .spacer{flex:1}
+</style>
+</head>
+<body>
+
+<nav class="plan-nav">
+  <a href="../../index.html">插件插槽目录</a>
+  <span class="sep">/</span>
+  <a href="index.html">turn-watch</a>
+  <span class="spacer"></span>
+  <a href="index.html">目录</a>
+  <a href="requirements.html" aria-current="page">需求</a>
+  <a href="data-flow.html">数据流</a>
+</nav>
+
+<header class="top">
+  <div class="crumb">docs/plugin-plan · runtime/turn-watch</div>
+  <h1>turn-watch · 需求</h1>
+  <p>一轮运行的过程流，插件全程可看、全程不可碰。这是 #561 里最接近「已经开放」的钩子——本目录主要是把现状写清、把契约钉死。</p>
+  <div class="meta">status: draft · issue #561 · 槽 <code>runtime.turn.watch</code> · 风险 medium</div>
+</header>
+
+<main>
+<section>
+  <h2>范围 <span class="tag verified">已核实</span></h2>
+  <ul>
+    <li>一轮运行从 agent_start 到 agent_end 的<b>只读事件流</b>。</li>
+    <li>不谈：拦截与续跑（tool-gate / turn-closing / turn-continue）、工具结果改写（tool-extend）。</li>
+  </ul>
+</section>
+
+<section>
+  <h2>现状（代码核实） <span class="tag verified">已核实</span></h2>
+  <ul>
+    <li><b>已对普通插件开放</b>：11 个内核事件映射到 <code>runtime.turn.watch</code>（<code>packages/shared/src/trusted-extensions.ts:178-189</code>），已注册、已在 SDK 权限清单（<code>plugin-sdk/src/index.ts:1863</code>），风险 medium。</li>
+    <li><b>「只给高信任」不成立</b>：ADR 0295 §3 把高信任限制定性为「接线事故」并明确否决（<code>docs/adr/0295:98-103</code>）；总表的说法来自 ADR 之前的旧盘点。</li>
+    <li><b>镜像而非直连</b>：运行时把内核事件逐个镜像（<code>runtime.ts:2372-2404</code>），emit 是 fire-and-forget（<code>runtime.ts:2404</code>）。</li>
+    <li><b>非结果性</b>：不在 RESULT_EVENTS 里（<code>runner.ts:126-142</code>）——没有超时、没有回执、没有重投（ADR 0295 §10）。</li>
+    <li><b>沙箱缺口</b>：ADR 0292 broker 未建，沙箱插件进程接不到。</li>
+  </ul>
+</section>
+
+<section>
+  <h2>事件族（已核实） <span class="tag verified">已核实</span></h2>
+  <table>
+    <thead><tr><th>事件</th><th>带什么</th></tr></thead>
+    <tbody>
+      <tr><td class="id">agent_start / agent_end</td><td>一次运行开始 / 结束</td></tr>
+      <tr><td class="id">turn_start</td><td><code>{ turnIndex }</code></td></tr>
+      <tr><td class="id">turn_end</td><td><code>{ message, toolResults }</code></td></tr>
+      <tr><td class="id">message_start / update / end</td><td>助手消息增量（流式）</td></tr>
+      <tr><td class="id">tool_execution_start / update / end</td><td>工具执行的开始 / 进度 / 结束</td></tr>
+      <tr><td class="id">after_provider_response</td><td>provider 回复之后（<code>runtime.ts:8115-8118</code>）</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<section>
+  <h2>契约（建议，待拍板） <span class="tag proposal">建议</span></h2>
+  <table>
+    <thead><tr><th>方面</th><th>内容</th></tr></thead>
+    <tbody>
+      <tr><td class="id">何时触发</td><td>每个内核事件发生时即时镜像</td></tr>
+      <tr><td class="id">拿到</td><td>事件名 + 对应 payload（见事件族表）</td></tr>
+      <tr><td class="id">可返回</td><td><b>什么都不用返回</b>——返回值被丢弃</td></tr>
+      <tr><td class="id">交付语义</td><td>尽力而为：不保证送达、不重投、无回执；插件不得把 watch 当可靠日志</td></tr>
+      <tr><td class="id">权限</td><td><code>runtime.turn.watch</code>，风险 medium</td></tr>
+    </tbody>
+  </table>
+  <div class="callout warn"><b>观察者不参与。</b>返回值丢弃、无超时预算——事件慢一拍也不影响运行。要参与，去别的钩子。</div>
+</section>
+
+<section>
+  <h2>插件场景（建议） <span class="tag proposal">建议</span></h2>
+  <table>
+    <thead><tr><th>#</th><th>场景</th></tr></thead>
+    <tbody>
+      <tr><td>1</td><td>用量统计：数 tool 调用次数、token 累计，在自己面板画图</td></tr>
+      <tr><td>2</td><td>进度感知：监听 tool_execution_update，在自己的悬浮层显示「正在跑测试…」</td></tr>
+      <tr><td>3</td><td>审计留痕：把事件序列写到插件自己的存储（自担送达风险）</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<section>
+  <h2>本轮拍板 <span class="tag open">待定</span></h2>
+  <table>
+    <thead><tr><th>问题</th><th>选项</th></tr></thead>
+    <tbody>
+      <tr><td>payload 进 SDK</td><td>A. 补齐 11 事件的类型化导出　B. 维持内部类型</td></tr>
+      <tr><td>背压</td><td>A. 高频事件（message_update / tool_update）原样投递　B. 运行时侧节流（如 100ms 合帧）</td></tr>
+      <tr><td>目录现状列修正</td><td>「只给高信任」改为「已开放（medium）」——按 AGENTS.md「以代码为准」</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<section>
+  <h2>还没定的事 <span class="tag open">未定</span></h2>
+  <ul>
+    <li>上面三条。</li>
+  </ul>
+</section>
+
+<section>
+  <h2>明确不做 <span class="tag verified">已核实</span></h2>
+  <ul>
+    <li>不让插件经 watch 改任何东西——返回值丢弃，无写路径。</li>
+    <li>不保证送达——无回执、无重投、无顺序承诺（尽力而为）。</li>
+    <li>不让 watch 承担安全职责——拦截去 tool-gate，续跑去 closing / continue。</li>
+  </ul>
+</section>
+
+</main>
+</body>
+</html>

@@ -1,5 +1,5 @@
-import { ErrorCodes, IPC, type AgentEventEnvelope, type AppNotification, type PlanExecution, type PlanExecutionFinishStatus, type UiMessage } from "@pi-desktop/shared";
-import { executionFromResponse, executionListFromResponse, planExecutionFromUnknown } from "../plan-execution";
+import { ErrorCodes, IPC, type AgentEventEnvelope, type AppNotification, type PlanExecution, type PlanExecutionFinishStatus, type TurnUsageRecord, type UiMessage } from "@pi-desktop/shared";
+import { executionFromResponse, executionListFromResponse, planExecutionFromUnknown } from "@pi-desktop/host-runtime";
 import type { RuntimeState } from "./context";
 import type {
   SessionCoordination,
@@ -103,6 +103,7 @@ export function createPlanRuntime({
 const {
   activeTurns,
   activeTurnUsages,
+  activeTurnPluginUsages,
   turnFinalizations,
   turnSettlements,
   waitForTurnSettlement,
@@ -186,6 +187,28 @@ function finishTurn(
   const reason = peekAbortReason(id, turnId) ?? status;
   const turnUsage = activeTurnUsages.get(id);
   activeTurnUsages.delete(id);
+  // Slot 5: plugin tool spend is a component of the turn's record, not model
+  // tokens, so it travels beside the totals and is named.
+  const turnPluginUsage = activeTurnPluginUsages.get(id);
+  activeTurnPluginUsages.delete(id);
+  const turnUsageRecord: TurnUsageRecord | undefined =
+    turnUsage || turnPluginUsage
+      ? {
+          inputTokens: turnUsage?.inputTokens ?? 0,
+          outputTokens: turnUsage?.outputTokens ?? 0,
+          ...(turnUsage?.cacheReadTokens !== undefined
+            ? { cacheReadTokens: turnUsage.cacheReadTokens }
+            : {}),
+          ...(turnUsage?.cacheWriteTokens !== undefined
+            ? { cacheWriteTokens: turnUsage.cacheWriteTokens }
+            : {}),
+          ...(turnUsage?.reasoningTokens !== undefined
+            ? { reasoningTokens: turnUsage.reasoningTokens }
+            : {}),
+          totalTokens: turnUsage?.totalTokens ?? 0,
+          ...(turnPluginUsage ? { pluginToolUsage: turnPluginUsage } : {}),
+        }
+      : undefined;
   const runId = scheduledRunsBySession.get(id);
   if (runId) scheduledRunsBySession.delete(id);
   const wasPlanSubmission = planSubmissionTurnIds.has(finalizationKey);
@@ -207,7 +230,7 @@ function finishTurn(
             status: reason,
             errorCode,
             createNotification,
-            ...(turnUsage ? { usage: turnUsage } : {}),
+            ...(turnUsageRecord ? { usage: turnUsageRecord } : {}),
             // The reply can no longer finish on its own: promote its last
             // checkpoint instead of waiting for a final row that never comes.
             ...(recoverInflight ? { recoverInflight: true } : {}),
@@ -454,6 +477,7 @@ async function dispatchApprovedPlan(rawExecution: unknown): Promise<void> {
     if (!turnId) throw new Error("execution turn was not created");
     activeTurns.set(execution.sessionId, turnId);
     activeTurnUsages.delete(execution.sessionId);
+    activeTurnPluginUsages.delete(execution.sessionId);
     approvedExecutionIdsBySession.set(execution.sessionId, execution.id);
     approvedExecutionTurns.set(execution.id, {
       sessionId: execution.sessionId,

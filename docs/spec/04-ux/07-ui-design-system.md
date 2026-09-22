@@ -119,7 +119,7 @@ Codex as a visual reference. The identity contract is deliberately small:
   name, version, and canonical icon; no stock Electron name or icon is visible.
   Development launches use a generated branded host bundle because AppKit
   reads this identity from the host bundle rather than Electron runtime APIs.
-- On Windows, Electron Main registers the canonical `com.pi-desktop.app`
+- On Windows, Electron Main registers the canonical `net.aiuo.pi-desktop`
   AppUserModelID before readiness. The runtime ID, packaged executable name,
   and NSIS shortcut identity stay aligned so native notifications,
   notification settings, and taskbar groups identify the app as `PI-Desktop`
@@ -497,9 +497,9 @@ same 6px contract and scroll-reveal mark. This keeps first-party surfaces such
 as the Files view aligned with the host renderer; the external page loaded
 inside the Browser guest remains page-owned and keeps its own scrollbar style.
 
-The expanded sidebar is a fixed 275px column. Collapse/open changes only whether
-the column is present; the historical resize handle is hidden and legacy width
-preferences are not persisted.
+The expanded sidebar is user-resizable from 240px to 520px (default 275px).
+Dragging the right-edge handle below 160px collapses the column. Collapse/open
+preserves the preferred expanded width.
 
 The profile menu is `280px` wide, opens `8px` above the footer, and uses the
 standard opaque elevated-menu surface, subtle border, and dialog shadow. Its
@@ -867,6 +867,10 @@ model):
   hairline stroke plus the restrained `--elevation-prominent` shadow provides
   separation; the transcript reserves the measured dock height instead of
   painting a full-width gradient veil.
+- In-transcript message-edit uses `--ds-tile-deep` and `--ds-composer-radius`
+  with no outer shadow. The row's paint containment and the transcript
+  scroller would clip a composer lift. Focus uses an inset 2px accent ring
+  so the cue stays inside the plate.
 - Dark elevated shell reads as elevated-primary (`#212121f5` / gray-800 96%)
   on `#181818` with standard elevation-prominent
 - Starter cards use a two-column grid at workstation widths and collapse to
@@ -1019,6 +1023,13 @@ Rules:
   renderer layer, so no `z-index` in the table above can raise a popover over
   them. A body-portaled popover clamps to the conversation pane, which ends
   where the work panel begins, instead of to the viewport.
+- A route surface holds no stacking context once its entrance animation
+  finishes, so an overlay authored inside a route page — a modal, a sheet, or
+  their scrims — covers the titlebar band without any `z-index` juggling. On
+  Windows/Linux the renderer-drawn window controls stay above renderer overlays.
+  Route overlays therefore sit on `z-dialog` (40): a leaf popup (60) or a toast
+  (50) a dialog raises — portaled to `document.body`, so in that same stacking
+  context — keeps painting above the dialog's scrim and keeps taking clicks.
 
 ## 10. Layout shell metrics
 
@@ -1029,7 +1040,7 @@ Codex parity decisions (D034/D070) supersede any older value here.
 |---|---|---|
 | Titlebar row height | 46px | Codex toolbar rhythm (D034); traffic lights {x:16,y:16} |
 | Sidebar width (collapsed) | 48px | Icon-only rail |
-| Sidebar width (expanded) | 275px | Fixed column; collapse/open does not resize it |
+| Sidebar width (expanded) | 240–520px (default 275px) | Right-edge handle; drag below 160px collapses (ADR 0141 / ADR 0290) |
 | Main pane minimum readable width | 450px | The MainChat hard floor; the sidebar yields before it is breached (ADR 0238) |
 | Work panel width (closed) | 0px | Hidden by default |
 | Work panel width (open) | `≥244px` (new-profile default 360px), capped by `client width - 450px - expanded sidebar` with no fixed pixel cap | the panel is an in-flow column whose width is taken from the existing client area; the renderer owns its divider (ADR 0033 / ADR 0151 / ADR 0238); saved widths remain unchanged |
@@ -1289,7 +1300,7 @@ Full component contract and usage rules: [08-component-spec.md §17](08-componen
 - Floating composer plate: Codex elevated-primary (`#212121f5` / `color-mix(gray-800 96%, transparent)`) with standard elevation-prominent (`0 0 0 .5px` stroke + `0 3px 7.5px #0000000a` + `0 0 20px #0000000d`); no heavier night-only lift
 - Light workspace chips capsule: elevated gray `#f4f4f4` (not pure white-on-white)
 - Combined workspace chips: elevated translucent plate over main, not flat main gray
-- Stage Manager: host re-asserts min bounds while collapsed (permanent watchdog)
+- Stage Manager (macOS only): host re-asserts min bounds while collapsed (permanent watchdog). The watchdog does not run on Windows/Linux, so no platform re-layers its own window unprompted (D447)
 
 ## Destination pages
 

@@ -1,3 +1,4 @@
+import { getBridge, type PiDesktopBridge } from "./bridge";
 import type {
   ActivationScope,
   AgentCapabilityMove,
@@ -12,6 +13,11 @@ import type {
   AgentPromptResponse,
   PromptEnhancementRequest,
   PromptEnhancementResponse,
+  SpeechStatus,
+  SpeechSynthesizeRequest,
+  SpeechSynthesizeResult,
+  SpeechTranscribeRequest,
+  SpeechTranscribeResult,
   SessionSummarizeTitleRequest,
   SessionSummarizeTitleResponse,
   AgentStopResponse,
@@ -44,6 +50,7 @@ import type {
   McpServerInput,
   McpServerRecord,
   McpServerStatus,
+  McpOAuthLoginEvent,
   OnboardingState,
   OAuthLoginEvent,
   OAuthRespondInput,
@@ -54,11 +61,12 @@ import type {
   PluginSettingDefinition,
   PluginServiceStatus,
   PluginViewMeta,
-  PluginSettingsDestinationMeta,
+  PluginScenicThemesDestinationMeta,
   PluginTheme,
   MarketPluginSummary,
   MarketPluginDetail,
   PluginInstallResult,
+  PluginInstallProgress,
   ProjectRecord,
   ProjectGroupRecord,
   ProjectMemory,
@@ -93,6 +101,9 @@ import type {
   PlanResolutionResult,
   PlanningStateEvent,
   PlansPendingResult,
+  RemoteHostPairRequest,
+  RemoteHostPairResult,
+  RemoteHostSummary,
   UpdateState,
   WindowControlAction,
   CloseBehavior,
@@ -110,6 +121,7 @@ import {
   resolveFontScale,
   normalizeChatContentMaxWidth,
   validateNetworkProxy,
+  validateSpeechSettings,
 } from "@pi-desktop/shared";
 
 export type ImportSource = "claude-code" | "opencode" | "codex" | "pi";
@@ -139,26 +151,143 @@ export interface ImportRunResult {
   failed: number;
 }
 
-declare global {
-  interface Window {
-    piDesktop?: {
-      invoke: <T = unknown>(channel: string, ...args: unknown[]) => Promise<Result<T>>;
-      on: (channel: string, listener: (...args: unknown[]) => void) => () => void;
-      channels: typeof IPC;
-      platform: NodeJS.Platform;
-      /** Authoritative OS locale passed from the main process at window creation. */
-      locale?: string;
-      /** Resolve a native dropped File to its source path. */
-      getDroppedFilePath?: (file: File) => string | null;
-    };
-  }
+// --- External skill / MCP scan-and-import ---------------------------------
+// Renderer-side mirrors of the electron-main scanner output so the panel does
+// not have to import from `electron/`. Keep the field names in sync with
+// `apps/desktop/electron/main/importers/agent-*-scan.ts`.
+
+export type ExternalSkillSourceKind =
+  | "claude-user"
+  | "claude-project"
+  | "pi-user"
+  | "pi-project";
+
+export interface ExternalSkillCandidate {
+  source: ExternalSkillSourceKind;
+  sourcePath: string;
+  rootDir?: string;
+  shape: "file" | "dir";
+  id: string;
+  name: string;
+  description: string;
+  bytes: number;
+  warnings: string[];
 }
 
+export interface ExternalSkillSourceReport {
+  kind: ExternalSkillSourceKind | "error";
+  path: string;
+  exists: boolean;
+  error?: string;
+  count: number;
+}
+
+export interface ExternalSkillScanResult {
+  candidates: ExternalSkillCandidate[];
+  sources: ExternalSkillSourceReport[];
+}
+
+export interface ExternalSkillImportItem {
+  source: ExternalSkillSourceKind;
+  sourcePath: string;
+  shape: "file" | "dir";
+  rootDir?: string;
+  id: string;
+  name: string;
+  description?: string;
+}
+
+export interface ExternalSkillImportPayload {
+  level: "global" | "project";
+  projectPath?: string;
+  mode?: "copy" | "link";
+  items: ExternalSkillImportItem[];
+}
+
+export interface ExternalSkillImportRunResult {
+  imported: Array<{ item: ExternalSkillImportItem; skill: UserSkillRecord }>;
+  skipped: Array<{ item: ExternalSkillImportItem; reason: string }>;
+  failed: Array<{ item: ExternalSkillImportItem; error: string }>;
+}
+
+export type ExternalMcpSourceKind =
+  | "claude-desktop"
+  | "claude-code"
+  | "cursor-global"
+  | "cursor-project"
+  | "codex"
+  | "opencode"
+  | "chatgpt-desktop";
+
+export interface ExternalMcpCandidate {
+  source: ExternalMcpSourceKind;
+  sourcePath: string;
+  id: string;
+  rawKey: string;
+  label?: string;
+  description?: string;
+  transport: "stdio" | "http";
+  command?: string;
+  args?: string[];
+  env?: Record<string, string>;
+  url?: string;
+  headers?: Record<string, string>;
+  disabled?: boolean;
+  warnings: string[];
+}
+
+export interface ExternalMcpSourceReport {
+  kind: ExternalMcpSourceKind | "error";
+  path: string;
+  exists: boolean;
+  error?: string;
+  count: number;
+}
+
+export interface ExternalMcpScanResult {
+  candidates: ExternalMcpCandidate[];
+  sources: ExternalMcpSourceReport[];
+}
+
+export interface ExternalMcpImportItem {
+  source: ExternalMcpSourceKind;
+  sourcePath: string;
+  id: string;
+  rawKey: string;
+  label?: string;
+  description?: string;
+  transport: "stdio" | "http";
+  command?: string;
+  args?: string[];
+  env?: Record<string, string>;
+  url?: string;
+  headers?: Record<string, string>;
+  disabled?: boolean;
+}
+
+export interface ExternalMcpImportPayload {
+  items: ExternalMcpImportItem[];
+}
+
+export interface ExternalMcpImportRunResult {
+  imported: Array<{ item: ExternalMcpImportItem; server: McpServerRecord }>;
+  skipped: Array<{ item: ExternalMcpImportItem; reason: string }>;
+  failed: Array<{ item: ExternalMcpImportItem; error: string }>;
+}
+
+/**
+ * The preload bridge, captured once by `bridge.ts`. A trusted plugin's renderer
+ * code shares this realm, so plugin code can reach `window.piDesktop` too; the
+ * captured reference is the shell's typed handle on the bridge, not a boundary.
+ * Plugins are trusted on purpose — the boundary is install review plus consent.
+ */
+const bridge = getBridge() as PiDesktopBridge;
+
 async function invoke<T>(channel: string, ...args: unknown[]): Promise<T> {
-  if (!window.piDesktop?.invoke) {
+  if (!bridge?.invoke) {
     throw new Error("piDesktop preload bridge unavailable");
   }
-  const result = await window.piDesktop.invoke<T>(channel, ...args);
+  const result = await bridge.invoke<T>(channel, ...args);
   if (!result.ok) {
     const error = new Error(result.error.message) as Error & {
       code?: string;
@@ -208,7 +337,7 @@ export function normalizeSettings(settings: AppSettings): AppSettings {
     )
       ? (settings as { defaultCommandShell: AppSettings["defaultCommandShell"] })
           .defaultCommandShell
-      : defaultCommandShellForPlatform(window.piDesktop?.platform ?? ""),
+      : defaultCommandShellForPlatform(bridge?.platform ?? ""),
     largePasteThreshold: normalizeLargePasteThreshold(
       (settings as { largePasteThreshold?: unknown }).largePasteThreshold,
     ),
@@ -220,6 +349,15 @@ export function normalizeSettings(settings: AppSettings): AppSettings {
 }
 
 export function validateSettingsWrite(settings: AppSettings): AppSettings {
+  if (
+    settings.thinkingDisplayMode !== undefined &&
+    settings.thinkingDisplayMode !== "detailed" &&
+    settings.thinkingDisplayMode !== "compact"
+  ) {
+    throw Object.assign(new Error("thinkingDisplayMode is invalid"), {
+      errorCode: "INVALID_PARAMS",
+    });
+  }
   const value = settings as AppSettings & {
     defaultCommandShell?: unknown;
     largePasteThreshold?: unknown;
@@ -269,6 +407,11 @@ export function validateSettingsWrite(settings: AppSettings): AppSettings {
     }
     value.networkProxy = proxy.value;
   }
+  if (Object.prototype.hasOwnProperty.call(value, "speech")) {
+    (value as AppSettings).speech = validateSpeechSettings(
+      (value as { speech?: unknown }).speech,
+    );
+  }
   return settings;
 }
 
@@ -312,6 +455,30 @@ function normalizePlansChangedEvent(value: unknown): PlanningStateEvent {
       ? {}
       : { executionState }),
   };
+}
+
+/**
+ * One forwarded renderer action (`plugin.call`, ADR 0294 decision 4): the main
+ * process re-checks the plugin id against the manifest it loaded and relays the
+ * call to that plugin's own headless entry; this returns the entry's answer
+ * unchanged.
+ *
+ * This module is the generic preload/IPC wrapper and stays one: it knows
+ * nothing about plugin rows. A coded refusal propagates to the caller, and the
+ * `plugin.call` handler in `plugins/renderer-host/host-actions.ts` is what
+ * turns one into a diagnostic, which is the only place a refusal becomes
+ * visible on a plugin's row.
+ */
+async function rendererCall(pluginId: string, method: string, args: unknown): Promise<unknown> {
+  // An absent answer arrives as `null` at the plugin boundary; the fallback
+  // keeps that true for a path that somehow resolves nothing at all.
+  return (
+    (await invoke<unknown>(IPC.invoke.pluginRendererCall, {
+      pluginId,
+      method,
+      args: args ?? null,
+    })) ?? null
+  );
 }
 
 export const api = {
@@ -364,10 +531,13 @@ export const api = {
   getSearchContext: (request: SessionSearchContextRequest) =>
     invoke<SessionSearchContext>(IPC.invoke.sessionSearchContext, request),
   getSession: (id: string, options?: SessionHistoryReadOptions) =>
-    invoke<{ session: SessionDetail | null }>(IPC.invoke.sessionGet, {
-      id,
-      ...(options ?? {}),
-    }).then((result) => ({
+    invoke<{ session: SessionDetail | null; rewrites?: unknown }>(
+      IPC.invoke.sessionGet,
+      {
+        id,
+        ...(options ?? {}),
+      },
+    ).then((result) => ({
       ...result,
       session: normalizeSessionDetail(result.session),
     })),
@@ -553,7 +723,7 @@ export const api = {
   pickFiles: () =>
     invoke<{ token: string | null; canceled?: boolean }>(IPC.invoke.composerPickFiles),
   getDroppedFilePath: (file: File) =>
-    window.piDesktop?.getDroppedFilePath?.(file) ?? null,
+    bridge?.getDroppedFilePath?.(file) ?? null,
   pickPhotos: () =>
     invoke<{ token: string | null; canceled?: boolean }>(IPC.invoke.composerPickPhotos),
   importFiles: (sessionId: string, token: string) =>
@@ -621,6 +791,11 @@ export const api = {
     invoke<AgentPromptResponse>(IPC.invoke.agentPrompt, req),
   enhancePrompt: (req: PromptEnhancementRequest) =>
     invoke<PromptEnhancementResponse>(IPC.invoke.promptEnhance, req),
+  speechStatus: () => invoke<SpeechStatus>(IPC.invoke.speechGetStatus),
+  speechTranscribe: (req: SpeechTranscribeRequest) =>
+    invoke<{ text: string }>(IPC.invoke.speechTranscribe, req),
+  speechSynthesize: (req: SpeechSynthesizeRequest) =>
+    invoke<SpeechSynthesizeResult>(IPC.invoke.speechSynthesize, req),
   compact: (req: AgentCompactRequest) =>
     invoke<AgentCompactResponse>(IPC.invoke.agentCompact, req),
   abort: (sessionId: string) =>
@@ -667,6 +842,27 @@ export const api = {
     invoke<PlanResolutionResult>(IPC.invoke.plansResolve, resolution),
   listPlugins: () =>
     invoke<{ plugins: PluginSummary[] }>(IPC.invoke.pluginList),
+  /**
+   * The path a trusted plugin's renderer module lives at, resolved by the main
+   * process. `null` means there is nothing to load: no `renderer` entry, no
+   * `renderer.extension` grant, or a plugin that is no longer loaded.
+   */
+  pluginRendererEntry: (id: string) =>
+    invoke<{ entry: string | null }>(IPC.invoke.pluginRendererEntry, id),
+  /**
+   * Runs one method inside the plugin's own headless entry and resolves with
+   * its answer (ADR 0294 decision 4, the `plugin.call` action). `id` is the
+   * plugin the component was rendered for, chosen by the host rather than by
+   * the caller, and the main process re-checks that plugin's declaration before
+   * anything is forwarded.
+   *
+   * A refusal is a coded error and nothing else: the caller that owns the
+   * plugin row — the `plugin.call` handler in
+   * `plugins/renderer-host/host-actions.ts` — reports it as a diagnostic, so
+   * this wrapper stays free of plugin UI.
+   */
+  pluginRendererCall: (id: string, method: string, args?: unknown) =>
+    rendererCall(id, method, args),
   /**
    * Picking a folder only reports what it declares; the load happens in
    * `confirmLoadDevPlugin` once the user has seen that.
@@ -745,12 +941,31 @@ export const api = {
   /** Force one handshake and report what happened, for the editor's test button. */
   testMcpServer: (id: string, query?: Partial<AgentCapabilityQuery>) =>
     invoke<{ status: McpServerStatus }>(IPC.invoke.mcpTest, { id, ...query }),
+  /** Launch browser-based OAuth 2.1 authorization flow for an HTTP MCP server. */
+  startMcpOAuth: (id: string, query?: Partial<AgentCapabilityQuery>) =>
+    invoke<{ ok: boolean; loginId: string }>(IPC.invoke.mcpOauthStart, { id, ...query }),
+  cancelMcpOAuth: (payload: { loginId?: string; id?: string }) =>
+    invoke<{ ok: boolean }>(IPC.invoke.mcpOauthCancel, payload),
   /** Accept a pasted `mcpServers` block; bad entries are reported, not fatal. */
   importMcpServers: (text: string) =>
     invoke<{
       imported: McpServerRecord[];
       failed: Array<{ id: string; reason: string }>;
     }>(IPC.invoke.mcpImport, { text }),
+  /**
+   * Scan third-party AI-tool config files for MCP server definitions. The
+   * scanner never throws; a source that failed to read is reported with an
+   * `error` on its row and a zero count.
+   */
+  scanExternalMcp: (query?: { projectPath?: string }) =>
+    invoke<ExternalMcpScanResult>(IPC.invoke.mcpImportScan, query ?? {}),
+  /**
+   * Import each candidate through `mcp.upsert` one at a time; a `disabled`
+   * item is turned off with `mcp.setEnabled` after it is written. One failure
+   * never aborts the batch.
+   */
+  runExternalMcpImport: (payload: ExternalMcpImportPayload) =>
+    invoke<ExternalMcpImportRunResult>(IPC.invoke.mcpImportRun, payload),
   /** Query the configured market sources; `failedSources` names dead ones. */
   searchMcpMarketRegistry: (query: string, sources: MarketSource[], options?: { more?: boolean }) =>
     invoke<{ entries: McpCatalogEntry[]; failedSources?: string[]; exhausted?: boolean }>(
@@ -793,9 +1008,30 @@ export const api = {
     invoke<{ skills: UserSkillRecord[] }>(IPC.invoke.skillList, query),
   createUserSkill: (skill: UserSkillInput) =>
     invoke<{ skill: UserSkillRecord }>(IPC.invoke.skillCreate, skill),
-  /** Opens a native picker for one file; `canceled` when the user backed out. */
-  importUserSkill: (query?: AgentCapabilityQuery) =>
-    invoke<{ canceled?: boolean; skill?: UserSkillRecord }>(IPC.invoke.skillImport, query),
+  /**
+   * Opens a native picker for one file or (when `sourceKind === "dir"`) a
+   * folder; `canceled` when the user backed out. `mode: "link"` swaps copy
+   * for a symlink import.
+   */
+  importUserSkill: (
+    query?: AgentCapabilityQuery & {
+      sourceKind?: "file" | "dir";
+      mode?: "copy" | "link";
+    },
+  ) => invoke<{ canceled?: boolean; skill?: UserSkillRecord }>(IPC.invoke.skillImport, query),
+  /**
+   * Scan third-party AI-tool skill directories. The scanner never throws;
+   * a source that failed to read is reported with an `error` on its row.
+   */
+  scanExternalSkills: (query?: { projectPath?: string }) =>
+    invoke<ExternalSkillScanResult>(IPC.invoke.skillImportScan, query ?? {}),
+  /**
+   * Import each candidate through `skills.import` one at a time. `mode`
+   * defaults to `"copy"`; a `dir` shape sends its `rootDir` as the source
+   * path so host-core knows it is a `<name>/SKILL.md` skill.
+   */
+  runExternalSkillsImport: (payload: ExternalSkillImportPayload) =>
+    invoke<ExternalSkillImportRunResult>(IPC.invoke.skillImportRun, payload),
   updateUserSkill: (id: string, skill: Omit<UserSkillInput, "id">) =>
     invoke<{ skill: UserSkillRecord }>(IPC.invoke.skillUpdate, { id, ...skill }),
   /** The record plus the document body, for the editor. */
@@ -876,7 +1112,8 @@ export const api = {
   togglePluginLauncher: () => invoke(IPC.invoke.pluginLauncherToggle),
   dismissPluginLauncher: () => invoke(IPC.invoke.pluginLauncherDismiss),
   listPluginThemes: () => invoke<PluginTheme[]>(IPC.invoke.pluginThemes),
-  listPluginSettingsDestinations: () => invoke<PluginSettingsDestinationMeta[]>(IPC.invoke.pluginSettingsDestinations),
+  listPluginScenicThemesDestinations: () => invoke<PluginScenicThemesDestinationMeta[]>(IPC.invoke.pluginScenicThemesDestinations),
+  setPluginScenicThemeBlur: (pluginId: string, themeId: string, blur: number) => invoke(IPC.invoke.pluginScenicThemesSetBlur, { pluginId, themeId, blur }),
   listPluginServices: () => invoke<PluginServiceStatus[]>(IPC.invoke.pluginServices),
   /**
    * Work panel views, already filtered by permission, activation scope, and
@@ -909,12 +1146,6 @@ export const api = {
       visible,
       sessionId,
     }),
-  pluginSettingsViewOpen: (pluginId: string, destinationId: string) =>
-    invoke(IPC.invoke.pluginSettingsViewOpen, { pluginId, destinationId }),
-  pluginSettingsViewSetBounds: (bounds: { x: number; y: number; width: number; height: number }) =>
-    invoke(IPC.invoke.pluginSettingsViewSetBounds, bounds),
-  pluginSettingsViewSetVisible: (pluginId: string, destinationId: string, visible: boolean) =>
-    invoke(IPC.invoke.pluginSettingsViewSetVisible, { pluginId, destinationId, visible }),
   marketRefresh: (force = true) =>
     invoke<{
       providerId: string;
@@ -950,6 +1181,9 @@ export const api = {
       IPC.invoke.marketApplyUpdates,
       { onlyAuto },
     ),
+  /** Ask the running install to stop. Only a download can be interrupted. */
+  marketCancelInstall: (id: string) =>
+    invoke<{ cancelled: boolean; id: string }>(IPC.invoke.marketCancelInstall, { id }),
   /** Import a pi CLI extension file or directory as a development plugin (spec 16 §3). */
   importPiExtension: () =>
     invoke<
@@ -1066,14 +1300,14 @@ export const api = {
       { action },
     ),
   onWindowMaximized: (listener: (event: { maximized: boolean }) => void) => {
-    if (!window.piDesktop?.on) return () => undefined;
-    return window.piDesktop.on(IPC.event.windowMaximized, (payload) =>
+    if (!bridge?.on) return () => undefined;
+    return bridge.on(IPC.event.windowMaximized, (payload) =>
       listener(payload as { maximized: boolean }),
     );
   },
   onWindowFullScreen: (listener: (event: { fullScreen: boolean }) => void) => {
-    if (!window.piDesktop?.on) return () => undefined;
-    return window.piDesktop.on(IPC.event.windowFullScreen, (payload) =>
+    if (!bridge?.on) return () => undefined;
+    return bridge.on(IPC.event.windowFullScreen, (payload) =>
       listener(payload as { fullScreen: boolean }),
     );
   },
@@ -1083,8 +1317,8 @@ export const api = {
       panelWidth: number;
     }) => void,
   ) => {
-    if (!window.piDesktop?.on) return () => undefined;
-    return window.piDesktop.on(IPC.event.windowWorkPanelResize, (payload) =>
+    if (!bridge?.on) return () => undefined;
+    return bridge.on(IPC.event.windowWorkPanelResize, (payload) =>
       listener(
         payload as {
           phase: "preview" | "commit";
@@ -1094,81 +1328,98 @@ export const api = {
     );
   },
   onMenuCommand: (listener: (command: AppMenuCommand) => void) => {
-    if (!window.piDesktop?.on) return () => undefined;
-    return window.piDesktop.on(IPC.event.menuCommand, (payload) =>
+    if (!bridge?.on) return () => undefined;
+    return bridge.on(IPC.event.menuCommand, (payload) =>
       listener((payload as { command: AppMenuCommand }).command),
     );
   },
   onBrowserState: (listener: (state: BrowserState) => void) => {
-    if (!window.piDesktop?.on) return () => undefined;
-    return window.piDesktop.on(IPC.event.browserState, (payload) =>
+    if (!bridge?.on) return () => undefined;
+    return bridge.on(IPC.event.browserState, (payload) =>
       listener(payload as BrowserState),
     );
   },
   onBrowserPreview: (
     listener: (event: { sessionId: string; path?: string; url?: string }) => void,
   ) => {
-    if (!window.piDesktop?.on) return () => undefined;
-    return window.piDesktop.on(IPC.event.browserPreview, (payload) =>
+    if (!bridge?.on) return () => undefined;
+    return bridge.on(IPC.event.browserPreview, (payload) =>
       listener(payload as { sessionId: string; path?: string; url?: string }),
     );
   },
   onAgentEvent: (listener: (event: AgentEventEnvelope) => void) => {
-    if (!window.piDesktop?.on) return () => undefined;
-    return window.piDesktop.on(IPC.event.agentMessage, (payload) =>
+    if (!bridge?.on) return () => undefined;
+    return bridge.on(IPC.event.agentMessage, (payload) =>
       listener(payload as AgentEventEnvelope),
     );
   },
   onAgentQueueChanged: (listener: (event: AgentQueueChangedEvent) => void) => {
-    if (!window.piDesktop?.on) return () => undefined;
-    return window.piDesktop.on(IPC.event.agentQueueChanged, (payload) =>
+    if (!bridge?.on) return () => undefined;
+    return bridge.on(IPC.event.agentQueueChanged, (payload) =>
       listener(payload as AgentQueueChangedEvent),
     );
   },
   onPlansChanged: (listener: (event: PlanningStateEvent) => void) => {
-    if (!window.piDesktop?.on) return () => undefined;
-    return window.piDesktop.on(IPC.event.plansChanged, (payload) =>
+    if (!bridge?.on) return () => undefined;
+    return bridge.on(IPC.event.plansChanged, (payload) =>
       listener(normalizePlansChangedEvent(payload)),
     );
   },
   onOauthLogin: (listener: (event: OAuthLoginEvent) => void) => {
-    if (!window.piDesktop?.on) return () => undefined;
-    return window.piDesktop.on(IPC.event.providersOauth, (payload) =>
+    if (!bridge?.on) return () => undefined;
+    return bridge.on(IPC.event.providersOauth, (payload) =>
       listener(payload as OAuthLoginEvent),
     );
   },
+  onMcpOAuth: (listener: (event: McpOAuthLoginEvent) => void) => {
+    if (!bridge?.on) return () => undefined;
+    return bridge.on(IPC.event.mcpOauth, (payload) =>
+      listener(payload as McpOAuthLoginEvent),
+    );
+  },
   onExtensionPrompt: (listener: (prompt: TrustedExtensionUiPrompt) => void) => {
-    if (!window.piDesktop?.on) return () => undefined;
-    return window.piDesktop.on(IPC.event.extensionsUiPrompt, (payload) =>
+    if (!bridge?.on) return () => undefined;
+    return bridge.on(IPC.event.extensionsUiPrompt, (payload) =>
       listener(payload as TrustedExtensionUiPrompt),
     );
   },
   onExtensionStatus: (listener: (event: TrustedExtensionStatusEvent) => void) => {
-    if (!window.piDesktop?.on) return () => undefined;
-    return window.piDesktop.on(IPC.event.extensionsStatus, (payload) =>
+    if (!bridge?.on) return () => undefined;
+    return bridge.on(IPC.event.extensionsStatus, (payload) =>
       listener(payload as TrustedExtensionStatusEvent),
     );
   },
   onToast: (listener: (message: string) => void) => {
-    if (!window.piDesktop?.on) return () => undefined;
-    return window.piDesktop.on(IPC.event.toast, (payload) =>
+    if (!bridge?.on) return () => undefined;
+    return bridge.on(IPC.event.toast, (payload) =>
       listener((payload as { message: string }).message),
     );
   },
   onHostStatus: (listener: (status: HostStatusEvent) => void) => {
-    if (!window.piDesktop?.on) return () => undefined;
-    return window.piDesktop.on(IPC.event.hostStatus, (payload) =>
+    if (!bridge?.on) return () => undefined;
+    return bridge.on(IPC.event.hostStatus, (payload) =>
       listener(payload as HostStatusEvent),
     );
   },
   onNotificationChanged: (
     listener: (notification: AppNotification) => void,
   ) => {
-    if (!window.piDesktop?.on) return () => undefined;
-    return window.piDesktop.on(IPC.event.notificationChanged, (payload) =>
+    if (!bridge?.on) return () => undefined;
+    return bridge.on(IPC.event.notificationChanged, (payload) =>
       listener((payload as { notification: AppNotification }).notification),
     );
   },
+
+  // --- Remote hosts (R2b pairing UX) -----------------------------------------
+  /** Paired remote `pi-host` list, redacted so no device token reaches here. */
+  listRemoteHosts: () =>
+    invoke<{ hosts: RemoteHostSummary[] }>(IPC.invoke.remoteHostList),
+  /** Exchange `ppt1.` pairing token for a durable device token and connect. */
+  pairRemoteHost: (request: RemoteHostPairRequest) =>
+    invoke<RemoteHostPairResult>(IPC.invoke.remoteHostPair, request),
+  /** Close and drop a paired host by its stable routing key. */
+  removeRemoteHost: (hostKey: string) =>
+    invoke<{ ok: true }>(IPC.invoke.remoteHostRemove, { hostKey }),
   onSessionsChanged: (
     listener: (event: {
       reason?: string;
@@ -1177,8 +1428,8 @@ export const api = {
       selectSessionId?: string;
     }) => void,
   ) => {
-    if (!window.piDesktop?.on) return () => undefined;
-    return window.piDesktop.on(IPC.event.sessionsChanged, (payload) =>
+    if (!bridge?.on) return () => undefined;
+    return bridge.on(IPC.event.sessionsChanged, (payload) =>
       listener(
         (payload ?? {}) as {
           reason?: string;
@@ -1192,33 +1443,44 @@ export const api = {
   onNotificationActivated: (
     listener: (event: { id: string; sessionId: string }) => void,
   ) => {
-    if (!window.piDesktop?.on) return () => undefined;
-    return window.piDesktop.on(IPC.event.notificationActivated, (payload) =>
+    if (!bridge?.on) return () => undefined;
+    return bridge.on(IPC.event.notificationActivated, (payload) =>
       listener(payload as { id: string; sessionId: string }),
     );
   },
   onUpdateState: (listener: (state: UpdateState) => void) => {
-    if (!window.piDesktop?.on) return () => undefined;
-    return window.piDesktop.on(IPC.event.updatesState, (payload) =>
+    if (!bridge?.on) return () => undefined;
+    return bridge.on(IPC.event.updatesState, (payload) =>
       listener(payload as UpdateState),
     );
   },
+  onPluginInstallProgress: (listener: (event: PluginInstallProgress) => void) => {
+    if (!bridge?.on) return () => undefined;
+    return bridge.on(IPC.event.pluginInstallProgress, (payload) =>
+      listener(payload as PluginInstallProgress),
+    );
+  },
+
   onPluginChanged: (
-    listener: (event: { reason?: string; pluginId?: string }) => void,
+    listener: (event: { reason?: string; pluginId?: string; sessionId?: string }) => void,
   ) => {
-    if (!window.piDesktop?.on) return () => undefined;
-    return window.piDesktop.on(IPC.event.pluginChanged, (payload) =>
-      listener((payload ?? {}) as { reason?: string; pluginId?: string }),
+    if (!bridge?.on) return () => undefined;
+    return bridge.on(IPC.event.pluginChanged, (payload) =>
+      listener((payload ?? {}) as {
+        reason?: string;
+        pluginId?: string;
+        sessionId?: string;
+      }),
     );
   },
   onSettingsChanged: (listener: (patch: Record<string, unknown>) => void) => {
-    if (!window.piDesktop?.on) return () => undefined;
-    return window.piDesktop.on(IPC.event.settingsChanged, (payload) =>
+    if (!bridge?.on) return () => undefined;
+    return bridge.on(IPC.event.settingsChanged, (payload) =>
       listener((payload ?? {}) as Record<string, unknown>),
     );
   },
   onPluginLauncherShown: (listener: () => void) => {
-    if (!window.piDesktop?.on) return () => undefined;
-    return window.piDesktop.on(IPC.event.pluginLauncherShown, () => listener());
+    if (!bridge?.on) return () => undefined;
+    return bridge.on(IPC.event.pluginLauncherShown, () => listener());
   },
 };

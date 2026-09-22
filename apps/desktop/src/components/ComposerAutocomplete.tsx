@@ -4,7 +4,6 @@ import type { ComposerCommand } from "@pi-desktop/shared";
 import type { AutocompleteItem, useComposerAutocomplete } from "../hooks/use-composer-autocomplete";
 import {
   IconBookOpen,
-  IconBranch,
   IconFileText,
   IconFolder,
   IconPlug,
@@ -12,6 +11,7 @@ import {
   IconSparkles,
 } from "./icons";
 import { AnchoredMenu } from "./settings/AnchoredMenu";
+import { CompletionSourceSlot } from "../features/chat/composer/CompletionSourceSlot";
 
 /**
  * Composer autocomplete panel (D123–D125, spec 08 §11.8): full composer
@@ -61,10 +61,12 @@ export function ComposerAutocomplete({
   anchorRef,
   ac,
   onAccept,
+  onAcceptText,
 }: {
   anchorRef: React.RefObject<HTMLElement | null>;
   ac: ReturnType<typeof useComposerAutocomplete>;
   onAccept: (index: number) => void;
+  onAcceptText?: (text: string) => boolean;
 }) {
   const { t } = useTranslation();
   const listRef = useRef<HTMLDivElement>(null);
@@ -85,9 +87,7 @@ export function ComposerAutocomplete({
       key:
         item.kind === "command"
           ? `c:${item.command.kind}:${item.command.name}`
-          : item.kind === "session"
-            ? `s:${item.session.id}`
-            : `p:${item.entry.path}`,
+          : `p:${item.entry.path}`,
       type: "button" as const,
       role: "option" as const,
       "aria-selected": active,
@@ -121,22 +121,6 @@ export function ComposerAutocomplete({
         </button>
       );
     }
-    if (item.kind === "session") {
-      return (
-        <button
-          {...commonProps}
-          aria-label={`${item.session.title} — ${item.session.id}`}
-          title={item.session.id}
-        >
-          <span className="composer-ac-icon">
-            <IconBranch size={14} />
-          </span>
-          <span className="composer-ac-name">
-            <Highlighted text={item.session.title} ranges={item.match.ranges} />
-          </span>
-        </button>
-      );
-    }
     const isDir = item.entry.kind === "dir";
     const name = item.entry.path.split("/").pop() ?? item.entry.path;
     const displayName = `${name}${isDir ? "/" : ""}`;
@@ -157,23 +141,16 @@ export function ComposerAutocomplete({
   const rows: React.ReactNode[] = [];
   let lastGroup: string | null = null;
   ac.items.forEach((item, index) => {
-    const group =
-      item.kind === "command"
-        ? item.command.kind
-        : item.kind === "session"
-          ? "session"
-          : "file";
-    if (group !== lastGroup) {
-      lastGroup = group;
-      rows.push(
-        <div key={`g:${group}`} className="composer-model-group-label">
-          {item.kind === "command"
-            ? t(GROUP_KEYS[item.command.kind])
-            : item.kind === "session"
-              ? t("chat.sessionGroup")
-              : t("chat.fileGroup")}
-        </div>,
-      );
+    if (item.kind === "command") {
+      const group = item.command.kind;
+      if (group !== lastGroup) {
+        lastGroup = group;
+        rows.push(
+          <div key={`g:${group}`} className="composer-model-group-label">
+            {t(GROUP_KEYS[group])}
+          </div>,
+        );
+      }
     }
     rows.push(renderRow(item, index));
   });
@@ -205,6 +182,11 @@ export function ComposerAutocomplete({
         ) : (
           <div className="composer-model-empty">{t(emptyKey)}</div>
         )}
+        {/* The `completionSource` position: the host's own candidate rows above
+          * keep their order and their keyboard acceptance; a plugin adds
+          * candidates for the same query after them. `ac.mode` is null only
+          * while the popover is closed, which this render has already left. */}
+        <CompletionSourceSlot mode={ac.mode === "file" ? "file" : "slash"} query={ac.query} sessionId={ac.sessionId ?? undefined} acceptText={onAcceptText} />
       </div>
       <div className="composer-ac-footer">
         <span>{t("chat.acHint")}</span>

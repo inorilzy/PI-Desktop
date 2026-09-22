@@ -1,0 +1,153 @@
+<!-- status: draft · issue #561 · branch feat/528-plugin-slots -->
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>session-lifecycle · 需求</title>
+<style>
+  :root{
+    --bg:#0e0e0e; --surface:#161616; --line:#2a2a2a; --line-2:#353535;
+    --text:#ededed; --text-2:#b0b0b0; --muted:#7d7d7d; --faint:#5c5c5c;
+    --ok:#40c977; --ok-bg:rgba(64,201,119,.10);
+    --warn:#ff8549; --warn-bg:rgba(255,133,73,.10);
+    --ui:#c27aff; --ui-bg:rgba(194,122,255,.10);
+    --font:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;
+    --mono:ui-monospace,"SF Mono","Cascadia Code",Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0}
+  body{background:var(--bg);color:var(--text);font-family:var(--font);font-size:14px;line-height:1.65;-webkit-font-smoothing:antialiased}
+  .top{border-bottom:1px solid var(--line);padding:24px 28px 20px;background:linear-gradient(180deg,#141414,#0e0e0e)}
+  .top .crumb{font-family:var(--mono);font-size:11.5px;color:var(--faint);letter-spacing:.06em}
+  .top h1{margin:6px 0 6px;font-size:21px;letter-spacing:-.01em}
+  .top p{margin:0;color:var(--text-2);max-width:80ch}
+  .top .meta{margin-top:8px;color:var(--faint);font-size:12.5px}
+  code{font-family:var(--mono);font-size:12.5px;color:var(--text-2)}
+  main{max-width:920px;margin:0 auto;padding:24px 28px 80px}
+  section{margin:0 0 40px}
+  section > h2{display:flex;align-items:baseline;gap:8px;margin:0 0 10px;font-size:17px;border-top:1px solid var(--line);padding-top:14px}
+  section > h2 .tag{font-family:var(--mono);font-size:11px;padding:1px 6px;border-radius:4px}
+  .tag.verified{color:var(--ok);background:var(--ok-bg)}
+  .tag.proposal{color:var(--warn);background:var(--warn-bg)}
+  .tag.open{color:var(--ui);background:var(--ui-bg)}
+  h3{margin:22px 0 6px;font-size:14.5px;color:var(--text)}
+  p{margin:0 0 10px}
+  ul{margin:0 0 12px;padding-left:1.2em}
+  li{margin:3px 0}
+  table{width:100%;border-collapse:collapse;font-size:13.5px;margin:0 0 14px}
+  th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{color:var(--muted);font-weight:500;font-size:12px;letter-spacing:.03em;text-transform:uppercase}
+  td.id{font-family:var(--mono);font-size:12.5px;color:var(--text-2);white-space:nowrap}
+  .callout{margin:0 0 14px;padding:11px 13px;border-radius:9px;background:var(--surface);color:var(--text-2);font-size:13px}
+  .callout.verified{border-left:2px solid var(--ok)}
+  .callout.warn{border-left:2px solid var(--warn)}
+  .callout.open{border-left:2px solid var(--ui)}
+  .callout b{color:var(--text);font-weight:560}
+  .plan-nav{display:flex;flex-wrap:wrap;align-items:center;gap:4px;padding:10px 28px;background:#0c0c0c;border-bottom:1px solid var(--line);font-size:13px}
+  .plan-nav a{color:var(--text-2);text-decoration:none;padding:3px 8px;border-radius:6px}
+  .plan-nav a:hover{background:var(--surface);color:var(--text)}
+  .plan-nav a[aria-current="page"]{background:var(--surface);color:var(--text);box-shadow:inset 0 0 0 1px var(--line-2)}
+  .plan-nav .sep{color:var(--faint);padding:0 2px}
+  .plan-nav .spacer{flex:1}
+</style>
+</head>
+<body>
+
+<nav class="plan-nav">
+  <a href="../../index.html">插件插槽目录</a>
+  <span class="sep">/</span>
+  <a href="index.html">session-lifecycle</a>
+  <span class="spacer"></span>
+  <a href="index.html">目录</a>
+  <a href="requirements.html" aria-current="page">需求</a>
+  <a href="data-flow.html">数据流</a>
+</nav>
+
+<header class="top">
+  <div class="crumb">docs/plugin-plan · runtime/session-lifecycle</div>
+  <h1>session-lifecycle · 需求</h1>
+  <p>会话一生的观察位：建、删、切、fork、压缩。只有一个时刻可以拦——压缩前；其余都是通知。事件来源有两路：桌面 IPC 和 sidecar 内部。</p>
+  <div class="meta">status: draft · issue #561 · 槽 <code>runtime.session.lifecycle</code></div>
+</header>
+
+<main>
+<section>
+  <h2>范围 <span class="tag verified">已核实</span></h2>
+  <ul>
+    <li>五个时刻：<b>创建、删除、切换前、fork 前、压缩（前 / 成 / 败）</b>。</li>
+    <li>不谈：会话内容的读写（recap / facts）、轮内事件（turn-watch）、续跑（closing / continue）。</li>
+  </ul>
+</section>
+
+<section>
+  <h2>现状（代码核实） <span class="tag verified">已核实</span></h2>
+  <ul>
+    <li><b>槽已注册并门控</b>：<code>runtime.session.lifecycle</code>（<code>trusted-extensions.ts:190-198, 546</code>）。总表「事件够不到」不成立——内核确实没有这些钩子，但<b>桌面端把事件接进来了</b>（<code>trusted-extensions.ts:328-352</code>）。</li>
+    <li><b>桌面来的四件</b>：create / delete 直接 emit（<code>session-ipc.ts:261, 453</code>）；switch 经 <code>announceActivation</code>（<code>session-ipc.ts:202-217</code>）映射 <code>session_before_switch</code>（<code>runtime.ts:8053-8059</code>）；fork 同理（<code>session-ipc.ts:317-324</code> → <code>8060-8066</code>）。</li>
+    <li><b>sidecar 来的压缩</b>：<code>session_compact / session_compact_failed</code>（<code>runtime.ts:6393-6405</code>）；<code>session_before_compact</code> 带压缩段且<b>唯一有否决权</b>（<code>runtime.ts:8081-8099</code>）。</li>
+    <li><b>fire-and-forget 为默认</b>：除 before_compact 外全部不等插件（<code>runtime.ts:8040-8043</code>）。</li>
+    <li><b>两个幽灵映射</b>：<code>project_trust</code> / <code>resources_discover</code> 已映射但从不 emit（<code>16-trusted-extensions.md:572-573</code>）。</li>
+    <li><b>边界</b>：原生 Pi 会话听不到（桌面不经手的路径，<code>session-ipc.ts:315-316</code>）。</li>
+  </ul>
+</section>
+
+<section>
+  <h2>契约（建议，待拍板） <span class="tag proposal">建议</span></h2>
+  <table>
+    <thead><tr><th>事件</th><th>拿到</th><th>可返回</th></tr></thead>
+    <tbody>
+      <tr><td class="id">created / deleted</td><td>会话标识与元信息</td><td>无（通知）</td></tr>
+      <tr><td class="id">before_switch</td><td>旧 / 新会话 id</td><td>无（不等待、不可拦）</td></tr>
+      <tr><td class="id">before_fork</td><td>源会话与 fork 目标</td><td>无（不等待、不可拦）</td></tr>
+      <tr><td class="id">before_compact</td><td>压缩段：<code>{ messages, messageCount, tokensBefore, retained }</code></td><td><b><code>{ cancel: true }</code> 可否决</b>（30s 预算内）</td></tr>
+      <tr><td class="id">compact / compact_failed</td><td>结果通知</td><td>无</td></tr>
+      <tr><td class="id">权限</td><td colspan="2"><code>runtime.session.lifecycle</code></td></tr>
+    </tbody>
+  </table>
+  <div class="callout warn"><b>否决权只给压缩。</b>切会话、fork、删除都是用户的直接操作——插件只能跟着知道，不能拦（ADR 0295 规则 11）。压缩是后台自动行为，给插件一次「先别压，我还要读」的机会。</div>
+</section>
+
+<section>
+  <h2>插件场景（建议） <span class="tag proposal">建议</span></h2>
+  <table>
+    <thead><tr><th>#</th><th>场景</th></tr></thead>
+    <tbody>
+      <tr><td>1</td><td>会话级缓存清理：监听 deleted，把自己为该会话存的索引删掉</td></tr>
+      <tr><td>2</td><td>压缩保护：before_compact 发现段里有未处理内容 → cancel，先处理完再说</td></tr>
+      <tr><td>3</td><td>fork 联动：fork 时把自己的会话级配置复制过去</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<section>
+  <h2>本轮拍板 <span class="tag open">待定</span></h2>
+  <table>
+    <thead><tr><th>问题</th><th>选项</th></tr></thead>
+    <tbody>
+      <tr><td>幽灵映射</td><td>A. project_trust / resources_discover 从清单移除　B. 留着等事件源</td></tr>
+      <tr><td>before_compact 的取消上限</td><td>A. 维持 30s 预算内一次 cancel　B. cancel 也计数防无限拖延</td></tr>
+      <tr><td>目录现状列</td><td>「事件够不到」改为「已接通（桌面供事件，compact 在 sidecar）」</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<section>
+  <h2>还没定的事 <span class="tag open">未定</span></h2>
+  <ul>
+    <li>上面三条。</li>
+  </ul>
+</section>
+
+<section>
+  <h2>明确不做 <span class="tag verified">已核实</span></h2>
+  <ul>
+    <li>不让插件否决切换 / fork / 删除——用户直接操作不可拦（ADR 0295 规则 11）。</li>
+    <li>不给原生 Pi 会话的事件——桌面不经手的路径听不到（现状边界）。</li>
+    <li>不让通知事件等待插件——除 before_compact 外全部 fire-and-forget。</li>
+  </ul>
+</section>
+
+</main>
+</body>
+</html>

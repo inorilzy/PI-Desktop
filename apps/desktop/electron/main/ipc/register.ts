@@ -4,12 +4,14 @@ import { err, ErrorCodes, IPC, ok, type Result } from "@pi-desktop/shared";
 import type { AgentHostBridge } from "../agent-host-bridge";
 import type { AgentSidecar } from "../agent-sidecar";
 import type { HostProcess } from "../host-process";
+import { ROUTE_LOCAL, type BackendRouter } from "../remote/backend-router";
 import { registerAgentExtensionIpc } from "../agent-extensions-ipc";
 import { registerAgentIpc } from "./agent-ipc";
 import { registerAppIpc } from "./app-ipc";
 import { registerDiagnosticsIpc } from "./diagnostics-ipc";
 import { registerMarketIpc } from "./market-ipc";
 import { registerMcpIpc } from "./mcp-ipc";
+import type { McpOAuthManager } from "../mcp-oauth";
 import { searchMcpMarket } from "../mcp-registry-catalog";
 import { registerNotificationIpc } from "./notification-ipc";
 import { registerPluginIpc } from "./plugin-ipc";
@@ -20,11 +22,15 @@ import { registerScheduledIpc } from "./scheduled-ipc";
 import { registerSessionIpc } from "./session-ipc";
 import { registerSettingsIpc } from "./settings-ipc";
 import { registerSkillsIpc } from "./skills-ipc";
+import { registerAgentImportIpc } from "./agent-import-ipc";
+import { registerRemoteHostIpc } from "./remote-host-ipc";
 import { fetchSkillMarketDocument, searchSkillMarket } from "../skill-market-catalog";
 import { registerWindowIpc } from "./window-ipc";
 import { createComposerTemplateLoader, registerWorkspaceIpc } from "./workspace-ipc";
 import { registerComposerIpc } from "./composer-ipc";
+import { registerSpeechIpc } from "./speech-ipc";
 import type { IpcRegistrar } from "./types";
+import { createToolPermissionConsentService } from "../tool-permission-consent";
 
 export type RegisterIpcDependencies = {
   ipcMain: IpcMain;
@@ -32,10 +38,18 @@ export type RegisterIpcDependencies = {
   getHost: () => HostProcess | null;
   getSidecar: () => AgentSidecar | null;
   getAgentHostBridge: () => AgentHostBridge | null;
+  /**
+   * Resolves the remote backend router once it exists. Renderer IPC calls whose
+   * session is owned by a paired remote host are forwarded through it; every
+   * other call — including all internal invokes — runs the local handler
+   * unchanged. Null until the router is wired (and in tests).
+   */
+  getBackendRouter?: () => BackendRouter | null;
   getNotificationViewingSessionId: () => string | null;
   setNotificationViewingSessionId: (sessionId: string | null) => void;
   activeUserSubagentDocuments: (...args: any[]) => Promise<any>;
   disabledBuiltinSubagents: () => Promise<string[]>;
+  mcpOAuth?: McpOAuthManager;
   [name: string]: any;
 };
 
@@ -58,6 +72,7 @@ export function registerIpcHandlers(dependencies: RegisterIpcDependencies) {
     getHost,
     getSidecar,
     getAgentHostBridge,
+    getBackendRouter,
     getNotificationViewingSessionId,
     setNotificationViewingSessionId,
     getPluginLauncherWindow,
@@ -71,6 +86,7 @@ export function registerIpcHandlers(dependencies: RegisterIpcDependencies) {
     persistenceOutbox,
     logger,
     plugins,
+    speech,
     sessionCapabilityContext,
     enrichSession,
     acquireSessionOperation,
@@ -120,11 +136,12 @@ export function registerIpcHandlers(dependencies: RegisterIpcDependencies) {
     dispatchApprovedPlan,
     dispatchExecutionForProposal,
     emitAgentEvent,
+    notePluginContinuation,
     userMcp,
+    mcpOAuth,
     refreshUserMcp,
     describeError,
     pluginViews,
-    pluginSettingsViews,
     pluginScopes,
     rememberPluginScopes,
     pluginPanels,
@@ -138,7 +155,20 @@ export function registerIpcHandlers(dependencies: RegisterIpcDependencies) {
   const ipcHandlers = new Map<string, (...args: any[]) => Promise<any>>();
   const handle = (channel: string, fn: (...args: any[]) => Promise<any>) => {
     ipcHandlers.set(channel, fn);
-    ipcMain.handle(channel, async (_event, ...args) => wrap(() => fn(...args)));
+    // The interception seam for remote-host routing: a renderer call whose
+    // session is owned by a paired remote host is served over RACP-WS; every
+    // other call (and every internal invoke, which never reaches this wrapper)
+    // runs the existing local handler byte-for-byte unchanged.
+    ipcMain.handle(channel, async (_event, ...args) =>
+      wrap(async () => {
+        const router = getBackendRouter?.();
+        if (router) {
+          const outcome = await router.route(channel, args);
+          if (outcome !== ROUTE_LOCAL) return outcome.value;
+        }
+        return fn(...args);
+      }),
+    );
   };
   const handleWithEvent = (
     channel: string,
@@ -297,6 +327,20 @@ export function registerIpcHandlers(dependencies: RegisterIpcDependencies) {
       return currentSidecar.call<{ handled: boolean }>("extensions.command.run", input);
     },
   });
+  const confirmToolPermission = createToolPermissionConsentService({
+    getWindow: getMainWindow,
+    getLocale: () => getUpdaterLocale(),
+    dataDir,
+    // Read lazily: this module keeps its dialog import dynamic so it can be
+    // imported headlessly, and a normal run never consults this.
+    isPackaged: async () => (await import("electron")).app.isPackaged,
+    // The test-only switch's trace: an automated run that auto-approved a tool
+    // still says so, with the tool it approved.
+    logAutoConsent: ({ toolName, decision, marker }) =>
+      logger.app("permission", "warn", "test-only auto consent answered tool permission", {
+        data: { toolName, decision, marker },
+      }),
+  });
   registerAgentIpc({
     registrar,
     getHost,
@@ -321,10 +365,12 @@ export function registerIpcHandlers(dependencies: RegisterIpcDependencies) {
     dispatchApprovedPlan,
     dispatchExecutionForProposal,
     emitAgentEvent,
+    notePluginContinuation,
     setNotificationViewingSessionId,
     optionalWorkspaceRoot,
     composerCommandService,
     loadComposerTemplatesCached,
+    confirmToolPermission,
   });
 
   registerPluginIpc({
@@ -334,7 +380,6 @@ export function registerIpcHandlers(dependencies: RegisterIpcDependencies) {
     agentExtensions,
     browserHost,
     pluginViews,
-    pluginSettingsViews,
     pluginScopes,
     rememberPluginScopes,
     sendToRenderer,
@@ -346,6 +391,7 @@ export function registerIpcHandlers(dependencies: RegisterIpcDependencies) {
     registrar,
     getHost,
     userMcp,
+    oauth: mcpOAuth,
     currentWorkspacePath,
     refreshUserMcp,
     describeError,
@@ -368,12 +414,20 @@ export function registerIpcHandlers(dependencies: RegisterIpcDependencies) {
   });
 
 
+  registerAgentImportIpc({
+    registrar,
+    getHost,
+    sendToRenderer,
+    refreshUserMcp,
+    currentWorkspacePath,
+  });
+
+
   registerPluginUiIpc({
     registrar,
     plugins,
     browserHost,
     pluginViews,
-    pluginSettingsViews,
     pluginPanels,
     pluginActiveInProject,
     currentWorkspacePath,
@@ -381,6 +435,9 @@ export function registerIpcHandlers(dependencies: RegisterIpcDependencies) {
     getPluginPanelTheme,
   });
 
+  registerSpeechIpc({ registrar, speech });
+
+  registerRemoteHostIpc({ registrar });
 
   registerMarketIpc({
     registrar,

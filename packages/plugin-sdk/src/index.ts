@@ -8,6 +8,12 @@ import {
 import { validateMcpServer } from "./mcp-config.js";
 import { parseNetDomains, type PluginNetDomain } from "./net-policy.js";
 import {
+  PLUGIN_RENDERER_ACTIONS,
+  PLUGIN_RENDERER_DATA,
+  type PluginRendererActionName,
+  type PluginRendererDataKey,
+} from "./renderer.js";
+import {
   isExternalThemeAssetPath,
   isThemeAssetPath,
   normalizeThemeAssetPath,
@@ -61,7 +67,35 @@ export type PluginManifest = {
   author?: PluginManifestAuthor;
   homepage?: string;
   repository?: string;
-  main: string;
+  /**
+   * Headless entry: a plugin-relative module the host runs in its own process.
+   * Optional since the renderer host landed — a UI-only plugin may declare just
+   * `renderer`, or only a plugin page. `pluginHasEntry` holds the rule that at
+   * least one entry exists.
+   */
+  main?: string;
+  /**
+   * Trusted renderer entry: a plugin-relative ES module that runs inside the
+   * host renderer process and registers React component slots (spec
+   * 07-plugins/16). Requires the `renderer.extension` permission. Fetched and
+   * evaluated lazily, the first time one of its slots actually renders.
+   */
+  renderer?: string;
+  /**
+   * Host-owned data this plugin's renderer components may read. Optional and
+   * independent of `renderer`: an omitted list declares nothing, so a manifest
+   * that never mentions the field keeps working unchanged. Every name must
+   * come from `PLUGIN_RENDERER_DATA` — an unknown, duplicated, or non-string
+   * entry is refused at install.
+   */
+  rendererData?: PluginRendererDataKey[];
+  /**
+   * Host-side actions this plugin's renderer components may ask for. Optional
+   * and independent of `renderer`. Every name must come from
+   * `PLUGIN_RENDERER_ACTIONS`; the declaration records intent for install
+   * review, and the host still decides whether an action is implemented.
+   */
+  rendererActions?: PluginRendererActionName[];
   icon?: string;
   /**
    * First-registration default for bundled plugins. Omitted means enabled.
@@ -126,8 +160,8 @@ export type PluginManifest = {
     providers?: PluginProviderContrib[];
     settings?: PluginSettingContrib[];
     themes?: PluginThemeContrib[];
-    /** Sandboxed pages placed exclusively in Settings' host-owned Extensions group. */
-    settingsDestinations?: PluginSettingsDestinationContrib[];
+    /** A host-rendered, image-card theme selector in Settings → Extensions. */
+    scenicThemes?: PluginScenicThemesContrib;
     /** Native window background for this plugin's themes (ADR 0248). */
     windowAppearance?: PluginWindowAppearanceContrib;
     mcpServers?: PluginMcpServerContrib[];
@@ -162,7 +196,11 @@ export type PluginManifest = {
   activationEvents?: string[];
 };
 
-/** A plugin-provided label. Shell UI may add locales; plugins still ship en + zh-CN. */
+/**
+ * Host-owned chrome labels (`ui.title`, views, destinations, session sources).
+ * Do not use this for plugin-owned copy; read `pi.app.getLocale` instead
+ * (ADR 0280). Shell UI may add locales; plugins still ship en + zh-CN.
+ */
 export type PluginLocalizedString = {
   en: string;
   "zh-CN": string;
@@ -276,6 +314,38 @@ export type PluginSessionGetResult = {
   updatedAt: string;
 };
 
+/**
+ * One completed turn as a flat fact row (`usage.read`). The host serves raw
+ * counters — per-turn tokens and identifiers only; no message body ever
+ * crosses the bridge, and every dashboard shape (streaks, heatmaps, shares)
+ * stays the plugin's own computation.
+ */
+export type PluginUsageTurn = {
+  turnId: string;
+  sessionId: string;
+  sessionTitle: string | null;
+  projectId: number | null;
+  providerId: string | null;
+  modelId: string | null;
+  startedAt: number;
+  endedAt: number;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  reasoningTokens: number;
+};
+
+/**
+ * A keyset-paginated page of completed turns, ordered by `endedAt`
+ * ascending. `nextCursor` is opaque: pass it back as `cursor` to fetch the
+ * next page; it is `null` when the window is exhausted.
+ */
+export type PluginUsageTurnPage = {
+  turns: PluginUsageTurn[];
+  nextCursor: string | null;
+};
+
 export type PluginSessionMessageResult = {
   id: string;
   role: "user" | "assistant" | "tool";
@@ -333,7 +403,9 @@ export type PluginSettingOption = {
 
 export type PluginSettingContrib = {
   key: string;
+  /** Author-language label for the generated sheet. Not a locale map (ADR 0280). */
   title: string;
+  /** Author-language help text for the generated sheet. */
   description?: string;
   type: PluginSettingType;
   default?: unknown;
@@ -365,7 +437,7 @@ export type PluginThemeContrib = {
   /** Base palette the overrides are layered on. Defaults to `dark`. */
   base?: "light" | "dark";
   /**
-   * Relative paths (extension whitelist, 4 MB summed) this theme's CSS may
+   * Package-relative or absolute paths (extension whitelist, 4 MB summed) this theme's CSS may
    * reference with `url()`. The host rewrites each matching reference to its own
    * `plugin-asset://` scheme; anything not declared here is still refused.
    */
@@ -374,12 +446,24 @@ export type PluginThemeContrib = {
   variables?: PluginThemeVariableContrib[];
 };
 
-export type PluginSettingsDestinationContrib = {
+/**
+ * Data only: the host owns every DOM node, style, and interaction for this
+ * Settings destination so a scenic canvas never sits behind a plugin document.
+ */
+export type PluginScenicThemesContrib = {
   id: string;
-  label: PluginLocalizedString | string;
-  icon: "sliders" | "sparkles" | "palette" | "plug" | "settings";
-  keywords?: Array<PluginLocalizedString | string>;
-  entry: string;
+  label: PluginLocalizedString;
+  description: PluginLocalizedString;
+  keywords?: PluginLocalizedString[];
+  icon: "palette";
+  themes: PluginScenicThemeCardContrib[];
+};
+
+export type PluginScenicThemeCardContrib = {
+  themeId: string;
+  label: PluginLocalizedString;
+  description: PluginLocalizedString;
+  previewAsset: string;
 };
 
 /** Wire format a contributed provider may declare. Absent means `chat_completions`. */
@@ -586,6 +670,89 @@ export type PluginCommand = {
   run: () => Promise<void> | void;
 };
 
+export type PluginSpeechRole = "transcribe" | "synthesize";
+
+export type PluginSpeechHandleInput = {
+  protocol: string;
+  role: PluginSpeechRole;
+  modelId: string;
+  voice?: string;
+  format?: string;
+  extra?: Record<string, string>;
+  text?: string;
+  language?: string;
+  audio?: { mimeType: string; data: string };
+};
+
+export type PluginSpeechHandleResult =
+  | { kind: "text"; text: string }
+  | { kind: "audio"; mimeType: string; data: string }
+  | {
+      kind: "http";
+      call: {
+        url: string;
+        method?: "GET" | "POST";
+        headers?: Record<string, string>;
+        body?: unknown;
+        parse: "bytes" | "json-text" | "json-path" | "openai-transcription" | "openai-chat-audio";
+        jsonPath?: string;
+      };
+    };
+
+export type PluginSpeechAdapter = {
+  protocol: string;
+  label: string;
+  roles: PluginSpeechRole[];
+  handle: (input: PluginSpeechHandleInput) => Promise<PluginSpeechHandleResult> | PluginSpeechHandleResult;
+};
+
+/** Spend one plugin tool call reports for itself. The host records it as its
+ * own component of the turn (`pluginToolUsage`), never folded into the model's
+ * input/output token counts. Requires the `runtime.tool.extend` permission.
+ */
+export type PluginToolUsage = {
+  inputTokens?: number;
+  outputTokens?: number;
+  cacheReadTokens?: number;
+  cacheWriteTokens?: number;
+  reasoningTokens?: number;
+  /** Defaults to the sum of the parts above. */
+  totalTokens?: number;
+};
+
+/**
+ * A plugin tool's own result for the `runtime.tool.extend` slot (ADR 0295
+ * slot 5). A result that carries any of these fields is read as this shape, so
+ * `content` reaches the model as content instead of a JSON blob; a result with
+ * none of them keeps the previous behaviour and is rendered as before.
+ *
+ * `addedToolNames` introduces tools: each name must already be in the session's
+ * tool catalogue (a contributed or MCP tool the model has not activated yet).
+ * They become available from the next model turn onward and are marked as
+ * plugin-introduced wherever the catalogue is shown. `usage` reports the call's
+ * own spend. `terminate` asks the agent to stop after the current tool batch,
+ * and the kernel stops only when **every** finalized result in the batch asks
+ * for it, so one tool's request never cuts a batch short.
+ *
+ * The permission is checked against the plugin's recorded grants before the
+ * fields leave the host: a plugin without `runtime.tool.extend` is refused (the
+ * fields are dropped and the refusal is audited), never silently trusted.
+ */
+export type PluginToolResult = {
+  /** Text or image content returned to the model. */
+  content?: Array<
+    | { type: "text"; text: string }
+    | { type: "image"; data: string; mimeType: string }
+  >;
+  /** Arbitrary structured details for logs or UI rendering. */
+  details?: unknown;
+  usage?: PluginToolUsage;
+  addedToolNames?: string[];
+  terminate?: boolean;
+  /** Convenience alias for a single text block when `content` is omitted. */
+  text?: string;
+};
+
 export type PluginTool = {
   name: string;
   description: string;
@@ -599,7 +766,10 @@ export type PluginTool = {
    */
   planSafeActions?: readonly string[];
   schema?: unknown;
-  execute: (args: unknown, ctx?: PluginToolExecContext) => Promise<unknown> | unknown;
+  execute: (
+    args: unknown,
+    ctx?: PluginToolExecContext,
+  ) => Promise<PluginToolResult | unknown> | PluginToolResult | unknown;
 };
 
 export type PluginToolExecContext = {
@@ -610,8 +780,450 @@ export type PluginToolExecContext = {
   /** Executor model for this session, `providerId/modelId`. Configuration, not transcript. */
   modelKey?: string;
   thinkingLevel?: string;
+  /**
+   * The turn's cancellation token (ADR 0295 slot 3): it aborts when the user
+   * stops the turn, when a plugin asks the host to stop it (`runtime.turn.abort`),
+   * or when the host abandons the turn. Long-running work should pass it to
+   * `fetch` or watch it and stop.
+   */
   signal?: AbortSignal;
   log: (msg: string) => void;
+};
+
+/**
+ * One turn's model tokens, as the host recorded them for that turn. `total` is
+ * `input + output`; a provider's own total (which may count reasoning tokens
+ * differently) stays inside {@link PluginTurnFacts.usage}.
+ */
+export type PluginTurnTokens = {
+  input: number;
+  output: number;
+  total: number;
+};
+
+/** One tool's share of a turn's executed calls. */
+export type PluginToolCallSummary = {
+  /** Tool name as the host's audit record carries it. */
+  toolName: string;
+  calls: number;
+  ok: number;
+  failed: number;
+  /** Distinct error codes of the failed calls, sorted; empty when none failed. */
+  errorCodes: string[];
+};
+
+/** A turn's executed tool calls; `total` is `ok + failed` for every turn. */
+export type PluginToolCallFacts = {
+  total: number;
+  ok: number;
+  failed: number;
+  /** One entry per tool, ordered by tool name. */
+  byTool: PluginToolCallSummary[];
+};
+
+/** One file a turn touched, with the operation that turn performed on it. */
+export type PluginTurnFile = {
+  sessionId: string;
+  sessionTitle: string | null;
+  path: string;
+  /** `create | write | edit | download | delete`. */
+  op: string;
+  /** The turn that touched the file; `null` when the touch belonged to no turn. */
+  turnId: string | null;
+  updatedAt: string;
+};
+
+/**
+ * The facts about one turn, exactly as the host assembled them — what
+ * `pi.turnFacts()` answers (ADR 0295 slot 9, permission
+ * `runtime.turn.facts`).
+ *
+ * Every number comes from the host's own tables for that turn. This is **not**
+ * the plugin's view of the event stream: `runtime.turn.watch` delivers events
+ * best-effort, with no receipt and no redelivery, so counting what a plugin
+ * happened to see is a different number — which is why slot 9 exists. Nothing
+ * here is conversation text either; use `pi.recap()` for content.
+ */
+export type PluginTurnFacts = {
+  sessionId: string;
+  turnId: string;
+  /** `running | completed | aborted | error`. */
+  status: string;
+  providerId: string | null;
+  modelId: string | null;
+  /** The turn's own terminal error code, not a tool's. */
+  errorCode: string | null;
+  startedAt: string;
+  /** `null` while the turn is still running. */
+  endedAt: string | null;
+  /** `endedAt - startedAt` in milliseconds; `null` while running. */
+  durationMs: number | null;
+  tokens: PluginTurnTokens;
+  /** The provider's usage record as the host stored it, or `null`. */
+  usage: unknown;
+  /**
+   * Spend the turn's plugin tools reported (`runtime.tool.extend`). It is its
+   * own component and never part of `tokens`.
+   */
+  pluginToolUsage: unknown;
+  toolCalls: PluginToolCallFacts;
+  /** The files the turn touched, oldest touch first. */
+  files: PluginTurnFile[];
+  /** True when `files` hit the requested limit and holds only the first touches. */
+  filesTruncated: boolean;
+};
+
+/**
+ * What `pi.recap()` answered (ADR 0295 slot 8, permission
+ * `runtime.turn.recap`; a whole-session read additionally needs
+ * `runtime.session.read`, rule 7).
+ *
+ * The two scopes answer different things, and the turn scope says plainly what
+ * the host cannot answer yet: one turn's numbers are host-owned
+ * (`pi.turnFacts()`), while one turn's conversation text has no host read path
+ * — the transcript is not queryable per turn. `messages` is therefore `null`
+ * with `messagesUnavailable`, never an empty list that could be mistaken for a
+ * turn that said nothing. The whole session's rows are readable, and that is
+ * what `scope: "session"` returns.
+ */
+export type PluginTurnRecap =
+  | {
+      /** One turn. */
+      scope: "turn";
+      sessionId: string;
+      turnId: string;
+      /** The same facts `pi.turnFacts()` returns for that turn. */
+      facts: PluginTurnFacts;
+      /** Always `null`: no host read returns one turn's conversation text. */
+      messages: null;
+      /** Why `messages` is absent, so an empty turn is never implied. */
+      messagesUnavailable: "no-host-turn-read";
+    }
+  | {
+      /** The whole session. */
+      scope: "session";
+      sessionId: string;
+      /** Newest last, in the host's transcript shape. */
+      messages: ReadonlyArray<unknown>;
+      /** Physical transcript bounds, when a host supplies paged reads. */
+      title?: string;
+      messageStart?: number;
+      messageEnd?: number;
+      /** True when older rows exist outside the returned window. */
+      truncated: boolean;
+    };
+
+/**
+ * What `pi.continueTurn()` did (ADR 0295 slot 10, permission
+ * `runtime.turn.continue`).
+ *
+ * The continuation is a real, durable turn queued on the host — the same queue
+ * a message the user types goes through — so it survives a restart and runs
+ * after the current turn ends, or right away when the session is idle. There
+ * is no numeric quota: what replaces one is visibility (a row in the
+ * transcript) and the audit trail, not a budget a plugin has to guess.
+ */
+export type PluginTurnContinuation = {
+  /**
+   * The queued turn's id. The agent turn that actually runs from it is created
+   * at the next turn boundary and carries its own durable turn id, so this is
+   * not a `pi.turnFacts()` key.
+   */
+  queuedTurnId: string;
+};
+
+/** Text of the turn to continue with, either bare or as `{ message }`. */
+export type PluginTurnContinueInput = string | { message?: string };
+
+/**
+ * The three runtime-slot calls an agent extension makes for itself (ADR 0295).
+ * They are declared here because the upstream `ExtensionAPI` type has no member
+ * for them; the agent sidecar's `pi` object implements them, and each one is
+ * separately granted.
+ *
+ * Every call reports a refusal instead of throwing: a plugin that does not hold
+ * the permission gets `undefined` **and** a `permission_denied` diagnostic on
+ * the plugin row naming the permission and the call. `undefined` is also the
+ * answer when the host cannot answer at all — an unknown turn, or a failed
+ * read — and that failure is reported the same way, so a missing answer is
+ * never silent.
+ */
+export type PluginTurnApi = {
+  /** Own non-secret settings snapshot. Refreshed when the host relaunches the runtime. */
+  getPluginSettings(): Readonly<Record<string, unknown>>;
+  /**
+   * Slot 9 facts about one turn — status, provider and model, tokens, the
+   * turn's own plugin-tool spend, duration, executed tool calls with their
+   * outcomes and error codes, and the files it touched with their operations.
+   *
+   * Permission: `runtime.turn.facts` (low risk — numbers, no conversation
+   * text). Returns `undefined` when refused, when the turn is unknown (a turn
+   * the host never recorded is not answered with zeroes), or when the read
+   * failed.
+   *
+   * `turnId` defaults to the running turn. `limit` caps the file list
+   * (default 200, ceiling 499); `filesTruncated` says whether the cap was hit.
+   * Cost: one host read per call, cheap next to a provider request, but a real
+   * read — do not poll it from a per-message handler.
+   */
+  turnFacts(input?: { turnId?: string; limit?: number }): Promise<PluginTurnFacts | undefined>;
+  /**
+   * Slot 8 read of what a turn contained.
+   *
+   * Permission: `runtime.turn.recap`. `scope: "session"` reads conversation
+   * content and therefore **also** needs `runtime.session.read` (rule 7):
+   * without it the call is refused and the diagnostic names that permission.
+   * Reads are not recorded one by one — the install review and the plugin row
+   * are the consent surface.
+   *
+   * Returns `undefined` when refused or when the read failed. `scope: "turn"`
+   * (the default) answers with that turn's facts and says
+   * `messagesUnavailable: "no-host-turn-read"`, because one turn's text has no
+   * host read path yet. `scope: "session"` answers with the newest `limit`
+   * transcript rows (default 200, ceiling 500) plus `truncated`.
+   *
+   * Risk: the session scope hands the plugin what was said. Ask for the
+   * narrowest scope that answers the question, and read what the plugin needs
+   * rather than archiving a transcript.
+   */
+  recap(input?: {
+    scope?: "turn" | "session";
+    /** Session scope only; omitted reads the current session. Same read grant. */
+    sessionId?: string;
+    /** Exclusive physical line cursor from the previous messageStart. */
+    before?: number;
+    turnId?: string;
+    limit?: number;
+  }): Promise<PluginTurnRecap | undefined>;
+  /**
+   * Slot 10 continuation: start another turn after this one ends.
+   *
+   * Permission: `runtime.turn.continue`. Returns `undefined` when refused or
+   * when the host could not queue it.
+   *
+   * Risk: the continuation costs a full provider request the user did not type,
+   * and there is no quota (rule 9), so asking for a turn where it adds nothing
+   * spends the user's money and attention.
+   *
+   * The queued turn is a real, visible row and it names the plugin that asked
+   * for it: `continueTurn` is the only extension-facing way to queue a turn and
+   * it always carries the plugin id and display label, which host-core stores
+   * on the queue row and on the transcript row it becomes (ADR 0293).
+   */
+  continueTurn(input: PluginTurnContinueInput): Promise<PluginTurnContinuation | undefined>;
+};
+
+/**
+ * The `input` event's payload (ADR 0295 slot 1, permission
+ * `runtime.send.before`).
+ *
+ * It fires once per prompt, after the desktop has accepted and stored the
+ * user's message and before that message enters the agent, so a handler reads
+ * exactly what is about to be queued — attachments included — while the text
+ * the user typed stays on their row.
+ *
+ * ```ts
+ * pi.on("input", (event) => {
+ *   if (event.text.startsWith("?quick ")) {
+ *     return { action: "transform", text: `Answer briefly: ${event.text.slice(7)}` };
+ *   }
+ *   return { action: "continue" };
+ * });
+ * ```
+ */
+export type PluginInputEvent = {
+  type: "input";
+  sessionId: string;
+  turnId: string;
+  /** The text being queued, as the current handler chain sees it. */
+  text: string;
+  /** Image attachments carried inline for this turn. */
+  images: ReadonlyArray<{ name: string; mimeType?: string; data: string }>;
+  /** Every attachment of the message, images included, by reference. */
+  attachments: ReadonlyArray<{
+    name: string;
+    ref: string;
+    kind: "image" | "file";
+    mimeType?: string;
+    size?: number;
+  }>;
+  source: "rpc" | "extension";
+};
+
+/**
+ * What an `input` handler answers (ADR 0295 slot 1), using the kernel's three
+ * actions:
+ *
+ * - `continue` — pass the message through unchanged; returning nothing does
+ *   the same.
+ * - `transform` — replace the text the model receives. Transforms chain in
+ *   load order, so a later handler sees the text an earlier one produced. The
+ *   user's row keeps the original and the rewrite is recorded at diff level
+ *   (`plugin_rewrites`), which is what makes "rewritten by plugin X" visible.
+ * - `handled` — keep the message away from the model entirely. Give a
+ *   `reason`: it is what the user reads, so a block is never silent.
+ *
+ * The handler runs with the ordinary 30-second budget; going over it counts as
+ * having no opinion (`handler_timeout`).
+ */
+export type PluginInputResult = {
+  action: "continue" | "transform" | "handled";
+  text?: string;
+  reason?: string;
+};
+
+/**
+ * The `context` event's payload (ADR 0295 slot 6, permission
+ * `runtime.request.before`) — **withdrawn.** The slot was dropped by product
+ * decision before shipping: silent rewrites of what the model reads are not
+ * offered. A registered handler is accepted silently and never consulted, so
+ * `pi.on("context", …)` is dead code.
+ *
+ * The payload is kept because the published SDK exports the type. The
+ * plugin-level route to model-facing AI is `pi.ai.complete`, gated by
+ * `agent.model.complete`.
+ *
+ * @deprecated Withdrawn with ADR 0295 slot 6; the event never fires.
+ */
+export type PluginContextEvent = {
+  type: "context";
+  /** The message list the request would carry, in the kernel's message shape. */
+  messages: ReadonlyArray<unknown>;
+};
+
+/**
+ * What a `context` handler would answer. **Withdrawn with the `context` event**
+ * (ADR 0295 slot 6): no handler result is consulted, so this shape is kept only
+ * because the published SDK exports it.
+ *
+ * @deprecated Withdrawn with ADR 0295 slot 6; no handler result is read.
+ */
+export type PluginContextResult = {
+  messages?: ReadonlyArray<unknown>;
+};
+
+/** One model as the runtime names it: provider id plus model id. */
+export type PluginModelRef = {
+  provider: string;
+  id: string;
+};
+
+/**
+ * The `model_select` event's payload (ADR 0295 slot 6, permission
+ * `runtime.request.before`) — **withdrawn.** The slot was dropped by product
+ * decision before shipping: a handler is accepted silently and never
+ * consulted, so `pi.on("model_select", …)` is dead code.
+ *
+ * The payload is kept because the published SDK exports the type. To change
+ * the session's binding, use `pi.setModel()` between turns (idle only, the host
+ * persists it) — that call is the supported route.
+ *
+ * @deprecated Withdrawn with ADR 0295 slot 6; the event never fires.
+ */
+export type PluginModelSelectEvent = {
+  type: "model_select";
+  /** The model the next provider request would use without an answer here. */
+  model: PluginModelRef;
+  /**
+   * The models the run could put on the request. Kept for compatibility with
+   * the exported type; the withdrawn event never asks for an answer, so
+   * nothing reads this.
+   */
+  requestable: ReadonlyArray<PluginModelRef>;
+};
+
+/**
+ * What a `model_select` handler would answer. **Withdrawn with the
+ * `model_select` event** (ADR 0295 slot 6): no handler result is consulted, so
+ * the type is kept only because the published SDK exports it. `pi.setModel()`
+ * between turns is the supported route to change the session's binding.
+ *
+ * @deprecated Withdrawn with ADR 0295 slot 6; no handler result is read.
+ */
+export type PluginModelSelectResult = {
+  model: PluginModelRef | string;
+};
+
+/**
+ * The `thinking_level_select` event's payload (ADR 0295 slot 6, permission
+ * `runtime.request.before`) — **withdrawn.** The slot was dropped by product
+ * decision before shipping: a handler is accepted silently and never
+ * consulted, so `pi.on("thinking_level_select", …)` is dead code.
+ *
+ * The payload is kept because the published SDK exports the type. The
+ * session's thinking level is set through the pi extension API itself
+ * (`getThinkingLevel` / `setThinkingLevel`), which the host supports.
+ *
+ * @deprecated Withdrawn with ADR 0295 slot 6; the event never fires.
+ */
+export type PluginThinkingLevelSelectEvent = {
+  type: "thinking_level_select";
+  /** The level the next provider request would use without an answer here. */
+  level: string;
+  /** The levels this model supports. */
+  supported: ReadonlyArray<string>;
+};
+
+/**
+ * What a `thinking_level_select` handler would answer. **Withdrawn with the
+ * `thinking_level_select` event** (ADR 0295 slot 6): no handler result is
+ * consulted, so the type is kept only because the published SDK exports it.
+ *
+ * @deprecated Withdrawn with ADR 0295 slot 6; no handler result is read.
+ */
+export type PluginThinkingLevelSelectResult = {
+  level: string;
+};
+
+/**
+ * A session lifecycle notice the kernel has no hook for (ADR 0295 slot 11,
+ * permission `runtime.session.lifecycle`): the desktop created or deleted a
+ * session. Informed-only — nothing can be vetoed, and the delete or create
+ * never waits for a handler.
+ */
+export type PluginSessionLifecycleEvent = {
+  type: "session_lifecycle";
+  change: "created" | "deleted";
+  sessionId: string;
+};
+
+/**
+ * The kernel's `session_before_switch` (ADR 0295 slot 11), emitted by the
+ * desktop when the user leaves a session for a new one or for another session.
+ * Informed-only here even though the kernel lets a handler cancel the switch.
+ */
+export type PluginSessionBeforeSwitchEvent = {
+  type: "session_before_switch";
+  reason: "new" | "resume";
+  sessionId: string;
+  targetSessionId?: string;
+};
+
+/**
+ * The kernel's `session_before_fork` (ADR 0295 slot 11), emitted by the
+ * desktop before it forks the session. Informed-only.
+ */
+export type PluginSessionBeforeForkEvent = {
+  type: "session_before_fork";
+  sessionId: string;
+  entryId?: string;
+  position: "before" | "at";
+};
+
+/** The conversation a compaction is about to replace (ADR 0295 rule 7). */
+export type PluginCompactionSegment = {
+  messages: ReadonlyArray<unknown>;
+  messageCount: number;
+  tokensBefore: number;
+  retained: ReadonlyArray<unknown>;
+};
+
+/** Payload of `session_before_compact` (ADR 0295 slot 11). */
+export type PluginSessionBeforeCompactEvent = {
+  type: "session_before_compact";
+  reason: "manual" | "threshold" | "overflow";
+  retentionMode: "active_turn" | "completed_turn";
+  segment: PluginCompactionSegment;
 };
 
 export type PluginModelInfo = {
@@ -645,11 +1257,14 @@ export type PluginLlmContext = {
 };
 
 export type PluginCompleteInput = {
-  modelKey: string;
+  /** `providerId/modelId`; omitted → host default / session-bound model. */
+  modelKey?: string;
   thinkingLevel?: string;
   system?: string;
   messages?: Array<{ role: "user" | "assistant"; content: string }>;
   includeSessionContext?: boolean;
+  /** Audit label, e.g. "prompt-enhance". */
+  purpose?: string;
 };
 
 export type PluginCompleteResult = {
@@ -662,6 +1277,18 @@ export type PluginCompleteResult = {
     totalTokens: number;
   };
 };
+
+/**
+ * Plugin-level completion on user-configured models (`pi.ai.complete`).
+ * Permission: `agent.model.complete` or legacy `agent.complete`.
+ * `system` is exactly what the plugin passes — the host does not merge the
+ * session system prompt into this side request.
+ */
+export type PluginAiCompleteInput = PluginCompleteInput & {
+  messages: Array<{ role: "user" | "assistant" | "system"; content: string }>;
+};
+
+export type PluginAiCompleteResult = PluginCompleteResult;
 
 export type PluginServiceContext = {
   /** Appends a line to the plugin's host log. */
@@ -896,6 +1523,7 @@ export type PluginThemeSummary = {
 export type PluginHostApi = {
   app: {
     getVersion: () => Promise<string>;
+    /** Active app language. Plugin-owned UI localizes from this (ADR 0280). */
     getLocale: () => Promise<string>;
     getAppearance: () => Promise<PluginAppearance>;
     /**
@@ -921,6 +1549,10 @@ export type PluginHostApi = {
   commands: {
     register: (command: PluginCommand) => Promise<void>;
     unregister: (id: string) => Promise<void>;
+  };
+  speech: {
+    registerAdapter: (adapter: PluginSpeechAdapter) => Promise<void>;
+    unregisterAdapter: (protocol: string) => Promise<void>;
   };
   ui: {
     openPanel: (opts?: { title?: string }) => Promise<void>;
@@ -1023,6 +1655,14 @@ export type PluginHostApi = {
     unregisterTool: (name: string) => Promise<void>;
     complete: (input: PluginCompleteInput) => Promise<PluginCompleteResult>;
   };
+  /** Plugin-level AI on user-configured models. Permission `agent.model.complete`. */
+  ai: {
+    complete: (input: PluginAiCompleteInput) => Promise<PluginAiCompleteResult>;
+    completeStream: (
+      input: PluginAiCompleteInput,
+      onDelta?: (text: string) => void,
+    ) => Promise<PluginAiCompleteResult>;
+  };
   models: {
     list: () => Promise<PluginModelInfo[]>;
   };
@@ -1049,6 +1689,28 @@ export type PluginHostApi = {
       sessionId: string;
       mode?: "trash" | "purge";
     }) => Promise<{ deleted: boolean }>;
+  };
+  /**
+   * Read-only completed-turn facts served by the host (`usage.read`). Flat
+   * counters and identifiers only — no message body, no write path, and no
+   * dashboard shape: streaks, heatmaps, and rankings stay the plugin's own
+   * computation on top of these rows.
+   */
+  usage: {
+    listTurns: (input?: {
+      /** Inclusive window start in epoch ms. Default: `toMs` minus 30 days. */
+      fromMs?: number;
+      /** Inclusive window end in epoch ms. Default: now. Window span ≤ 365 days. */
+      toMs?: number;
+      /** Limit rows to one durable project id. */
+      projectId?: number | null;
+      /** Limit rows to one session id. */
+      sessionId?: string;
+      /** Opaque page cursor from the previous `nextCursor`. */
+      cursor?: string;
+      /** 1..=500 rows per page; default 200. */
+      limit?: number;
+    }) => Promise<PluginUsageTurnPage>;
   };
   services: {
     /**
@@ -1124,6 +1786,21 @@ export type PluginModule = {
   onUnload?: () => Promise<void> | void;
   /** Optional fixed-channel operations for an isolated plugin panel. */
   onPanelInvoke?: (channel: string, payload: unknown) => Promise<unknown> | unknown;
+  /**
+   * Optional method host for a renderer slot component's forwarded calls
+   * (`plugin.call`, ADR 0294 decision 4). A component that dispatches
+   * `plugin.call { method, args }` runs this hook inside its own headless entry
+   * — this process — and the renderer receives the return value unchanged.
+   *
+   * Values are JSON-serializable data: `args` and the answer cross
+   * `postMessage`, Electron IPC and a `Result` envelope. `args` is `null` when
+   * the caller passed none, and a value the transport cannot carry is refused
+   * with `PLUGIN_CALL_UNSERIALIZABLE` rather than arriving truncated. An absent
+   * answer arrives at the renderer as `null`; a module that does not implement
+   * this hook answers every renderer call with `PLUGIN_CALL_NO_HANDLER`, never
+   * `undefined`.
+   */
+  onRendererCall?: (method: string, args: unknown) => Promise<unknown> | unknown;
 };
 
 /** Upper bound on ExtensionAPI modules one plugin may contribute. */
@@ -1148,6 +1825,9 @@ export const PLUGIN_PERMISSIONS = [
   "agent.prompt.inject",
   "agent.complete",
   "agent.extension",
+  // Trusted renderer host (spec 07-plugins/16). One name covers every component
+  // slot: slots are authorized by trust tier, never one by one.
+  "renderer.extension",
   "provider.register",
   "desktop.control",
   "models.list",
@@ -1157,6 +1837,9 @@ export const PLUGIN_PERMISSIONS = [
   "session.read.own",
   "session.update.own",
   "session.delete.own",
+  // Read-only usage facts (pi.usage.listTurns):
+  // completed-turn counters and session titles, never message bodies.
+  "usage.read",
   "net.fetch",
   "shell.openExternal",
   "mcp.server.local",
@@ -1169,8 +1852,25 @@ export const PLUGIN_PERMISSIONS = [
   // what a service may use with no page open.
   "audio.capture.background",
   "audio.playback.background",
+  "speech.adapter.register",
   "keyboard.globalShortcut",
   "net.websocket",
+  // Runtime slots (#561). Slot 6 (`runtime.request.before`) is withdrawn by
+  // product decision — silent request rewrites are not offered. The twelfth
+  // (`runtime.approval.before`) is not built. `agent.model.complete` gates
+  // plugin-side completion on user-configured models (`pi.ai.complete`).
+  "agent.model.complete",
+  "runtime.send.before",
+  "runtime.session.lifecycle",
+  "runtime.session.read",
+  "runtime.tool.extend",
+  "runtime.tool.gate",
+  "runtime.turn.abort",
+  "runtime.turn.closing",
+  "runtime.turn.continue",
+  "runtime.turn.facts",
+  "runtime.turn.recap",
+  "runtime.turn.watch",
 ] as const;
 
 export type PluginPermission = (typeof PLUGIN_PERMISSIONS)[number];
@@ -1193,11 +1893,34 @@ export function validateManifest(raw: unknown): {
   if (typeof m.version !== "string" || !m.version) {
     return { ok: false, error: "manifest.version is required" };
   }
-  if (typeof m.main !== "string" || !m.main) {
-    return { ok: false, error: "manifest.main is required" };
+  if (m.main !== undefined) {
+    if (typeof m.main !== "string" || !m.main) {
+      return { ok: false, error: "manifest.main must be a non-empty string" };
+    }
+    const mainError = relativePathError(m.main, "manifest.main");
+    if (mainError) return { ok: false, error: mainError };
   }
-  const mainError = relativePathError(m.main, "manifest.main");
-  if (mainError) return { ok: false, error: mainError };
+  if (m.renderer !== undefined) {
+    if (typeof m.renderer !== "string" || !m.renderer) {
+      return { ok: false, error: "manifest.renderer must be a non-empty string" };
+    }
+    const rendererError = relativePathError(m.renderer, "manifest.renderer");
+    if (rendererError) return { ok: false, error: rendererError };
+  }
+  // Both vocabularies are host-owned, so a name outside them is an authoring
+  // mistake worth catching at install rather than at the first refused call.
+  const rendererDataError = rendererVocabularyError(
+    m.rendererData,
+    "rendererData",
+    PLUGIN_RENDERER_DATA,
+  );
+  if (rendererDataError) return { ok: false, error: rendererDataError };
+  const rendererActionsError = rendererVocabularyError(
+    m.rendererActions,
+    "rendererActions",
+    PLUGIN_RENDERER_ACTIONS,
+  );
+  if (rendererActionsError) return { ok: false, error: rendererActionsError };
   if (typeof m.schemaVersion !== "number") {
     return { ok: false, error: "manifest.schemaVersion is required" };
   }
@@ -1285,6 +2008,23 @@ export function validateManifest(raw: unknown): {
   if (contributesError) {
     return { ok: false, error: contributesError };
   }
+
+  // Relaxing `main` must not produce a plugin that cannot run at all: one of
+  // the three entries still has to exist (spec 07-plugins/02).
+  if (!pluginHasEntry(m)) {
+    return {
+      ok: false,
+      error: "manifest needs one of main, renderer, or a plugin page",
+    };
+  }
+  // The renderer entry is the trusted tier: it runs in the host renderer, so
+  // declaring it is not enough — the grant has to be requested too.
+  if (m.renderer !== undefined && !(m.permissions ?? []).includes("renderer.extension")) {
+    return {
+      ok: false,
+      error: "manifest.renderer requires the renderer.extension permission",
+    };
+  }
   const net = m.net as { domains?: unknown } | null | undefined;
   if (net !== undefined) {
     if (!net || typeof net !== "object" || Array.isArray(net)) {
@@ -1311,6 +2051,51 @@ export function validateManifest(raw: unknown): {
     }
   }
   return { ok: true, manifest: m as PluginManifest };
+}
+
+/** Names of the four places a manifest can hang behaviour off. */
+export type PluginManifestEntryFlags = {
+  /** `manifest.main`: a headless module in the plugin's own process. */
+  main: boolean;
+  /** `manifest.renderer`: trusted component slots inside the app window. */
+  renderer: boolean;
+  /** A plugin-owned page: `ui.panel` or a view. */
+  page: boolean;
+  /** `contributes.agentExtensions`: modules in the agent process. */
+  agent: boolean;
+};
+
+/**
+ * Which entries a manifest declares. The three tiers in spec 07-plugins/16
+ * follow from this: `renderer` is what puts plugin code in the app window and
+ * `agent` is what puts it in the agent process.
+ */
+export function manifestEntries(
+  manifest: Pick<PluginManifest, "main" | "renderer" | "ui" | "contributes">,
+): PluginManifestEntryFlags {
+  const hasText = (value: unknown): boolean =>
+    typeof value === "string" && value.trim().length > 0;
+  return {
+    main: hasText(manifest.main),
+    renderer: hasText(manifest.renderer),
+    page:
+      hasText(manifest.ui?.panel) ||
+      (manifest.contributes?.views?.length ?? 0) > 0,
+    agent: (manifest.contributes?.agentExtensions?.length ?? 0) > 0,
+  };
+}
+
+/**
+ * A plugin is reachable through one of three entries: the headless module
+ * (`main`), the trusted renderer module (`renderer`), or a plugin-owned page.
+ * Contributions that are not entries — agent extensions, services, providers,
+ * themes — do not make a plugin runnable on their own.
+ */
+export function pluginHasEntry(
+  manifest: Pick<PluginManifest, "main" | "renderer" | "ui" | "contributes">,
+): boolean {
+  const entries = manifestEntries(manifest);
+  return entries.main || entries.renderer || entries.page;
 }
 
 /**
@@ -1576,7 +2361,7 @@ export function validateContributions(
       const assetPaths = new Set<string>();
       for (const asset of theme.assets) {
         if (typeof asset !== "string" || !isThemeAssetPath(asset)) {
-          return `theme "${theme.id}" asset must be an absolute ${THEME_ASSET_EXTENSIONS.join(
+          return `theme "${theme.id}" asset must be a package-relative or absolute ${THEME_ASSET_EXTENSIONS.join(
             "/",
           )} path`;
         }
@@ -1601,17 +2386,26 @@ export function validateContributions(
     }
   }
 
-  const settingsDestinationIds = new Set<string>();
-  for (const destination of contributes.settingsDestinations ?? []) {
-    if (!destination || typeof destination !== "object") return "contributes.settingsDestinations entries must be objects";
-    if (typeof destination.id !== "string" || !/^[a-zA-Z][a-zA-Z0-9_-]{0,63}$/.test(destination.id)) return "contributes.settingsDestinations id must match [a-zA-Z][a-zA-Z0-9_-]{0,63}";
-    if (settingsDestinationIds.has(destination.id)) return `duplicate settings destination id "${destination.id}"`;
-    settingsDestinationIds.add(destination.id);
-    if (typeof destination.entry !== "string" || !destination.entry.endsWith(".html")) return `settings destination "${destination.id}" entry must be an .html file`;
-    const pathError = relativePathError(destination.entry, `settings destination "${destination.id}" entry`);
-    if (pathError) return pathError;
-    if (!destination.label || (typeof destination.label !== "string" && typeof destination.label !== "object")) return `settings destination "${destination.id}" requires a label`;
-    if (!["sliders", "sparkles", "palette", "plug", "settings"].includes(destination.icon)) return `settings destination "${destination.id}" has an unsupported icon`;
+  const scenicThemes = contributes.scenicThemes;
+  if (scenicThemes !== undefined) {
+    if (!scenicThemes || typeof scenicThemes !== "object" || Array.isArray(scenicThemes)) return "contributes.scenicThemes must be an object";
+    if (typeof scenicThemes.id !== "string" || !/^[a-zA-Z][a-zA-Z0-9_-]{0,63}$/.test(scenicThemes.id)) return "contributes.scenicThemes id must match [a-zA-Z][a-zA-Z0-9_-]{0,63}";
+    const localized = (value: unknown) => Boolean(value && typeof value === "object" && typeof (value as PluginLocalizedString).en === "string" && typeof (value as PluginLocalizedString)["zh-CN"] === "string");
+    if (!localized(scenicThemes.label)) return "contributes.scenicThemes requires a localized label";
+    if (!localized(scenicThemes.description)) return "contributes.scenicThemes requires a localized description";
+    if (scenicThemes.keywords !== undefined && (!Array.isArray(scenicThemes.keywords) || !scenicThemes.keywords.every(localized))) return "contributes.scenicThemes keywords must be localized";
+    if (scenicThemes.icon !== "palette") return "contributes.scenicThemes has an unsupported icon";
+    if (!Array.isArray(scenicThemes.themes) || scenicThemes.themes.length < 1 || scenicThemes.themes.length > 12) return "contributes.scenicThemes themes must contain 1 to 12 cards";
+    const themeIds = new Set<string>();
+    for (const card of scenicThemes.themes) {
+      if (!card || typeof card !== "object") return "contributes.scenicThemes theme cards must be objects";
+      if (typeof card.themeId !== "string" || !/^[a-zA-Z][a-zA-Z0-9_-]{0,63}$/.test(card.themeId)) return "contributes.scenicThemes card themeId must be valid";
+      if (themeIds.has(card.themeId)) return `contributes.scenicThemes duplicates themeId "${card.themeId}"`;
+      themeIds.add(card.themeId);
+      if (!localized(card.label)) return "contributes.scenicThemes card requires a localized label";
+      if (!localized(card.description)) return "contributes.scenicThemes card requires a localized description";
+      if (typeof card.previewAsset !== "string" || !isThemeAssetPath(card.previewAsset)) return "contributes.scenicThemes card previewAsset must be an image path";
+    }
   }
 
   const windowAppearance = contributes.windowAppearance;
@@ -1816,6 +2610,38 @@ function relativePathError(value: string, field: string): string | undefined {
   return undefined;
 }
 
+/**
+ * Shape check for one of the two renderer vocabularies (`rendererData`,
+ * `rendererActions`). The names are host-owned, so an entry outside the
+ * vocabulary is refused rather than kept as a string nobody will ever read.
+ * Absent is valid: a plugin that declares nothing reads nothing.
+ */
+function rendererVocabularyError(
+  value: unknown,
+  field: string,
+  vocabulary: readonly string[],
+): string | undefined {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value)) return `manifest.${field} must be an array`;
+  // Every allowed name is worth at most one entry, so a longer list cannot be
+  // satisfied however it is written.
+  if (value.length > vocabulary.length) {
+    return `manifest.${field} allows at most ${vocabulary.length} entries, got ${value.length}`;
+  }
+  const seen = new Set<string>();
+  for (const entry of value) {
+    if (typeof entry !== "string" || !entry.trim()) {
+      return `manifest.${field} entry ${JSON.stringify(entry)} is not a non-empty string`;
+    }
+    if (!vocabulary.includes(entry)) {
+      return `manifest.${field} has an unknown entry "${entry}"`;
+    }
+    if (seen.has(entry)) return `manifest.${field} declares "${entry}" twice`;
+    seen.add(entry);
+  }
+  return undefined;
+}
+
 /** Forced tool name prefix for plugin tools exposed to the agent. */
 export function pluginToolName(pluginId: string, toolName: string): string {
   const safePlugin = pluginId.replace(/[^a-zA-Z0-9_]/g, "_");
@@ -1927,3 +2753,58 @@ export {
   type PluginFsRule,
   type ResolvedFsAccess,
 } from "./fs-policy.js";
+
+export {
+  PLUGIN_RENDERER_ACTIONS,
+  PLUGIN_RENDERER_AMBIENT_DATA,
+  PLUGIN_RENDERER_COMPOSER_DEFAULT_POSITIONS,
+  PLUGIN_RENDERER_COMPOSER_POSITIONS,
+  PLUGIN_RENDERER_DATA,
+  PLUGIN_RENDERER_REPLACE_SLOTS,
+  PLUGIN_RENDERER_SCHEME,
+  PLUGIN_RENDERER_SLOTS,
+  PLUGIN_RENDERER_UNSERVED_DATA,
+  PLUGIN_SLOT_DESIGN_TOKENS,
+  PLUGIN_STYLE_FORBIDDEN_ROOT_SELECTORS,
+  isPluginRendererReplaceSlot,
+  scopePluginStyle,
+  type PiRendererAmbientProps,
+  type PiRendererApi,
+  type PiRendererCodeBlockProps,
+  type PiRendererCompletionSourceProps,
+  type PiRendererComponent,
+  type PiRendererComposerContextUsage,
+  type PiRendererComposerControlPosition,
+  type PiRendererComposerControlProps,
+  type PiRendererComposerEnhancement,
+  type PiRendererComposerModelSelection,
+  type PiRendererComposerReference,
+  type PiRendererComposerReferenceProps,
+  type PiRendererDispatch,
+  type PiRendererEntryAction,
+  type PiRendererEntryAttachment,
+  type PiRendererEntryExtraProps,
+  type PiRendererEntryIdentity,
+  type PiRendererEntryMessage,
+  type PiRendererEntryProps,
+  type PiRendererFunctionCallResult,
+  type PiRendererFunctionFailureCode,
+  type PiRendererFunctionHandle,
+  type PiRendererHostFunction,
+  type PiRendererInlineConfirmProps,
+  type PiRendererInlineConfirmRequest,
+  type PiRendererModule,
+  type PiRendererNode,
+  type PiRendererReferenceSendInput,
+  type PiRendererRegistration,
+  type PiRendererSlotOptions,
+  type PiRendererStyleHandle,
+  type PiRendererToolCall,
+  type PiRendererToolCardProps,
+  type PluginRendererActionName,
+  type PluginRendererAmbientDataKey,
+  type PluginRendererDataKey,
+  type PluginRendererSlot,
+  type PluginRendererSlotDiagnosticCode,
+  type PluginSlotDesignToken,
+} from "./renderer.js";

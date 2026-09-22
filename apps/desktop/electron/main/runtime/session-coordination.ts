@@ -44,6 +44,12 @@ export function createSessionCoordination({
   const turnSettlements = new Map<string, Set<() => void>>();
   const activeTurnUsages = new Map<string, MessageUsage>();
   /**
+   * Spend plugin tools reported for the session's current turn (ADR 0295 slot
+   * 5). It is recorded as its own component of the turn, never summed into the
+   * model's token counts.
+   */
+  const activeTurnPluginUsages = new Map<string, MessageUsage>();
+  /**
    * (sessionId, turnId) -> the in-flight finalization for that turn. Keyed by
    * the composite turn key, not by the session, so a late terminal event for an
    * older turn can never claim or release a newer turn's record.
@@ -86,6 +92,16 @@ export function createSessionCoordination({
     if (!usage) return;
     const next = addUsage(activeTurnUsages.get(sessionId), usage);
     if (next) activeTurnUsages.set(sessionId, next);
+  }
+
+  /** Slot 5: the spend plugin tools reported for this turn, kept apart. */
+  function addActiveTurnPluginUsage(
+    sessionId: string,
+    usage: MessageUsage | undefined,
+  ): void {
+    if (!usage) return;
+    const next = addUsage(activeTurnPluginUsages.get(sessionId), usage);
+    if (next) activeTurnPluginUsages.set(sessionId, next);
   }
 
   const activeToolCallKey = (sessionId: string, toolCallId: string) =>
@@ -250,10 +266,12 @@ export function createSessionCoordination({
     sessionOperationTails,
     turnSettlements,
     activeTurnUsages,
+    activeTurnPluginUsages,
     turnFinalizations,
     pendingAbortReasons,
     acquireSessionOperation,
     addActiveTurnUsage,
+    addActiveTurnPluginUsage,
     activeToolCallKey,
     planSubmissionTurnKey,
     waitForTurnSettlement,

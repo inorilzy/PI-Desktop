@@ -45,6 +45,27 @@ export type ProviderIpcDependencies = {
   bindingForModel: (provider: Pick<RuntimeProvider, "models">, modelId: string) => ModelBinding | undefined;
 };
 
+/**
+ * Endpoint identity of a provider row, normalized for comparison.
+ *
+ * Model discovery is handed a URL by its caller and the renderer host also
+ * runs plugin code, so the main process alone decides which endpoint a stored
+ * credential may travel to. Scheme, host, port and path identify that
+ * endpoint; a default port, a host written in another case, or a trailing
+ * slash must not read as a different one.
+ */
+function providerEndpointIdentity(value: string): string {
+  const raw = value.trim().replace(/\/+$/, "");
+  if (!raw) return "";
+  try {
+    const url = new URL(raw);
+    return `${url.protocol}//${url.host}${url.pathname.replace(/\/+$/, "")}`;
+  } catch {
+    // Unparseable values (no scheme, for example) only match verbatim.
+    return raw;
+  }
+}
+
 /** Register provider catalog, model discovery, OAuth and secret channels. */
 export function registerProviderIpc({
   registrar,
@@ -234,7 +255,13 @@ export function registerProviderIpc({
       const provider = req.providerId
         ? providers.find((p) => p.id === req.providerId)
         : undefined;
-      const baseUrl = (req.baseUrl ?? provider?.baseUrl ?? "").trim();
+      // A stored row is only ever probed at the endpoint it was saved with. The
+      // caller's `baseUrl` is a claim checked by the credential guard below, not
+      // the address the row's key travels to; a caller that names no provider
+      // (the add-provider form) supplies both endpoint and key itself.
+      const savedBaseUrl = (provider?.baseUrl ?? "").trim();
+      const requestedBaseUrl = (req.baseUrl ?? "").trim();
+      const baseUrl = provider ? savedBaseUrl : requestedBaseUrl;
       const apiStyle = req.apiStyle ?? provider?.apiStyle ?? "chat_completions";
       // Cache hydration must stay fast; the renderer already requests a live
       // refresh after it has painted the cached list. Live requests load the
@@ -430,6 +457,24 @@ export function registerProviderIpc({
             })]
           : [];
         return { models: fallback, source: "fallback" as const };
+      }
+
+      /*
+        The key below belongs to the stored row, and the host renderer also runs
+        plugin code, so a caller-named endpoint must not be able to aim that key
+        at another host: one IPC call would otherwise exfiltrate the user's
+        provider credential. A caller naming a different endpoint is refused
+        before the secret is read and before any request is built.
+      */
+      if (
+        provider &&
+        requestedBaseUrl &&
+        providerEndpointIdentity(requestedBaseUrl) !==
+          providerEndpointIdentity(savedBaseUrl)
+      ) {
+        throw new Error(
+          `refusing to probe ${requestedBaseUrl} with the credential stored for provider ${provider.id}, which is configured for ${savedBaseUrl || "no endpoint"}`,
+        );
       }
 
       // Dialog edits can omit the key to reuse the stored secret; the raw key

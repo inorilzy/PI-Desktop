@@ -92,7 +92,7 @@ docs/spec/
    `.pi/plan/*.md` artifact; title/question stay structured in
    `plan_approvals`, approval opens the artifact, is approve/reject only, and
    expires after 30 absolute minutes with `PLAN_APPROVAL_TIMEOUT`
-9. Protocol v11 and storage schema v16 are authoritative for Plan/Goal
+9. Protocol v11 and storage schema v21 are authoritative for Plan/Goal
    checkpoints, `plan_approvals` execution fields, startup interruption, shell
    identity, and host-owned session collaboration. v11 withdraws the A2A method
    domain added in v10.

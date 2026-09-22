@@ -83,8 +83,9 @@ pnpm pi-plugin init panel-basic ../my-first-plugin \
   --name "My First Plugin"
 ```
 
-Then open PI-Desktop, go to **Plugins**, choose **Load development plugin**, and
-select `../my-first-plugin`.
+Then open PI-Desktop, go to **Extensions**, and choose **Load local plugin** —
+the button in the empty state, or the same command in the page's overflow menu
+— then select `../my-first-plugin`.
 
 Use a reverse-domain id for a published plugin, for example
 `com.example.workspace-summary`. The `local.` prefix is a useful convention for
@@ -693,14 +694,17 @@ subscription; never put secrets in the payload.
 
 A plugin can ship code that runs inside the agent process itself: a module
 written against the pi CLI `ExtensionAPI`, the same contract pi extensions
-use. It registers tools, slash commands, and hooks on every turn, tool call,
-and provider request. Declare the modules and the `agent.extension`
-permission:
+use. It registers tools, slash commands, and hooks on every turn and tool call.
+Provider-request hooks (`before_agent_start`, `context`,
+`before_provider_request`, `before_provider_headers`, `model_select`,
+`thinking_level_select`) are accepted at registration but never consulted: slot
+6 (`runtime.request.before`) was withdrawn, so a handler for one of them is
+dead code. Declare the modules and the `agent.extension` permission:
 
 ```json
 {
   "contributes": { "agentExtensions": ["src/index.ts"] },
-  "permissions": ["agent.extension"]
+  "permissions": ["agent.extension", "runtime.tool.gate"]
 }
 ```
 
@@ -736,6 +740,22 @@ What to know before you use it:
   same access as the agent's own tools. `agent.extension` is a high-risk
   permission the user confirms explicitly; the manifest is rejected if you
   list modules without it.
+- **Hooks need their own slot permission.** `agent.extension` only says the
+  module runs inside the agent process. A hook is consulted only when the
+  plugin also holds the slot behind its event — `runtime.tool.gate` here,
+  because the example blocks a `tool_call`; without that grant the handler is
+  skipped and the plugin row reports a `permission_denied` diagnostic. The
+  per-slot names are listed in the
+  [permission matrix](spec/07-plugins/13-plugin-permissions-matrix.md) §2.
+- **Some calls have no event behind them.** Each one names its own slot:
+  `pi.requestTurnAbort()` needs `runtime.turn.abort`, `pi.turnFacts()` needs
+  `runtime.turn.facts`, `pi.recap()` needs `runtime.turn.recap` (and
+  `runtime.session.read` as well for `scope: "session"`), `pi.continueTurn()` needs
+  `runtime.turn.continue`, and a tool result that
+  carries `usage`, `addedToolNames`, or `terminate` needs `runtime.tool.extend`.
+  Declare those names too: a call the plugin may not make is refused (`false`
+  from `requestTurnAbort`, `undefined` from the others) and reported as the same
+  `permission_denied` diagnostic instead of silently doing nothing.
 - **TypeScript is fine.** Modules are loaded with jiti, so `.ts` needs no
   build step. `typebox`, `@earendil-works/pi-agent-core`, `@earendil-works/pi-ai`,
   and `@earendil-works/pi-coding-agent` resolve to the app's copies;

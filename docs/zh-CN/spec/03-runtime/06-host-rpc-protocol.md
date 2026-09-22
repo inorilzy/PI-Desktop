@@ -19,7 +19,11 @@ MVP 传输决策 (**D001**)：
 
 - 流程：Electron 主要生成 Rust host-core sidecar
 - 通道：子进程 stdin/stdout
-- 成帧：每行一个 JSON 对象 (NDJSON)
+- 成帧：每行一个以 LF 分隔的 JSON 对象（NDJSON）；接受 CRLF。
+  JSON 字符串内的 U+2028 与 U+2029 属于载荷，不是帧分隔符。
+  所有 Node stdio 读取器会跨输入块保留 UTF-8 字符，并在传输关闭时释放缓冲片段和监听器。
+  为兼容起见，EOF 时接受最后一帧未以换行结束的情况。
+- 非法 JSON 帧会先产出仅含字节长度、不含载荷文本的诊断，然后丢弃。后续完整帧仍可读。现有会话文本不会被改写或迁移。
 - 编码：UTF-8
 - Request/response：JSON-RPC 2.0 风格
 
@@ -150,8 +154,14 @@ type HandshakeResult = {
 9. 版本 11 撤回 A2A 协议栈（ADR 0165 / D326）。`a2a.*` 方法和通知
    已移除，握手不再声明 `a2a`；v10 主机或客户端必须在 UI 交互前拒绝。
 
-协议 v11 与 host-core 存储架构 v14 配对。v14 增加插件会话来源 sidecar
-和软删除字段；架构版本是内部持久性不变量，而不是额外的 JSON-RPC 字段，
+协议 v11 与 host-core 存储架构 v21 配对。架构 v12 通过 `migrate_v11_to_v12` 增加了
+A2A 表（`a2a_tasks`、`a2a_messages`、`a2a_artifacts`、`a2a_push_configs`）；
+`migrate_v12_to_v13` 删除这些表，v14 增加插件会话来源 sidecar 与软删除字段。
+v15 增加宿主拥有的回合队列，v16 增加会话协作账本及其回合队列绑定，v17 增加插件自有的
+provider 列，v18 增加回合队列的优先级，v19 把 `artifacts` 改成逐次接触一行，
+v20 增加插件改写审计，v21 增加 `turn.facts` 所读的 `audit_log.turn_id` 列
+（04-data-storage §4.15、§4.16）。全新数据库既不会创建 A2A 表，也不会创建无归属的
+插件会话行。架构版本是内部持久性不变量，而不是额外的 JSON-RPC 字段，
 检查点架构仍然由主机拥有。
 
 ## 4. 方法目录(MVP)
@@ -320,6 +330,9 @@ ids 和非负 `tokensBefore`；它不会插入 message/search 行
   只读取调用插件自己导入且仍处于活动状态的会话
 - `plugin.session.rename` — 重命名自己拥有的活动导入会话
 - `plugin.session.delete` — `trash` 隐藏并保留转录本；`purge` 删除并允许重新导入
+- `plugin.usage.listTurns` — 未删除会话的已完成 turn 事实页（标识符与 token
+  计数，绝不含消息正文）。由 Electron main 用 `usage.read` 鉴权。增量方法，
+  不升协议版本。
 - 插件会话变更成功后，Electron main 发送一次 `sessionsChanged` 渲染器事件，
   渲染器刷新会话列表；插件不发送此 UI 同步事件
 
@@ -394,10 +407,7 @@ off | minimal | low | medium | high | xhigh | max
 在命令启动后重试命令，并在之前获取超时的子命令
 释放执行槽。
 
-`session.appendMessage` 通过消息 ID 是幂等的。 Electron 主要可以保留
-当 host-core 重新启动时，消息会附加到其应用程序拥有的发件箱中；
-握手成功后，发件箱会按顺序冲洗。进行中检查点从不经过发件箱：检查点只对存活的
-主机有意义，在最终行之后重放它是错误的。
+`session.appendMessage` 通过消息 ID 是幂等的。若该 id 已属于另一会话，则在写 JSONL 之前改写为 `{sessionId}:{id}`，之后重放原始 id 为无操作（D444）。Electron 主进程可以在 host-core 重启时把消息留在应用自有 outbox 里；握手成功后按顺序冲洗，并把 `UNIQUE constraint failed: messages.id` 当作确认而不是停整队。进行中检查点从不经过发件箱：检查点只对存活的主机有意义，在最终行之后重放它是错误的。
 
 ### 权限
 - `permissions.evaluate`
@@ -457,9 +467,41 @@ off | minimal | low | medium | high | xhigh | max
 `*.active` 返回经激活作用域过滤后适用于给定项目的条目（未知作用域返回
 `CAPABILITY_INVALID`）。
 
-### 搜索、工件、键盘
+### 搜索、工件、插件改写、回合事实、键盘
 - `search.query` — 跨会话、项目和设置目的地的全局搜索（ADR 0034）
-- `artifacts.list` — 某会话的 Plan/Goal 检查点工件
+- `artifacts.list` — 已记录的文件触碰，可按某个会话过滤，或（配合 `turnId`，
+  它需要 `sessionId`）只取改动过文件的单个回合。每行带有 `path`、`op`
+  （`create | write | edit | download | delete`）、`turnId` 和 `updatedAt`；
+  被多个回合触碰过的路径每次触碰各出现一次，会话视图按最新在前，回合视图按触碰
+  顺序。只有 `turnId` 而没有 `sessionId` 返回 `INVALID_ARGUMENT`。增量 RPC；
+  不提升协议版本（ADR 0295 规则 8）。
+- `plugin.rewrites.list({ sessionId, turnId?, kind?, limit? }) -> { rewrites }` —
+  插件对"模型收到内容"所做改动的差分级审计（ADR 0295 规则 5）。带 `turnId` 时按最旧在前
+  返回单个回合的记录 —— 即改写发生的顺序，也是插槽 #1 改写表面读取的形状 —— 不带时按
+  最新在前返回会话记录，包括在回合之外写入的记录。`kind` 可过滤 `outgoing_message |
+  system_prompt | message_list | request_payload`。每条记录带 `id`、`sessionId`、
+  `turnId`（回合之外为 null）、`pluginId`、`kind`、`truncated`、`droppedEdits`、
+  `createdAt`，以及 `diff`；各 kind 的形状、上限与截断标记见 04-data-storage §4.15。
+  缺少 `sessionId`、未知的 `kind` 或非正的 `limit` 返回 `INVALID_PARAMS`；limit 被限制
+  在 500。增量 RPC；不提升协议版本。唯一的生产者是插槽 #1（`runtime.send.before`）；
+  插槽 #6（`runtime.request.before`）已撤回，它的 `system_prompt`、`message_list`、
+  `request_payload` 种类永远不会被写入。
+- `turn.facts({ sessionId, turnId, limit? }) -> { facts }` — 单个回合的
+  **权威结构化数字**，由主机从自己的表中汇总（ADR 0295 规则 8，插槽 #9
+  `runtime.turn.facts`）。这里没有任何内容是从插件观察到的事件重建的，也不返回对话正文。
+  `facts` 携带 `sessionId`、`turnId`、`status`（`running | completed | aborted | error`）、
+  `providerId`、`modelId`、`errorCode`（该回合自身的终止错误）、`startedAt`、`endedAt`
+  （运行中为 `null`）、`durationMs`（`endedAt - startedAt`，运行中为 `null`）、
+  `tokens`（`{ input, output, total }`，取自 `turns` 的提升列）、`usage`（按存储原样给出的
+  provider 记录，或 `null`）、`pluginToolUsage`（该记录中的插件工具花费组件，或 `null`；
+  绝不会并入 `tokens`）、`toolCalls`（`{ total, ok, failed, byTool }`，其中 `byTool` 是每个工具
+  一条、按名称排序的 `{ toolName, calls, ok, failed, errorCodes }`）、`files`（该回合的
+  `artifacts` 触碰，最旧在前，每项带 `path`、`op`、`turnId`、`updatedAt`）以及
+  `filesTruncated`。`sessionId` 与 `turnId` 都为必需，为空、或 `limit` 非正／非整数，
+  返回 `INVALID_PARAMS`；`limit` 默认 200，并被限制在 1–499，从而保证截断标志精确。
+  会话不存在返回 `SESSION_NOT_FOUND`，该会话中不存在该回合 —— 包括该回合属于另一个会话 ——
+  返回 `TURN_NOT_FOUND`：主机从未记录过的回合绝不会以零值回答。增量 RPC；不提升协议版本。
+  需要架构 v21（见 04-data-storage §4.16）。
 - `keyboard.setGlobalShortcut` — 在 Electron 无法注册插件启动器快捷键时，
   由宿主持有的原生回退
 
@@ -873,6 +915,7 @@ JSON-RPC 错误携带一个数字 `code` 以及 `data.errorCode`，后者是来�
 | 1006 | RATE_LIMITED | 某个按调用方计的预算窗口已耗尽 |
 | 1007 | NOT_FOUND | 实体缺失 |
 | 1007 | SESSION_NOT_FOUND | 点名的会话不存在；工具请求永远不会回退到全局工作区 |
+| 1007 | TURN_NOT_FOUND | 点名的回合不在该会话中；`turn.facts` 绝不会以零值回答未知的回合 |
 | 1008 | CONFLICT | busy/conflict 状态 |
 | 1008 | AGENT_BUSY | 该会话有一个正在运行的回合 |
 | 1009 | PLUGIN_INVALID | manifest/validation 失败 |
@@ -886,6 +929,12 @@ JSON-RPC 错误携带一个数字 `code` 以及 `data.errorCode`，后者是来�
 | 1016 | SKILL_INVALID | 用户技能文档校验失败 |
 | 1017 | SUBAGENT_INVALID | 用户子代理文档校验失败 |
 | 1018 | CAPABILITY_INVALID | Agent 能力 root/scope 设置校验失败 |
+| 1019 | PLUGIN_CANCELLED | 用户在下载过程中取消了市场安装 |
+| 1020 | PLUGIN_MARKET_NOT_PUBLISHED | 平台有该版本但尚未对外提供 |
+| 1021 | PLUGIN_MARKET_ARCHIVED | 插件已被平台下架 |
+| 1022 | PLUGIN_MARKET_NOT_FOUND | 平台没有该插件或该版本 |
+| 1023 | PLUGIN_MARKET_RATE_LIMITED | 下载接口要求客户端等待后重试 |
+| 1024 | PLUGIN_MARKET_NO_SOURCE | 没有任何分发目标能提供该包 |
 | -32029 | HOST_OVERLOADED | RPC 调度程序容量已耗尽 |
 | -32601 | — | 未知方法 |
 | -32700 | — | 无法解析的请求行 |

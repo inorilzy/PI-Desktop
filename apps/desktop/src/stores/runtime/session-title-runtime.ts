@@ -1,5 +1,4 @@
 import i18n from "i18next";
-import { stripSessionReferencePrompt } from "@pi-desktop/shared";
 import type { AppState } from "../app-state";
 import type { SessionRuntime } from "./session-runtime";
 import type { StoreAccess } from "../slices/types";
@@ -17,10 +16,8 @@ export function promptFallbackSessionTitle(
   emptyTitle: string,
 ): string {
   return (
-    stripSessionReferencePrompt(userPrompt)
-      .trim()
-      .replace(/\s+/g, " ")
-      .slice(0, SESSION_TITLE_FALLBACK_LENGTH) || emptyTitle
+    userPrompt.trim().replace(/\s+/g, " ").slice(0, SESSION_TITLE_FALLBACK_LENGTH) ||
+    emptyTitle
   );
 }
 

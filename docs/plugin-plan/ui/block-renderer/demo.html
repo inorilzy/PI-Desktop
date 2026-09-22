@@ -1,0 +1,759 @@
+<!-- status: draft · issue #545 · demo first,其余页面待演示确认后补齐 -->
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>块渲染器 · 演示</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --gray-800: #212121;
+      --ds-bg-primary: #181818;
+      --ds-bg-under: #000;
+      --ds-bg-composer: color-mix(in oklab, var(--gray-800) 96%, transparent);
+      --ds-text-primary: #fff;
+      --ds-text-secondary: color-mix(in oklab, #fff 70%, transparent);
+      --ds-text-muted: color-mix(in oklab, #fff 52%, transparent);
+      --ds-text-faint: color-mix(in oklab, #fff 38%, transparent);
+      --ds-tile: color-mix(in oklab, #fff 3.5%, transparent);
+      --ds-tile-deep: color-mix(in oklab, #fff 8%, transparent);
+      --ds-raised: #1f1f1f;
+      --ds-bg-hover: color-mix(in oklab, #fff 6%, transparent);
+      --ds-error: #ff6764;
+      --ds-success: #40c977;
+      --ds-purple: #c27aff;
+      --ds-blue: #6cb2ff;
+      --radius-xs: 4px;
+      --radius-sm: 6px;
+      --radius-md: 10px;
+      --radius-lg: 12px;
+      --radius-lg-plus: 16px;
+      --radius-2xl: 22px;
+      --font: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+      --mono: ui-monospace, "SF Mono", "Cascadia Code", Consolas, monospace;
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; height: 100%; }
+    body {
+      display: flex;
+      flex-direction: column;
+      font-family: var(--font);
+      background: var(--ds-bg-under);
+      color: var(--ds-text-primary);
+      -webkit-font-smoothing: antialiased;
+    }
+    button { font: inherit; color: inherit; }
+
+    .shell {
+      display: flex;
+      min-height: 0;
+      flex: 1;
+      flex-direction: column;
+      background: var(--ds-bg-primary);
+    }
+    .topbar {
+      padding: 14px 28px 12px;
+      border-bottom: 1px solid color-mix(in oklab, #fff 6%, transparent);
+    }
+    .topbar h1 { margin: 0; font-size: 14px; font-weight: 560; }
+    .topbar p {
+      margin: 4px 0 0;
+      max-width: 72ch;
+      color: var(--ds-text-faint);
+      font-size: 12.5px;
+      line-height: 1.5;
+    }
+    .topbar code {
+      font-family: var(--mono);
+      font-size: 11px;
+      color: var(--ds-text-secondary);
+    }
+
+    .thread { flex: 1; min-height: 0; overflow: auto; }
+    .inner {
+      width: min(760px, calc(100% - 48px));
+      margin: 0 auto;
+      padding: 24px 0 40px;
+      display: flex;
+      flex-direction: column;
+    }
+
+    /* 场景分隔：只做导航，不做解说 */
+    .stage {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin: 26px 0 10px;
+      color: var(--ds-text-faint);
+      font-family: var(--mono);
+      font-size: 11px;
+      letter-spacing: 0.05em;
+    }
+    .stage::after { content: ""; flex: 1; height: 1px; background: color-mix(in oklab, #fff 6%, transparent); }
+    .stage .no {
+      display: inline-grid;
+      place-items: center;
+      min-width: 18px;
+      height: 18px;
+      border-radius: 99px;
+      background: var(--ds-tile-deep);
+      color: var(--ds-text-secondary);
+      font-size: 10.5px;
+    }
+
+    /* 消息行 */
+    .message-row.user {
+      display: flex;
+      justify-content: flex-end;
+      width: 100%;
+      padding: 12px 0;
+    }
+    .message-col {
+      display: flex;
+      min-width: 0;
+      width: min(max-content, 82%, 600px);
+      max-width: min(82%, 600px);
+      flex-direction: column;
+      gap: 4px;
+      align-items: flex-end;
+    }
+    .message-bubble {
+      width: max-content;
+      max-width: 100%;
+      border-radius: var(--radius-lg-plus);
+      border-bottom-right-radius: var(--radius-xs);
+      background: color-mix(in oklab, #fff 8%, transparent);
+      padding: 10px 15px;
+      color: var(--ds-text-primary);
+      font-size: 15px;
+      line-height: 1.55;
+      white-space: pre-wrap;
+      overflow-wrap: break-word;
+    }
+    .message-row.assistant {
+      display: flex;
+      width: 100%;
+      padding: 6px 0 14px;
+    }
+    .assistant-col {
+      width: min(100%, 720px);
+      color: var(--ds-text-secondary);
+      font-size: 15px;
+      line-height: 1.6;
+    }
+    .assistant-col p { margin: 0; }
+    .assistant-col code {
+      font-family: var(--mono);
+      font-size: 13px;
+      color: var(--ds-text-primary);
+    }
+    .assistant-text-gap { height: 8px; }
+
+    /* ============================================================
+       宿主默认代码块 — 按 Markdown.tsx 的 CodeBlock 与
+       styles/prose.css 的 .code-block 实际样式复刻：
+       one-dark 底色、浅色头部条、语言栏 + 复制按钮。
+       ============================================================ */
+    .code-block {
+      margin: 0.9em 0;
+      border-radius: 14px;
+      background: #282c34; /* shiki one-dark-pro 底色 */
+      overflow: hidden;
+      color: #abb2bf;
+    }
+    .code-block-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      min-height: 32px;
+      padding: 3px 6px 3px 14px;
+      background: color-mix(in oklab, #fff 4%, transparent);
+    }
+    .code-block-lang {
+      color: color-mix(in oklab, #abb2bf 72%, transparent);
+      font-family: var(--mono);
+      font-size: 11.5px;
+      font-weight: 500;
+      letter-spacing: 0.02em;
+      text-transform: lowercase;
+      user-select: none;
+    }
+    .code-copy-btn {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 28px;
+      height: 28px;
+      border: 0;
+      border-radius: var(--radius-xs);
+      background: transparent;
+      color: color-mix(in oklab, #abb2bf 72%, transparent);
+      cursor: pointer;
+      opacity: 0.75;
+      transition: opacity 0.15s ease-out, background 0.15s ease-out, color 0.15s ease-out;
+    }
+    .code-block:hover .code-copy-btn,
+    .code-copy-btn.copied { opacity: 1; }
+    .code-copy-btn:hover { color: #d7dae0; background: color-mix(in oklab, #fff 8%, transparent); }
+    .code-copy-btn.copied { color: var(--ds-success); }
+    .code-block pre {
+      margin: 0;
+      padding: 13px 16px 15px;
+      overflow-x: auto;
+      font-family: var(--mono);
+      font-size: 12.5px;
+      line-height: 1.5;
+      color: inherit;
+    }
+    .code-block code { font-family: inherit; white-space: pre; }
+    /* shiki one-dark-pro 手工着色 */
+    .tk-k { color: #c678dd; }  /* keyword */
+    .tk-t { color: #e5c07b; }  /* type */
+    .tk-f { color: #61afef; }  /* function */
+    .tk-n { color: #d19a66; }  /* number */
+    .tk-s { color: #98c379; }  /* string */
+    .tk-o { color: #56b6c2; }  /* operator */
+    .tk-v { color: #e06c75; }  /* variable */
+
+    .stream-cursor {
+      display: inline-block;
+      width: 7px;
+      height: 12px;
+      background: var(--ds-text-secondary);
+      vertical-align: -2px;
+      animation: caret-blink 0.9s steps(1) infinite;
+    }
+    @keyframes caret-blink { 0%, 100% { opacity: 1; } 50% { opacity: 0; } }
+
+    /* 插件接管的位置：紫色虚线 */
+    .slot-wrap {
+      position: relative;
+      width: 100%;
+      max-width: 100%;
+      border: 1px dashed color-mix(in oklab, var(--ds-purple) 55%, transparent);
+      border-radius: var(--radius-lg-plus);
+      padding: 18px 10px 10px;
+      margin: 16px 0 10px;
+    }
+    .slot-wrap .slot-name {
+      position: absolute;
+      top: -8px;
+      left: 10px;
+      padding: 0 6px;
+      background: var(--ds-bg-primary);
+      font-family: var(--mono);
+      font-size: 11px;
+      letter-spacing: 0.04em;
+      color: #e4c8ff;
+    }
+
+    /* ============================================================
+       以下为插件渲染器自己画的块，样式是插件的，不是宿主的。
+       头部结构参照宿主代码块（语言栏 + 操作），配色是插件的。
+       ============================================================ */
+    .r-block {
+      margin: 0.9em 0;
+      border-radius: 14px;
+      background: var(--ds-tile);
+      overflow: hidden;
+    }
+    .r-head {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-height: 32px;
+      padding: 3px 6px 3px 14px;
+      background: var(--ds-tile-deep);
+    }
+    .r-title {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      color: #e4c8ff;
+      font-family: var(--mono);
+      font-size: 11.5px;
+      font-weight: 500;
+      letter-spacing: 0.02em;
+      text-transform: lowercase;
+      user-select: none;
+    }
+    .r-title .sub { color: var(--ds-text-muted); text-transform: none; }
+    .r-actions { display: flex; align-items: center; gap: 2px; margin-left: auto; }
+    .r-btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 28px;
+      height: 28px;
+      border: 0;
+      border-radius: var(--radius-xs);
+      background: transparent;
+      color: var(--ds-text-muted);
+      cursor: pointer;
+    }
+    .r-btn:hover { color: var(--ds-text-primary); background: color-mix(in oklab, var(--ds-text-primary) 7%, transparent); }
+    .r-body { min-width: 0; }
+
+    /* chart 渲染器：SVG 统计图 */
+    .r-chart { padding: 14px 16px 12px; }
+    .r-chart svg { display: block; width: 100%; height: auto; }
+    .r-chart-legend {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px 14px;
+      margin-top: 10px;
+      font-size: 11.5px;
+      color: var(--ds-text-secondary);
+    }
+    .r-chart-legend .dot {
+      display: inline-block;
+      width: 8px;
+      height: 8px;
+      border-radius: 99px;
+      margin-right: 5px;
+      vertical-align: 0;
+    }
+
+    /* csv 渲染器：表格 */
+    .r-table-wrap { margin: 10px 13px 13px; border: 1px solid color-mix(in oklab, #fff 7%, transparent); border-radius: var(--radius-sm); overflow-x: auto; }
+    .r-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+    .r-table th {
+      text-align: left;
+      padding: 6px 10px;
+      background: var(--ds-tile-deep);
+      color: var(--ds-text-muted);
+      font-weight: 500;
+      font-size: 11.5px;
+      white-space: nowrap;
+    }
+    .r-table td { padding: 6px 10px; color: var(--ds-text-secondary); border-top: 1px solid color-mix(in oklab, #fff 4%, transparent); white-space: nowrap; }
+    .r-table td.num { text-align: right; font-family: var(--mono); font-size: 12px; font-variant-numeric: tabular-nums; }
+
+    /* svg 渲染器：直接显示图形 */
+    .r-svg {
+      display: grid;
+      place-items: center;
+      padding: 18px;
+      min-height: 120px;
+    }
+
+    /* diff 渲染器：红绿行 */
+    .r-diff {
+      margin: 0;
+      padding: 10px 0;
+      overflow-x: auto;
+      font-family: var(--mono);
+      font-size: 12.5px;
+      line-height: 1.55;
+    }
+    .r-diff .ln {
+      display: flex;
+      padding: 0 14px;
+      white-space: pre;
+    }
+    .r-diff .ln .sign { flex: none; width: 18px; user-select: none; }
+    .r-diff .add { background: color-mix(in oklab, var(--ds-success) 10%, transparent); color: #a9e8c0; }
+    .r-diff .del { background: color-mix(in oklab, var(--ds-error) 10%, transparent); color: #ffb4b2; }
+    .r-diff .hunk { color: var(--ds-text-faint); padding: 3px 14px; }
+    .r-diff .ctx { color: var(--ds-text-muted); }
+
+    /* 渲染失败：错误行 + 源码 */
+    .r-error-row {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      padding: 9px 12px;
+      color: var(--ds-error);
+      background: color-mix(in oklab, var(--ds-error) 6%, transparent);
+      font-size: 12.5px;
+      line-height: 1.4;
+    }
+    .r-error-row + pre {
+      margin: 0;
+      padding: 13px 16px 15px;
+      background: #282c34;
+      color: #abb2bf;
+      font-family: var(--mono);
+      font-size: 12.5px;
+      line-height: 1.5;
+      overflow-x: auto;
+    }
+
+    /* 输入框 */
+    .composer-dock {
+      padding: 0 24px 16px;
+      background: var(--ds-bg-primary);
+    }
+    .composer-shell {
+      width: min(760px, 100%);
+      margin: 0 auto;
+      border-radius: var(--radius-2xl);
+      background: var(--ds-bg-composer);
+      box-shadow: 0 3px 7.5px #0000000a, 0 0 20px #0000000d;
+      padding: 10px 12px 8px;
+    }
+    .composer-input {
+      min-height: 40px;
+      color: var(--ds-text-faint);
+      font-size: 14px;
+      padding: 4px 4px 10px;
+    }
+    .composer-bar {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      color: var(--ds-text-faint);
+      font-size: 12px;
+    }
+    .send {
+      width: 28px; height: 28px; border: 0; border-radius: 99px;
+      background: var(--ds-text-primary); color: #181818;
+      display: grid; place-items: center; cursor: default;
+    }
+
+  /* 顶部导航：目录内各页互相跳转 */
+  .plan-nav{display:flex;flex-wrap:wrap;align-items:center;gap:4px;padding:10px 28px;background:#0c0c0c;border-bottom:1px solid color-mix(in oklab, #fff 8%, transparent);font-size:13px;flex:0 0 auto}
+  .plan-nav a{color:var(--ds-text-muted);text-decoration:none;padding:3px 8px;border-radius:6px}
+  .plan-nav a:hover{background:var(--ds-bg-hover);color:var(--ds-text-primary)}
+  .plan-nav a[aria-current="page"]{background:var(--ds-tile-deep);color:var(--ds-text-primary);box-shadow:inset 0 0 0 1px color-mix(in oklab, #fff 14%, transparent)}
+  .plan-nav .sep{color:var(--ds-text-faint);padding:0 2px}
+  .plan-nav .spacer{flex:1}
+  </style>
+</head>
+<body>
+
+<nav class="plan-nav">
+  <a href="../../index.html">插件插槽目录</a>
+  <span class="sep">/</span>
+  <a href="index.html">块渲染器</a>
+  <span class="spacer"></span>
+  <a href="index.html">目录</a>
+  <a href="requirements.html">需求</a>
+  <a href="demo.html" aria-current="page">演示</a>
+</nav>
+
+  <div class="shell">
+    <header class="topbar">
+      <h1>发版周报</h1>
+      <p>紫色虚线框 = 插件渲染器接管的槽 <code>block-renderer</code>（按代码块语言标签认领）；无框的代码块 = 宿主默认形态。</p>
+    </header>
+
+    <div class="thread">
+      <div class="inner">
+
+        <!-- ① 宿主默认：未被认领的代码块 -->
+        <div class="stage" id="s1"><span class="no">1</span>宿主默认 · 普通代码块 / 未知语言</div>
+
+        <article class="message-row user">
+          <div class="message-col">
+            <div class="message-bubble">给我一个带退避的重试函数。</div>
+          </div>
+        </article>
+
+        <article class="message-row assistant">
+          <div class="assistant-col">
+            <p>核心是指数退避 + 保留最后一次的错误：</p>
+
+            <div class="code-block">
+              <div class="code-block-head">
+                <span class="code-block-lang">ts</span>
+                <button class="code-copy-btn" type="button" aria-label="复制代码" onclick="event.preventDefault()"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>
+              </div>
+              <pre><code><span class="tk-k">export async function</span> <span class="tk-f">retry</span>&lt;<span class="tk-t">T</span>&gt;(
+  <span class="tk-v">run</span>: () <span class="tk-o">=&gt;</span> <span class="tk-t">Promise</span>&lt;<span class="tk-t">T</span>&gt;,
+  <span class="tk-v">times</span> = <span class="tk-n">3</span>,
+): <span class="tk-t">Promise</span>&lt;<span class="tk-t">T</span>&gt; {
+  <span class="tk-k">let</span> <span class="tk-v">lastError</span>: <span class="tk-t">unknown</span>;
+  <span class="tk-k">for</span> (<span class="tk-k">let</span> <span class="tk-v">attempt</span> = <span class="tk-n">0</span>; <span class="tk-v">attempt</span> &lt; <span class="tk-v">times</span>; <span class="tk-v">attempt</span>++) {
+    <span class="tk-k">try</span> {
+      <span class="tk-k">return await</span> <span class="tk-v">run</span>();
+    } <span class="tk-k">catch</span> (<span class="tk-v">error</span>) {
+      <span class="tk-v">lastError</span> = <span class="tk-v">error</span>;
+      <span class="tk-k">await</span> <span class="tk-f">sleep</span>(<span class="tk-n">2</span> <span class="tk-o">**</span> <span class="tk-v">attempt</span> <span class="tk-o">*</span> <span class="tk-n">250</span>);
+    }
+  }
+  <span class="tk-k">throw</span> <span class="tk-v">lastError</span>;
+}</code></pre>
+            </div>
+
+            <p>另外 CI 里有一段自定义格式的配置，原文贴给你：</p>
+
+            <div class="code-block">
+              <div class="code-block-head">
+                <span class="code-block-lang">foobar</span>
+                <button class="code-copy-btn" type="button" aria-label="复制代码" onclick="event.preventDefault()"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>
+              </div>
+              <pre><code>claim: chart, svg, csv, diff
+fallback: source
+timeout: 3000ms</code></pre>
+            </div>
+
+          </div>
+        </article>
+
+        <!-- ② 插件渲染器：统计图 + 表格 -->
+        <div class="stage" id="s2"><span class="no">2</span>插件渲染器 · chart / csv</div>
+
+        <article class="message-row user">
+          <div class="message-col">
+            <div class="message-bubble">整理一下上半年的发版数据。</div>
+          </div>
+        </article>
+
+        <article class="message-row assistant">
+          <div class="assistant-col">
+            <p>按月分布和版本类型占比：</p>
+
+            <div class="slot-wrap">
+              <div class="slot-name">block-renderer</div>
+              <div class="r-block">
+                <div class="r-head">
+                  <span class="r-title">chart<span class="sub"> · 按月发版数</span></span>
+                  <div class="r-actions">
+                    <button class="r-btn" type="button" aria-label="查看源码" onclick="event.preventDefault()"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 18l6-6-6-6"/><path d="M8 6l-6 6 6 6"/></svg></button>
+                    <button class="r-btn" type="button" aria-label="复制源码" onclick="event.preventDefault()"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>
+                  </div>
+                </div>
+                <div class="r-body r-chart">
+                  <svg viewBox="0 0 520 180" role="img" aria-label="按月发版数柱状图">
+                    <defs>
+                      <linearGradient id="bar-g" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="0" stop-color="#8f6bff"/>
+                        <stop offset="1" stop-color="#c27aff"/>
+                      </linearGradient>
+                    </defs>
+                    <line x1="34" y1="148" x2="506" y2="148" stroke="rgba(255,255,255,.1)"/>
+                    <g font-family="ui-monospace,Consolas,monospace" font-size="10.5">
+                      <rect x="52"  y="103" width="38" height="45" rx="4" fill="url(#bar-g)"/>
+                      <text x="71"  y="96"  fill="rgba(255,255,255,.6)" text-anchor="middle">4</text>
+                      <text x="71"  y="166" fill="rgba(255,255,255,.4)" text-anchor="middle">4月</text>
+                      <rect x="132" y="67"  width="38" height="81" rx="4" fill="url(#bar-g)"/>
+                      <text x="151" y="60"  fill="rgba(255,255,255,.6)" text-anchor="middle">7</text>
+                      <text x="151" y="166" fill="rgba(255,255,255,.4)" text-anchor="middle">5月</text>
+                      <rect x="212" y="112" width="38" height="36" rx="4" fill="url(#bar-g)"/>
+                      <text x="231" y="105" fill="rgba(255,255,255,.6)" text-anchor="middle">3</text>
+                      <text x="231" y="166" fill="rgba(255,255,255,.4)" text-anchor="middle">6月</text>
+                      <rect x="292" y="58"  width="38" height="90" rx="4" fill="url(#bar-g)"/>
+                      <text x="311" y="51"  fill="rgba(255,255,255,.6)" text-anchor="middle">8</text>
+                      <text x="311" y="166" fill="rgba(255,255,255,.4)" text-anchor="middle">7月</text>
+                      <rect x="372" y="49"  width="38" height="99" rx="4" fill="url(#bar-g)"/>
+                      <text x="391" y="42"  fill="rgba(255,255,255,.6)" text-anchor="middle">9</text>
+                      <text x="391" y="166" fill="rgba(255,255,255,.4)" text-anchor="middle">8月</text>
+                      <rect x="452" y="76"  width="38" height="72" rx="4" fill="url(#bar-g)"/>
+                      <text x="471" y="69"  fill="rgba(255,255,255,.6)" text-anchor="middle">6</text>
+                      <text x="471" y="166" fill="rgba(255,255,255,.4)" text-anchor="middle">9月</text>
+                    </g>
+                  </svg>
+                </div>
+              </div>
+
+              <div class="r-block">
+                <div class="r-head">
+                  <span class="r-title">chart<span class="sub"> · 版本类型占比</span></span>
+                  <div class="r-actions">
+                    <button class="r-btn" type="button" aria-label="查看源码" onclick="event.preventDefault()"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 18l6-6-6-6"/><path d="M8 6l-6 6 6 6"/></svg></button>
+                    <button class="r-btn" type="button" aria-label="复制源码" onclick="event.preventDefault()"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>
+                  </div>
+                </div>
+                <div class="r-body r-chart" style="display:flex;align-items:center;gap:22px">
+                  <svg viewBox="0 0 140 140" width="140" height="140" role="img" aria-label="版本类型占比环形图" style="flex:none;width:140px">
+                    <g transform="rotate(-90 70 70)" fill="none" stroke-width="17" stroke-linecap="butt">
+                      <circle cx="70" cy="70" r="54" stroke="rgba(255,255,255,.06)"/>
+                      <circle cx="70" cy="70" r="54" stroke="#c27aff" stroke-dasharray="128.9 339.3" stroke-dashoffset="0"/>
+                      <circle cx="70" cy="70" r="54" stroke="#6cb2ff" stroke-dasharray="118.8 339.3" stroke-dashoffset="-128.9"/>
+                      <circle cx="70" cy="70" r="54" stroke="#40c977" stroke-dasharray="91.6 339.3" stroke-dashoffset="-247.7"/>
+                    </g>
+                    <text x="70" y="66" fill="#fff" text-anchor="middle" font-size="20" font-weight="600">37</text>
+                    <text x="70" y="84" fill="rgba(255,255,255,.45)" text-anchor="middle" font-size="10.5">个版本</text>
+                  </svg>
+                  <div class="r-chart-legend" style="flex-direction:column;align-items:flex-start;gap:7px;margin-top:0">
+                    <span><span class="dot" style="background:#c27aff"></span>stable <b style="font-family:var(--mono);margin-left:4px">14 · 38%</b></span>
+                    <span><span class="dot" style="background:#6cb2ff"></span>beta <b style="font-family:var(--mono);margin-left:4px">13 · 35%</b></span>
+                    <span><span class="dot" style="background:#40c977"></span>patch <b style="font-family:var(--mono);margin-left:4px">10 · 27%</b></span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <p>明细数据：</p>
+
+            <div class="slot-wrap">
+              <div class="slot-name">block-renderer</div>
+              <div class="r-block">
+                <div class="r-head">
+                  <span class="r-title">csv<span class="sub"> · 最近发版</span></span>
+                  <div class="r-actions">
+                    <button class="r-btn" type="button" aria-label="查看源码" onclick="event.preventDefault()"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 18l6-6-6-6"/><path d="M8 6l-6 6 6 6"/></svg></button>
+                    <button class="r-btn" type="button" aria-label="复制源码" onclick="event.preventDefault()"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>
+                  </div>
+                </div>
+                <div class="r-body">
+                  <div class="r-table-wrap">
+                    <table class="r-table">
+                      <thead><tr><th>日期</th><th>版本</th><th style="text-align:right">变更文件</th><th style="text-align:right">新增行</th></tr></thead>
+                      <tbody>
+                        <tr><td>2026-09-19</td><td style="font-family:var(--mono);font-size:12px">v0.15.2-beta.2</td><td class="num">42</td><td class="num">+1,208</td></tr>
+                        <tr><td>2026-09-12</td><td style="font-family:var(--mono);font-size:12px">v0.15.1</td><td class="num">17</td><td class="num">+336</td></tr>
+                        <tr><td>2026-09-05</td><td style="font-family:var(--mono);font-size:12px">v0.15.0</td><td class="num">96</td><td class="num">+4,571</td></tr>
+                        <tr><td>2026-08-28</td><td style="font-family:var(--mono);font-size:12px">v0.14.4</td><td class="num">9</td><td class="num">+94</td></tr>
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+          </div>
+        </article>
+
+        <!-- ③ 插件渲染器：svg + diff -->
+        <div class="stage" id="s3"><span class="no">3</span>插件渲染器 · svg / diff</div>
+
+        <article class="message-row user">
+          <div class="message-col">
+            <div class="message-bubble">README 里的徽章换成新版本号，另外把这次改动汇总成 diff。</div>
+          </div>
+        </article>
+
+        <article class="message-row assistant">
+          <div class="assistant-col">
+            <p>新徽章：</p>
+
+            <div class="slot-wrap">
+              <div class="slot-name">block-renderer</div>
+              <div class="r-block">
+                <div class="r-head">
+                  <span class="r-title">svg</span>
+                  <div class="r-actions">
+                    <button class="r-btn" type="button" aria-label="查看源码" onclick="event.preventDefault()"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 18l6-6-6-6"/><path d="M8 6l-6 6 6 6"/></svg></button>
+                    <button class="r-btn" type="button" aria-label="复制源码" onclick="event.preventDefault()"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>
+                  </div>
+                </div>
+                <div class="r-body r-svg">
+                  <svg width="248" height="28" viewBox="0 0 248 28" role="img" aria-label="release 徽章">
+                    <defs>
+                      <linearGradient id="badge-g" x1="0" y1="0" x2="1" y2="0">
+                        <stop offset="0" stop-color="#8f6bff"/>
+                        <stop offset="1" stop-color="#c27aff"/>
+                      </linearGradient>
+                    </defs>
+                    <clipPath id="badge-r"><rect width="248" height="28" rx="6"/></clipPath>
+                    <g clip-path="url(#badge-r)">
+                      <rect width="88" height="28" fill="#303030"/>
+                      <rect x="88" width="160" height="28" fill="url(#badge-g)"/>
+                    </g>
+                    <g font-family="-apple-system,'Segoe UI',sans-serif" font-size="12" font-weight="600" fill="#fff">
+                      <text x="44" y="18.5" text-anchor="middle">release</text>
+                      <text x="168" y="18.5" text-anchor="middle">v0.15.2-beta.2</text>
+                    </g>
+                  </svg>
+                </div>
+              </div>
+            </div>
+
+            <p>这次改动的汇总：</p>
+
+            <div class="slot-wrap">
+              <div class="slot-name">block-renderer</div>
+              <div class="r-block">
+                <div class="r-head">
+                  <span class="r-title">diff<span class="sub"> · src/lib/retry.ts</span></span>
+                  <div class="r-actions">
+                    <button class="r-btn" type="button" aria-label="查看源码" onclick="event.preventDefault()"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 18l6-6-6-6"/><path d="M8 6l-6 6 6 6"/></svg></button>
+                    <button class="r-btn" type="button" aria-label="复制源码" onclick="event.preventDefault()"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>
+                  </div>
+                </div>
+                <pre class="r-body r-diff"><span class="ln ctx"><span class="sign"> </span>export async function retry&lt;T&gt;(</span><span class="ln ctx"><span class="sign"> </span>  run: () =&gt; Promise&lt;T&gt;,</span><span class="ln del"><span class="sign">-</span>  times = 3,</span><span class="ln add"><span class="sign">+</span>  times = 5,</span><span class="ln add"><span class="sign">+</span>  factor = 2,</span><span class="ln hunk">@@ -14,7 +15,8 @@</span><span class="ln ctx"><span class="sign"> </span>    } catch (error) {</span><span class="ln del"><span class="sign">-</span>      await sleep(250);</span><span class="ln add"><span class="sign">+</span>      await sleep(factor ** attempt * 250);</span><span class="ln add"><span class="sign">+</span>      lastError = error;</span><span class="ln ctx"><span class="sign"> </span>    }</span></pre>
+              </div>
+            </div>
+
+          </div>
+        </article>
+
+        <!-- ④ 边界：流式中 / 渲染失败 / 插件停用 -->
+        <div class="stage" id="s4"><span class="no">4</span>边界 · 流式中 / 渲染失败 / 插件停用</div>
+
+        <article class="message-row assistant">
+          <div class="assistant-col">
+            <p>流式中，代码块还没闭合，先按普通代码块显示：</p>
+
+            <div class="code-block">
+              <div class="code-block-head">
+                <span class="code-block-lang">chart</span>
+                <button class="code-copy-btn" type="button" aria-label="复制代码" onclick="event.preventDefault()"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>
+              </div>
+              <pre><code>{ "type": "bar", "title": "按月发版数",
+  "data": [ { "label": "4月", "value": 4 },<span class="stream-cursor"></span></code></pre>
+            </div>
+
+          </div>
+        </article>
+
+        <article class="message-row assistant">
+          <div class="assistant-col">
+            <div class="assistant-text-gap"></div>
+            <p>闭合后切换成渲染结果；内容不合法时退回源码并提示：</p>
+
+            <div class="slot-wrap">
+              <div class="slot-name">block-renderer</div>
+              <div class="r-block">
+                <div class="r-head">
+                  <span class="r-title">chart</span>
+                  <div class="r-actions">
+                    <button class="r-btn" type="button" aria-label="复制源码" onclick="event.preventDefault()"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>
+                  </div>
+                </div>
+                <div class="r-body">
+                  <div class="r-error-row">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 8v4M12 16h.01"/></svg>
+                    <span>这块内容无法按 chart 渲染，已显示源码</span>
+                  </div>
+                  <pre><code>{ "title": "按月发版数", "data": "见附件" }</code></pre>
+                </div>
+              </div>
+            </div>
+
+          </div>
+        </article>
+
+        <article class="message-row assistant">
+          <div class="assistant-col">
+            <div class="assistant-text-gap"></div>
+            <p>渲染 chart 的插件停用后，同一段内容回到宿主默认形态：</p>
+
+            <div class="code-block">
+              <div class="code-block-head">
+                <span class="code-block-lang">chart</span>
+                <button class="code-copy-btn" type="button" aria-label="复制代码" onclick="event.preventDefault()"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>
+              </div>
+              <pre><code>{ "type": "bar", "title": "按月发版数",
+  "data": [
+    { "label": "4月", "value": 4 },
+    { "label": "5月", "value": 7 },
+    { "label": "6月", "value": 3 }
+  ]
+}</code></pre>
+            </div>
+
+          </div>
+        </article>
+
+      </div>
+    </div>
+
+    <div class="composer-dock">
+      <div class="composer-shell">
+        <div class="composer-input">问点什么…</div>
+        <div class="composer-bar">
+          <span>+  ·  Agent</span>
+          <button class="send" type="button" tabindex="-1" aria-label="发送">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M12 19V5"/><path d="M5 12l7-7 7 7"/></svg>
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+</body>
+</html>

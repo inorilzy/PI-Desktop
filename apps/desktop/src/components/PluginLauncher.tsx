@@ -1,3 +1,4 @@
+import { bridgePlatform } from "../lib/bridge";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { isThemeColorScheme, type PluginSummary } from "@pi-desktop/shared";
@@ -193,7 +194,7 @@ export function PluginLauncher() {
             }}
           />
           <span className="plugin-launcher-shortcut" aria-hidden>
-            {window.piDesktop?.platform === "darwin" ? "⌥ Space" : "Alt + Space"}
+            {bridgePlatform() === "darwin" ? "⌥ Space" : "Alt + Space"}
           </span>
         </div>
 

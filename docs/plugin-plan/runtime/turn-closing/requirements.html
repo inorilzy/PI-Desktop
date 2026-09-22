@@ -1,0 +1,154 @@
+<!-- status: draft · issue #561 · branch feat/528-plugin-slots -->
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>turn-closing · 需求</title>
+<style>
+  :root{
+    --bg:#0e0e0e; --surface:#161616; --line:#2a2a2a; --line-2:#353535;
+    --text:#ededed; --text-2:#b0b0b0; --muted:#7d7d7d; --faint:#5c5c5c;
+    --ok:#40c977; --ok-bg:rgba(64,201,119,.10);
+    --warn:#ff8549; --warn-bg:rgba(255,133,73,.10);
+    --ui:#c27aff; --ui-bg:rgba(194,122,255,.10);
+    --font:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;
+    --mono:ui-monospace,"SF Mono","Cascadia Code",Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0}
+  body{background:var(--bg);color:var(--text);font-family:var(--font);font-size:14px;line-height:1.65;-webkit-font-smoothing:antialiased}
+  .top{border-bottom:1px solid var(--line);padding:24px 28px 20px;background:linear-gradient(180deg,#141414,#0e0e0e)}
+  .top .crumb{font-family:var(--mono);font-size:11.5px;color:var(--faint);letter-spacing:.06em}
+  .top h1{margin:6px 0 6px;font-size:21px;letter-spacing:-.01em}
+  .top p{margin:0;color:var(--text-2);max-width:80ch}
+  .top .meta{margin-top:8px;color:var(--faint);font-size:12.5px}
+  code{font-family:var(--mono);font-size:12.5px;color:var(--text-2)}
+  main{max-width:920px;margin:0 auto;padding:24px 28px 80px}
+  section{margin:0 0 40px}
+  section > h2{display:flex;align-items:baseline;gap:8px;margin:0 0 10px;font-size:17px;border-top:1px solid var(--line);padding-top:14px}
+  section > h2 .tag{font-family:var(--mono);font-size:11px;padding:1px 6px;border-radius:4px}
+  .tag.verified{color:var(--ok);background:var(--ok-bg)}
+  .tag.proposal{color:var(--warn);background:var(--warn-bg)}
+  .tag.open{color:var(--ui);background:var(--ui-bg)}
+  h3{margin:22px 0 6px;font-size:14.5px;color:var(--text)}
+  p{margin:0 0 10px}
+  ul{margin:0 0 12px;padding-left:1.2em}
+  li{margin:3px 0}
+  table{width:100%;border-collapse:collapse;font-size:13.5px;margin:0 0 14px}
+  th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{color:var(--muted);font-weight:500;font-size:12px;letter-spacing:.03em;text-transform:uppercase}
+  td.id{font-family:var(--mono);font-size:12.5px;color:var(--text-2);white-space:nowrap}
+  .callout{margin:0 0 14px;padding:11px 13px;border-radius:9px;background:var(--surface);color:var(--text-2);font-size:13px}
+  .callout.verified{border-left:2px solid var(--ok)}
+  .callout.warn{border-left:2px solid var(--warn)}
+  .callout.open{border-left:2px solid var(--ui)}
+  .callout b{color:var(--text);font-weight:560}
+  .plan-nav{display:flex;flex-wrap:wrap;align-items:center;gap:4px;padding:10px 28px;background:#0c0c0c;border-bottom:1px solid var(--line);font-size:13px}
+  .plan-nav a{color:var(--text-2);text-decoration:none;padding:3px 8px;border-radius:6px}
+  .plan-nav a:hover{background:var(--surface);color:var(--text)}
+  .plan-nav a[aria-current="page"]{background:var(--surface);color:var(--text);box-shadow:inset 0 0 0 1px var(--line-2)}
+  .plan-nav .sep{color:var(--faint);padding:0 2px}
+  .plan-nav .spacer{flex:1}
+</style>
+</head>
+<body>
+
+<nav class="plan-nav">
+  <a href="../../index.html">插件插槽目录</a>
+  <span class="sep">/</span>
+  <a href="index.html">turn-closing</a>
+  <span class="spacer"></span>
+  <a href="index.html">目录</a>
+  <a href="requirements.html" aria-current="page">需求</a>
+  <a href="data-flow.html">数据流</a>
+</nav>
+
+<header class="top">
+  <div class="crumb">docs/plugin-plan · runtime/turn-closing</div>
+  <h1>turn-closing · 需求</h1>
+  <p>一轮跑完、运行将停未停的窗口。插件可以给运行续上「再干一步」的消息——自动收尾、自动校验类插件的落脚点。#561 清单里唯一被标 ⭐ 的钩子。</p>
+  <div class="meta">status: draft · issue #561 · 事件 <code>turn_closing</code> · 槽 <code>runtime.turn.closing</code></div>
+</header>
+
+<main>
+<section>
+  <h2>范围 <span class="tag verified">已核实</span></h2>
+  <ul>
+    <li>只管「这轮结束后、运行结束前」的一问一答：要不要续、续什么。</li>
+    <li>不谈：轮中途的观察（<code>turn-watch</code>）、宿主主动续跑（<code>turn-continue</code>，另一个 API）、模型请求改写（已撤回的 <code>before-request</code>）。</li>
+  </ul>
+</section>
+
+<section>
+  <h2>现状（代码核实） <span class="tag verified">已核实</span></h2>
+  <ul>
+    <li><b>入口全在</b>：内核 <code>shouldStopAfterTurn</code> 已接到 <code>extensionTurnClosing</code>，经 runner emit <code>turn_closing</code>（<code>packages/agent-runtime/src/runtime.ts:2086-2093, 2335-2369, 2340</code>）。</li>
+    <li><b>0 消费者</b>：全仓没有任何插件注册 <code>pi.on("turn_closing")</code>——没有示例、没有 e2e fixture；总表「入口全在、0 命中」属实。</li>
+    <li><b>SDK 缺件</b>：<code>plugin-sdk</code> 没有导出 <code>turn_closing</code> 的类型化 payload（只有内部类型 <code>extensions/turn-closing.ts:45-52</code>）——开放给插件前要补。</li>
+    <li><b>预算已在</b>：每次运行最多续 4 轮（<code>extensions/turn-closing.ts:38</code>），续跑默认注入一条消息（<code>turn-closing.ts:41-42</code>），经 <code>agent.steer(...)</code> 进循环（<code>runtime.ts:2368</code>）。</li>
+    <li><b>沙箱缺口</b>：同所有钩子——ADR 0292 broker 未建，沙箱插件进程还接不到。</li>
+  </ul>
+</section>
+
+<section>
+  <h2>契约（建议，待拍板） <span class="tag proposal">建议</span></h2>
+  <table>
+    <thead><tr><th>方面</th><th>内容</th></tr></thead>
+    <tbody>
+      <tr><td class="id">何时触发</td><td>每轮正常跑完之后、运行可能结束之前；异常中止（用户停、报错）不触发</td></tr>
+      <tr><td class="id">拿到</td><td><code>{ sessionId, turnIndex, stopReason }</code>——第几轮、为什么停</td></tr>
+      <tr><td class="id">可返回</td><td><code>{ continue: true, message? }</code>——续一轮；message 缺省用宿主默认注入语；<b>第一个续跑者生效</b>，其余沉默、垃圾返回一律视为「不续」</td></tr>
+      <tr><td class="id">预算</td><td>每次运行 4 轮封顶（现值）；续跑花的是正常 provider 请求</td></tr>
+      <tr><td class="id">权限</td><td>槽级权限 + 装时确认（风险档待拍板）；refusal 可见不静默</td></tr>
+    </tbody>
+  </table>
+  <div class="callout warn"><b>续跑是花钱的。</b>每续一轮就是一次真实的模型请求——预算、署名、用户可见性是这三件事让用户放心。</div>
+</section>
+
+<section>
+  <h2>插件场景（建议） <span class="tag proposal">建议</span></h2>
+  <table>
+    <thead><tr><th>#</th><th>场景</th></tr></thead>
+    <tbody>
+      <tr><td>1</td><td>自动验收：stopReason 正常结束时，检查产物（如跑完测试没有），没过就续一句「请修复后重跑」</td></tr>
+      <tr><td>2</td><td>收尾整理：长任务结束后自动续「把过程总结成一段话」</td></tr>
+      <tr><td>3</td><td>只听不续：统计「运行到第几轮才停」的分布，只观察</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<section>
+  <h2>本轮拍板 <span class="tag open">待定</span></h2>
+  <table>
+    <thead><tr><th>问题</th><th>选项</th></tr></thead>
+    <tbody>
+      <tr><td>续跑消息的署名与展示</td><td>A. 对话里标「由插件 X 续跑」　B. 静默注入（与现状默认注入语一致）</td></tr>
+      <tr><td>预算值</td><td>A. 维持 4 轮　B. 清单可配（插件声明上限，装时确认）</td></tr>
+      <tr><td>多插件并发续跑</td><td>A. 维持「第一个续跑者生效」　B. 排队依次注入</td></tr>
+      <tr><td>SDK payload</td><td>A. 补类型化导出（stopReason 枚举等）　B. 只补文档</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<section>
+  <h2>还没定的事 <span class="tag open">未定</span></h2>
+  <ul>
+    <li>上面四条拍板项；stopReason 枚举的稳定契约。</li>
+    <li>异常结束（报错 / 用户中止）要不要也给一次 closing 机会——建议不给，维持现状。</li>
+  </ul>
+</section>
+
+<section>
+  <h2>明确不做 <span class="tag verified">已核实</span></h2>
+  <ul>
+    <li>不让插件否决结束——不续就结束，没有 veto。</li>
+    <li>不让插件改对话记录或伪造轮次——续跑经 <code>agent.steer</code> 走正常循环，行是宿主记的。</li>
+    <li>不做无限续跑——每运行 4 轮封顶，防插件把运行变成永动机。</li>
+    <li>不在用户中止 / 报错路径上触发。</li>
+  </ul>
+</section>
+
+</main>
+</body>
+</html>

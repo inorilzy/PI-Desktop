@@ -34,6 +34,7 @@
 @import "./chat-links.css";
 @import "./composer-autocomplete.css";
 @import "./plugins.css";
+@import "../plugins/renderer-slots/slot-shell.css";
 @import "./extensions.css";
 @import "./plugin-launcher.css";
 @import "./responsive.css";

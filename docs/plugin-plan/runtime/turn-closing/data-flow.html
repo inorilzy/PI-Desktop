@@ -1,0 +1,241 @@
+<!-- status: draft · issue #561 · branch feat/528-plugin-slots -->
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>turn-closing · 数据流</title>
+<style>
+  :root{
+    --bg:#0e0e0e; --surface:#161616; --surface-2:#1b1b1b; --line:#2a2a2a; --line-2:#353535;
+    --text:#ededed; --text-2:#b0b0b0; --muted:#7d7d7d; --faint:#5c5c5c;
+    --host:#4c8dff; --host-bg:rgba(76,141,255,.10);
+    --plugin:#c27aff; --plugin-bg:rgba(194,122,255,.10);
+    --slot:#ff8549; --slot-bg:rgba(255,133,73,.10);
+    --red:#ff6764; --red-bg:rgba(255,103,100,.10);
+    --font:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;
+    --mono:ui-monospace,"SF Mono","Cascadia Code",Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0}
+  body{background:var(--bg);color:var(--text);font-family:var(--font);font-size:14px;line-height:1.65;-webkit-font-smoothing:antialiased}
+  .top{border-bottom:1px solid var(--line);padding:24px 28px 20px;background:linear-gradient(180deg,#141414,#0e0e0e)}
+  .top .crumb{font-family:var(--mono);font-size:11.5px;color:var(--faint);letter-spacing:.06em}
+  .top h1{margin:6px 0;font-size:21px}
+  .top p{margin:0;color:var(--text-2);max-width:80ch}
+  .top .meta{margin-top:8px;color:var(--faint);font-size:12.5px}
+  code{font-family:var(--mono);font-size:12.5px;color:var(--text-2)}
+  main{max-width:960px;margin:0 auto;padding:24px 28px 90px}
+  section{margin:0 0 44px}
+  section > h2{display:flex;align-items:baseline;gap:8px;margin:0 0 6px;font-size:17px;border-top:1px solid var(--line);padding-top:14px}
+  section > h2 .n{font-family:var(--mono);font-size:11.5px;color:var(--muted)}
+  section > h2 .tag{font-family:var(--mono);font-size:11px;padding:1px 6px;border-radius:4px}
+  .tag.verified{color:var(--ok);background:var(--ok-bg)}
+  .tag.proposal{color:var(--slot);background:var(--slot-bg)}
+  .lead{margin:0 0 14px;color:var(--text-2);max-width:82ch}
+  h3{margin:20px 0 6px;font-size:14.5px}
+  p{margin:0 0 10px}
+  ul{margin:0 0 12px;padding-left:1.2em}li{margin:3px 0}
+  table{width:100%;border-collapse:collapse;font-size:13.5px;margin:0 0 14px}
+  th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{color:var(--muted);font-weight:500;font-size:12px;text-transform:uppercase;letter-spacing:.03em}
+  td.id{font-family:var(--mono);font-size:12.5px;color:var(--text-2);white-space:nowrap}
+  pre{margin:0 0 14px;padding:12px 14px;border-radius:9px;background:#121212;border:1px solid var(--line);overflow-x:auto;font-family:var(--mono);font-size:12.5px;line-height:1.6;color:var(--text-2)}
+  pre .k{color:var(--plugin)}
+  pre .c{color:var(--faint)}
+  .callout{margin:0 0 14px;padding:11px 13px;border-radius:9px;background:var(--surface);color:var(--text-2);font-size:13px}
+  .callout.warn{border-left:2px solid var(--slot)}
+  .callout b{color:var(--text);font-weight:560}
+  .legend{display:flex;flex-wrap:wrap;gap:8px 16px;margin:0 0 14px;font-size:12.5px;color:var(--muted)}
+  .chip{display:inline-block;padding:1px 7px;border-radius:99px;font-size:11px;font-family:var(--mono)}
+  .chip.host{color:var(--host);background:var(--host-bg)}
+  .chip.plugin{color:var(--plugin);background:var(--plugin-bg)}
+  .chip.slot{color:var(--slot);background:var(--slot-bg)}
+  .flow{border:1px solid var(--line);border-radius:12px;background:var(--surface);overflow:hidden;margin:0 0 16px}
+  .flow-head{display:grid;grid-template-columns:1fr 1fr 1fr;border-bottom:1px solid var(--line);font-size:12px;color:var(--muted);font-family:var(--mono);letter-spacing:.04em}
+  .flow-head div{padding:9px 14px}
+  .flow-head div + div{border-left:1px solid var(--line)}
+  .flow-head .h{color:var(--host)}
+  .flow-head .s{color:var(--slot)}
+  .flow-head .p{color:var(--plugin)}
+  .flow-body{display:grid;grid-template-columns:1fr 1fr 1fr}
+  .lane{padding:12px 14px;font-size:13px}
+  .lane + .lane{border-left:1px solid var(--line)}
+  .lane ul{margin:0;padding:0;list-style:none}
+  .lane li{padding:5px 0;border-bottom:1px dashed var(--line)}
+  .lane li:last-child{border-bottom:0}
+  .lane .what{display:block;font-family:var(--mono);font-size:12px;color:var(--text)}
+  .lane .why{display:block;color:var(--muted);font-size:12px}
+  .arrow-row{display:grid;grid-template-columns:1fr 1fr 1fr;border-top:1px solid var(--line);background:var(--surface-2);font-family:var(--mono);font-size:12px;color:var(--muted)}
+  .arrow-row div{padding:8px 14px}
+  .arrow-row div + div{border-left:1px solid var(--line)}
+  .arrow-row .x{color:var(--host)}.arrow-row .y{color:var(--plugin)}
+  .plan-nav{display:flex;flex-wrap:wrap;align-items:center;gap:4px;padding:10px 28px;background:#0c0c0c;border-bottom:1px solid var(--line);font-size:13px}
+  .plan-nav a{color:var(--text-2);text-decoration:none;padding:3px 8px;border-radius:6px}
+  .plan-nav a:hover{background:var(--surface);color:var(--text)}
+  .plan-nav a[aria-current="page"]{background:var(--surface);color:var(--text);box-shadow:inset 0 0 0 1px var(--line-2)}
+  .plan-nav .sep{color:var(--faint);padding:0 2px}
+  .plan-nav .spacer{flex:1}
+</style>
+</head>
+<body>
+
+<nav class="plan-nav">
+  <a href="../../index.html">插件插槽目录</a>
+  <span class="sep">/</span>
+  <a href="index.html">turn-closing</a>
+  <span class="spacer"></span>
+  <a href="index.html">目录</a>
+  <a href="requirements.html">需求</a>
+  <a href="data-flow.html" aria-current="page">数据流</a>
+</nav>
+
+<header class="top">
+  <div class="crumb">docs/plugin-plan · runtime/turn-closing</div>
+  <h1>turn-closing · 数据流</h1>
+  <p>turn_end 之后、运行结束之前的一问一答。六节固定：接口约定 / 数据怎么走 / 出错怎么办 / 不提供什么 / 相关条目 / 还没定的事。</p>
+  <div class="meta">status: draft · issue #561 · 字段名是建议值</div>
+</header>
+
+<main>
+
+<!-- ============ 1 接口约定 ============ -->
+<section>
+  <h2><span class="n">1</span>接口约定 <span class="tag proposal">建议</span></h2>
+  <p class="lead">headless 事件监听：插件注册 <code>pi.on("turn_closing", …)</code>，返回续跑意愿。结果性事件——有预算、有超时、第一个生效。</p>
+
+<pre><span class="c">// 插件 headless 入口（建议形态）</span>
+pi.on(<span class="k">"turn_closing"</span>, async (payload) =&gt; {
+  <span class="c">// payload: { sessionId, turnIndex, stopReason }</span>
+  <span class="k">if</span> (<span class="k">await</span> testsFailed(payload.sessionId)) {
+    <span class="k">return</span> { <span class="k">continue</span>: <span class="k">true</span>, <span class="k">message</span>: <span class="c">"测试没过，请修复后重跑一遍并汇报"</span> };
+  }
+  <span class="c">// 不续：什么都不返回</span>
+})</pre>
+
+  <h3>能拿到什么 / 能返回什么</h3>
+  <table>
+    <thead><tr><th>方面</th><th>内容</th></tr></thead>
+    <tbody>
+      <tr><td class="id">输入</td><td><code>{ sessionId, turnIndex, stopReason }</code></td></tr>
+      <tr><td class="id">输出</td><td><code>{ continue: true, message? }</code>——message 缺省用宿主默认注入语；第一个续跑者生效，其余视为「不续」</td></tr>
+      <tr><td class="id">预算</td><td>每运行 4 轮封顶（现值）；续跑 = 正常 provider 请求</td></tr>
+      <tr><td class="id">预算耗尽 / 超时</td><td>不再询问插件，运行直接结束</td></tr>
+      <tr><td class="id">权限</td><td>槽级权限 + 装时确认；refusal 可见</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<!-- ============ 2 数据怎么走 ============ -->
+<section>
+  <h2><span class="n">2</span>数据怎么走 <span class="tag verified">已核实</span></h2>
+  <div class="legend">
+    <span><span class="chip host">host</span> 运行循环</span>
+    <span><span class="chip slot">slot</span> 钩子边界</span>
+    <span><span class="chip plugin">plugin</span> 插件 headless</span>
+  </div>
+
+  <div class="flow">
+    <div class="flow-head">
+      <div class="h">宿主（运行循环）</div>
+      <div class="s">钩子边界</div>
+      <div class="p">插件 headless</div>
+    </div>
+    <div class="flow-body">
+      <div class="lane">
+        <ul>
+          <li><span class="what">turn_end 落地</span><span class="why">本轮消息与工具结果已记</span></li>
+          <li><span class="what">shouldStopAfterTurn</span><span class="why">内核问「还要继续吗」</span></li>
+          <li><span class="what">emit turn_closing</span><span class="why">带轮次与结束原因</span></li>
+          <li><span class="what">第一个 continue 生效</span><span class="why">agent.steer 注入消息续跑</span></li>
+          <li><span class="what">预算 -1</span><span class="why">4 轮封顶，用完直接结束</span></li>
+        </ul>
+      </div>
+      <div class="lane">
+        <ul>
+          <li><span class="what">结果性事件</span><span class="why">有超时、有裁决</span></li>
+          <li><span class="what">垃圾返回 = 不续</span><span class="why">沉默即结束，不容错注入</span></li>
+          <li><span class="what">署名随行</span><span class="why">续跑可归因到插件（待拍板展示形态）</span></li>
+          <li><span class="what">broker 缺口</span><span class="why">沙箱插件未接（ADR 0292）</span></li>
+        </ul>
+      </div>
+      <div class="lane">
+        <ul>
+          <li><span class="what">看 stopReason 决定</span><span class="why">正常结束才值得续</span></li>
+          <li><span class="what">给一句任务话</span><span class="why">"修完重跑" / "总结收尾"</span></li>
+          <li><span class="what">不续就沉默</span><span class="why">返回空即放弃机会</span></li>
+          <li><span class="what">不能改历史</span><span class="why">只开下一轮，不改已记的行</span></li>
+        </ul>
+      </div>
+    </div>
+    <div class="arrow-row">
+      <div class="x">{turnIndex, stopReason} →</div>
+      <div class="x">→ 插件裁决</div>
+      <div class="y">← {continue, message}</div>
+    </div>
+  </div>
+
+  <h3>一次运行的续跑链</h3>
+  <table>
+    <thead><tr><th>时刻</th><th>发生什么</th></tr></thead>
+    <tbody>
+      <tr><td class="id">第 1 轮完</td><td>closing 询问 → 插件 A 续「修完重跑」→ 第 2 轮开跑</td></tr>
+      <tr><td class="id">第 2 轮完</td><td>closing 询问 → 都沉默 → 运行结束</td></tr>
+      <tr><td class="id">预算用尽</td><td>不再询问，运行结束（防循环）</td></tr>
+      <tr><td class="id">用户中止</td><td>不询问，立即结束</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<!-- ============ 3 出错怎么办 ============ -->
+<section>
+  <h2><span class="n">3</span>出错怎么办 <span class="tag verified">已核实</span></h2>
+  <table>
+    <thead><tr><th>情况</th><th>结果</th><th>靠什么保证</th></tr></thead>
+    <tbody>
+      <tr><td class="id">插件超时 / 抛错</td><td>视为不续，运行正常结束</td><td>runner 预算与诊断</td></tr>
+      <tr><td class="id">两个插件都要续</td><td>第一个注册序生效，其余忽略</td><td>first-wins 裁决</td></tr>
+      <tr><td class="id">续跑请求失败</td><td>按正常轮失败处理，运行结束</td><td>内核循环</td></tr>
+      <tr><td class="id">预算耗尽</td><td>不再询问插件</td><td>每运行 4 轮封顶</td></tr>
+      <tr><td class="id">无权限</td><td><code>permission_denied</code>，不静默</td><td>槽权限门控</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<!-- ============ 4 不提供什么 ============ -->
+<section>
+  <h2><span class="n">4</span>不提供什么 <span class="tag verified">已核实</span></h2>
+  <table>
+    <thead><tr><th>不给</th><th>为什么</th></tr></thead>
+    <tbody>
+      <tr><td class="id">结束否决权</td><td>插件只能「续」不能「拦」——不续即结束</td></tr>
+      <tr><td class="id">对话记录写权</td><td>续跑消息经宿主循环入列，插件不直接写行</td></tr>
+      <tr><td class="id">整段对话</td><td>payload 只有轮次与原因；要读历史走 recap API</td></tr>
+      <tr><td class="id">无限续跑</td><td>每运行 4 轮封顶</td></tr>
+      <tr><td class="id">异常路径</td><td>用户中止 / 报错不触发 closing</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<!-- ============ 5 相关条目 ============ -->
+<section>
+  <h2><span class="n">5</span>相关条目</h2>
+  <table>
+    <thead><tr><th>谁</th><th>关系</th><th>位置</th></tr></thead>
+    <tbody>
+      <tr><td class="id">turn-continue</td><td>插件主动续跑的 API（回合结束后任意时刻），closing 是被动询问；两者共用 steer 通道</td><td><code>runtime/turn-continue/</code></td></tr>
+      <tr><td class="id">turn-watch</td><td>轮中途的只读观察流</td><td><code>runtime/turn-watch/</code></td></tr>
+      <tr><td class="id">ADR 0292 / 0295</td><td>broker 缺口与既定槽位权限模型</td><td><code>docs/adr/</code></td></tr>
+    </tbody>
+  </table>
+</section>
+
+<!-- ============ 6 还没定的事 ============ -->
+<section>
+  <h2><span class="n">6</span>还没定的事</h2>
+  <p style="color:var(--text-2)">署名展示、预算值、并发裁决、SDK payload——见 requirements.html 的「本轮拍板（待定）」。</p>
+</section>
+
+</main>
+</body>
+</html>

@@ -1,33 +1,35 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
-import { useSidebarTransition } from "./useSidebarTransition";
-import { useTranslation } from "react-i18next";
 import {
-  KEYBOARD_SHORTCUTS,
+  type AppMenuCommand,
   isActiveInProject,
   isThemeColorScheme,
+  KEYBOARD_SHORTCUTS,
+  type KeyboardShortcutId,
   keybindingDisplayParts,
   keybindingMatchesEvent,
   resolveFontScale,
   resolveKeybinding,
-  type AppMenuCommand,
-  type KeyboardShortcutId,
   type ShortcutPlatform,
 } from "@pi-desktop/shared";
-import { useAppStore } from "../../stores/app-store";
-import { api } from "../../lib/api";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { installRendererApi } from "../../capture/renderer-api";
-import { commitWorkPanelPresentation } from "../../lib/work-panel-presentation";
-import { browserPluginTab } from "../../lib/work-panel-tabs";
-import {
-  MAIN_PANE_MIN_WIDTH,
-  workPanelWidthForSidebarReopen,
-} from "../../lib/work-panel-resize";
+import { StartupSplash } from "../../components/StartupSplash";
+import { api } from "../../lib/api";
+import { bridgePlatform } from "../../lib/bridge";
 import {
   clampSidebarWidth,
   loadSidebarWidth,
   saveSidebarWidth,
 } from "../../lib/sidebar-preferences";
-import { StartupSplash } from "../../components/StartupSplash";
+import { sidebarWidthBudget } from "../../lib/sidebar-resize";
+import { commitWorkPanelPresentation } from "../../lib/work-panel-presentation";
+import {
+  MAIN_PANE_MIN_WIDTH,
+  workPanelWidthForSidebarReopen,
+} from "../../lib/work-panel-resize";
+import { browserPluginTab } from "../../lib/work-panel-tabs";
+import { useAppStore } from "../../stores/app-store";
+import { useSidebarTransition } from "./useSidebarTransition";
 
 const MODIFIER_ONLY_KEYS = new Set([
   "Alt",
@@ -41,7 +43,7 @@ const PLUGIN_THEME_STYLE_ID = "pi-plugin-theme";
 
 export function useAppShellRuntime() {
   const { t } = useTranslation();
-  const platform = window.piDesktop?.platform ?? "darwin";
+  const platform = bridgePlatform();
   const bootstrap = useAppStore((s) => s.bootstrap);
   const ready = useAppStore((s) => s.ready);
   const page = useAppStore((s) => s.page);
@@ -68,7 +70,7 @@ export function useAppShellRuntime() {
 
   const [searchOpen, setSearchOpen] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
-  const [sidebarWidth] = useState(() => loadSidebarWidth());
+  const [sidebarWidth, setSidebarWidth] = useState(() => loadSidebarWidth());
   const { sidebarEntering, sidebarExiting, handleSidebarAnimationEnd } = useSidebarTransition(
     sidebarCollapsed,
     ready && page !== "settings",
@@ -77,6 +79,12 @@ export function useAppShellRuntime() {
   const appShellRef = useRef<HTMLDivElement>(null);
   const sidebarCollapsedRef = useRef(sidebarCollapsed);
   const sidebarWidthRef = useRef(sidebarWidth);
+  /**
+   * The last width the user actually committed. A drag preview never writes
+   * it, so a drag that collapses the sidebar and a later reopen return the
+   * preferred column instead of the narrow preview the gesture stopped at.
+   */
+  const sidebarPreferredWidthRef = useRef(sidebarWidth);
   const shellWidthRef = useRef(shellWidth);
   const workPanelWidthRef = useRef(workPanelWidth);
   const workPanelOpenRef = useRef(workPanelVisible);
@@ -104,14 +112,33 @@ export function useAppShellRuntime() {
     observer.observe(shell);
     return () => observer.disconnect();
   }, []);
-  // The sidebar is a fixed-width column: it only collapses and opens.
-  const handleSidebarWidthChange = useCallback(() => {}, []);
-  const handleSidebarWidthCommit = useCallback(() => {}, []);
+  const resolveSidebarMax = () =>
+    sidebarWidthBudget({
+      containerWidth: appShellRef.current?.clientWidth || shellWidthRef.current,
+      workPanelOpen: workPanelOpenRef.current,
+      workPanelWidth: workPanelWidthRef.current,
+      workPanelMaximized: workPanelMaximizedRef.current,
+    });
+  const handleSidebarWidthChange = useCallback((width: number) => {
+    setSidebarWidth(clampSidebarWidth(width, resolveSidebarMax()));
+  }, []);
+  const handleSidebarWidthCommit = useCallback((width: number) => {
+    const nextWidth = clampSidebarWidth(width, resolveSidebarMax());
+    sidebarPreferredWidthRef.current = nextWidth;
+    setSidebarWidth(nextWidth);
+    saveSidebarWidth(nextWidth);
+  }, []);
+  const handleSidebarResizeCollapse = useCallback(() => {
+    autoCollapsedSidebarRef.current = false;
+    setSidebarCollapsed(true);
+  }, []);
   // Reopening prefers the right column: the work panel gives up width first so
   // MainChat keeps the width it already had, and only a would-be breach of the
-  // 450px floor falls back to the 460px reopen target.
+  // 450px floor falls back to the 460px reopen target. The column comes back at
+  // the user's preferred width, which a collapsing drag never overwrites.
   const reopenSidebar = useCallback(() => {
     if (!sidebarCollapsedRef.current) return;
+    const preferredWidth = clampSidebarWidth(sidebarPreferredWidthRef.current);
     if (workPanelOpenRef.current && !workPanelMaximizedRef.current) {
       const currentPanelWidth = workPanelWidthRef.current;
       const width =
@@ -120,12 +147,13 @@ export function useAppShellRuntime() {
         currentPanelWidth + MAIN_PANE_MIN_WIDTH;
       const nextPanelWidth = workPanelWidthForSidebarReopen({
         containerWidth: width,
-        sidebarWidth: sidebarWidthRef.current,
+        sidebarWidth: preferredWidth,
         currentPanelWidth,
       });
       useAppStore.getState().setWorkPanelWidth(nextPanelWidth);
     }
     autoCollapsedSidebarRef.current = false;
+    setSidebarWidth(preferredWidth);
     setSidebarCollapsed(false);
   }, []);
 
@@ -432,7 +460,16 @@ export function useAppShellRuntime() {
   useEffect(() => {
     if (!ready) return;
     void useAppStore.getState().refreshPlugins();
-    return api.onPluginChanged(() => void useAppStore.getState().refreshPlugins());
+    return api.onPluginChanged((event) => {
+      void useAppStore.getState().refreshPlugins();
+      // Slot #1 stored a rewrite (ADR 0295 rule 5): re-read that session's
+      // audit records so the rewritten row can show its badge without a
+      // session switch. The record itself lives in host-core; this event is
+      // only the signal that there is something new to read.
+      if (event.reason === "agentExtensionRewrite" && event.sessionId) {
+        void useAppStore.getState().refreshPluginRewrites(event.sessionId);
+      }
+    });
   }, [ready]);
 
   // Work panel views are filtered by activation scope, so opening a different
@@ -824,6 +861,13 @@ export function useAppShellRuntime() {
     : workPanelToggleLabel;
 
 
+  const sidebarWidthMax = sidebarWidthBudget({
+    containerWidth: shellWidth,
+    workPanelOpen: workPanelVisible || presentedWorkPanelOpen,
+    workPanelWidth,
+    workPanelMaximized,
+  });
+
   return {
     t,
     ready,
@@ -840,8 +884,10 @@ export function useAppShellRuntime() {
     sidebarEntering,
     sidebarExiting,
     sidebarWidth,
+    sidebarWidthMax,
     handleSidebarWidthChange,
     handleSidebarWidthCommit,
+    handleSidebarResizeCollapse,
     toggleSidebar,
     reopenSidebar,
     autoCollapseSidebar,

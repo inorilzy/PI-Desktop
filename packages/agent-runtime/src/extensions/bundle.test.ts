@@ -32,10 +32,11 @@ describe("bundled loader (E2E-245)", () => {
 const extension = process.argv[2];
 const bridge = {
   sessionId: "s", cwd: process.cwd(), getModel: () => undefined, setModel: async () => true,
-  getThinkingLevel: () => "off", setThinkingLevel: () => {}, isIdle: () => true, abort: () => {},
+  getThinkingLevel: () => "off", setThinkingLevel: () => {}, isIdle: () => true,
+  getAbortSignal: () => undefined, abort: () => {},
   hasPendingMessages: () => false, getContextUsage: () => undefined, compact: () => {},
   getSystemPrompt: () => "", getActiveTools: () => [], getAllTools: () => [], setActiveTools: () => {},
-  getSessionName: () => undefined, setSessionName: () => {}, sendUserMessage: () => {},
+  getSessionName: () => undefined, setSessionName: () => {},
   waitForIdle: async () => {}, newSession: async () => ({ cancelled: false }), fork: async () => ({ cancelled: false }),
   requestUi: async (_e: unknown, r: { kind: string }) => ({ kind: r.kind }), publishCommands: () => {}, publishDiagnostics: () => {},
 };

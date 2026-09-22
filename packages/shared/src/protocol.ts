@@ -1,8 +1,8 @@
 export const PROTOCOL_VERSION = 11 as const;
 export const SCHEMA_VERSION = 16 as const;
-export const APP_ID = "com.pi-desktop.app";
+export const APP_ID = "net.aiuo.pi-desktop";
 export const APP_NAME = "PI-Desktop";
-export const APP_VERSION = "0.14.9-beta.1";
+export const APP_VERSION = "0.15.1-beta.5";
 
 export const APP_MENU_COMMANDS = [
   "newTask",
@@ -71,6 +71,9 @@ export const IPC = {
     agentPrompt: "pi-desktop/agent/prompt",
     agentSteer: "pi-desktop/agent/steer",
     promptEnhance: "pi-desktop/prompt/enhance",
+    speechTranscribe: "pi-desktop/speech/transcribe",
+    speechSynthesize: "pi-desktop/speech/synthesize",
+    speechGetStatus: "pi-desktop/speech/getStatus",
     agentCompact: "pi-desktop/agent/compact",
     agentAbort: "pi-desktop/agent/abort",
     agentStop: "pi-desktop/agent/stop",
@@ -143,6 +146,18 @@ export const IPC = {
     askToolResolve: "pi-desktop/agent/askTool/resolve",
     plansPending: "pi-desktop/plans/pending",
     plansResolve: "pi-desktop/plans/resolve",
+    /**
+     * List every paired remote `pi-host` this desktop knows, redacted so no
+     * device token reaches the renderer. See ADR 0286 (R2b pairing UX).
+     */
+    remoteHostList: "pi-desktop/remoteHost/list",
+    /**
+     * Pair with a `pi-host` at `url` using a single-use `pairingToken`, mint
+     * a device token, persist it encrypted, and open the live connection.
+     */
+    remoteHostPair: "pi-desktop/remoteHost/pair",
+    /** Close the live connection for `hostKey` and drop its persisted record. */
+    remoteHostRemove: "pi-desktop/remoteHost/remove",
     providersList: "pi-desktop/providers/list",
     providersCreate: "pi-desktop/providers/create",
     providersUpdate: "pi-desktop/providers/update",
@@ -163,6 +178,21 @@ export const IPC = {
     providersOauthCancel: "pi-desktop/providers/oauth/cancel",
     providersOauthDelete: "pi-desktop/providers/oauth/delete",
     pluginList: "pi-desktop/plugin/list",
+  /**
+   * The renderer entry a loaded plugin may run, or null. The renderer never
+   * reads a manifest: it asks the main process for the one path it needs
+   * (ADR 0291).
+   */
+  pluginRendererEntry: "pi-desktop/plugin/renderer/entry",
+    /**
+     * One forwarded renderer action (ADR 0294 decision 4): run a method inside
+     * the calling plugin's own headless entry and answer with its result. The
+     * renderer never reads a manifest, so the main process looks the plugin id
+     * up in the registry it loaded and forwards only when that plugin's
+     * manifest declares `plugin.call`; every refusal is a coded error rather
+     * than a silent no-op.
+     */
+    pluginRendererCall: "pi-desktop/plugin/renderer/call",
     /** Plugin-contributed agent extensions (D387/D388, ADR 0214). */
     pluginImportExtension: "pi-desktop/plugin/importExtension",
     extensionsCommandRun: "pi-desktop/extensions/commands/run",
@@ -191,16 +221,14 @@ export const IPC = {
     pluginLauncherToggle: "pi-desktop/pluginLauncher/toggle",
     pluginLauncherDismiss: "pi-desktop/pluginLauncher/dismiss",
     pluginThemes: "pi-desktop/plugin/themes",
-    pluginSettingsDestinations: "pi-desktop/plugin/settings/destinations",
+    pluginScenicThemesDestinations: "pi-desktop/plugin/scenicThemes/destinations",
+    pluginScenicThemesSetBlur: "pi-desktop/plugin/scenicThemes/setBlur",
     pluginServices: "pi-desktop/plugin/services",
     pluginViews: "pi-desktop/plugin/views",
     pluginViewOpen: "pi-desktop/plugin/view/open",
     pluginViewClose: "pi-desktop/plugin/view/close",
     pluginViewSetBounds: "pi-desktop/plugin/view/setBounds",
     pluginViewSetVisible: "pi-desktop/plugin/view/setVisible",
-    pluginSettingsViewOpen: "pi-desktop/plugin/settings/view/open",
-    pluginSettingsViewSetBounds: "pi-desktop/plugin/settings/view/setBounds",
-    pluginSettingsViewSetVisible: "pi-desktop/plugin/settings/view/setVisible",
     mcpList: "pi-desktop/mcp/list",
     mcpUpsert: "pi-desktop/mcp/upsert",
     mcpRemove: "pi-desktop/mcp/remove",
@@ -208,11 +236,17 @@ export const IPC = {
     mcpSetScope: "pi-desktop/mcp/setScope",
     mcpTransfer: "pi-desktop/mcp/transfer",
     mcpTest: "pi-desktop/mcp/test",
+    mcpOauthStart: "pi-desktop/mcp/oauth/start",
+    mcpOauthCancel: "pi-desktop/mcp/oauth/cancel",
     mcpImport: "pi-desktop/mcp/import",
+    mcpImportScan: "pi-desktop/mcp/importScan",
+    mcpImportRun: "pi-desktop/mcp/importRun",
     mcpMarketSearch: "pi-desktop/mcp/market/search",
     skillList: "pi-desktop/skill/list",
     skillCreate: "pi-desktop/skill/create",
     skillImport: "pi-desktop/skill/import",
+    skillImportScan: "pi-desktop/skill/importScan",
+    skillImportRun: "pi-desktop/skill/importRun",
     skillMarketSearch: "pi-desktop/skill/market/search",
     skillMarketFetch: "pi-desktop/skill/market/fetch",
     skillUpdate: "pi-desktop/skill/update",
@@ -238,6 +272,7 @@ export const IPC = {
     marketInstall: "pi-desktop/market/install",
     marketCheckUpdates: "pi-desktop/market/checkUpdates",
     marketApplyUpdates: "pi-desktop/market/applyUpdates",
+    marketCancelInstall: "pi-desktop/market/cancelInstall",
     commandPaletteSearch: "pi-desktop/commandPalette/search",
     commandPaletteExecute: "pi-desktop/commandPalette/execute",
     logOpenFolder: "pi-desktop/log/openFolder",
@@ -276,6 +311,8 @@ export const IPC = {
   },
   event: {
     pluginChanged: "pi-desktop/event/pluginChanged",
+    /** Progress of an install or update, while it is still running. */
+    pluginInstallProgress: "pi-desktop/plugin/event/installProgress",
     /** Host-originated app settings mutation (e.g. plugin `app.setTheme`). */
     settingsChanged: "pi-desktop/app/event/settingsChanged",
     extensionsUiPrompt: "pi-desktop/extensions/event/uiPrompt",
@@ -296,6 +333,7 @@ export const IPC = {
     notificationActivated: "pi-desktop/notification/event/activated",
     plansChanged: "pi-desktop/plans/event/changed",
     providersOauth: "pi-desktop/providers/oauth/event",
+    mcpOauth: "pi-desktop/mcp/oauth/event",
     updatesState: "pi-desktop/updates/event/state",
   },
 } as const;

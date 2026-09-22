@@ -47,6 +47,7 @@ import type {
 } from "../lib/composer-smart-stop";
 import type { SidebarSessionOutcome } from "../lib/sidebar-session-status";
 import type { WorkPanelContext, WorkPanelTab } from "../lib/work-panel-tabs";
+import type { PluginRewriteRecord } from "../lib/plugin-rewrites";
 
 export type { WorkPanelTab } from "../lib/work-panel-tabs";
 
@@ -155,6 +156,12 @@ export type AppState = {
   pluginThemes: PluginTheme[];
   /** Work panel views contributed by loaded plugins, in menu order. */
   pluginViews: PluginViewMeta[];
+  /**
+   * Diff-level rewrite records per session, as `plugin.rewrites.list` returns
+   * them. They are what marks a rewritten outgoing row in the transcript
+   * (ADR 0295 rule 5); a session with no records has no entry.
+   */
+  pluginRewrites: Record<string, PluginRewriteRecord[]>;
   /** Per-session permission queue, oldest first. */
   pendingPermissions: PermissionQueues;
   /** Inline asktool requests, queued per session without an expiry. */
@@ -309,6 +316,10 @@ export type AppState = {
   refreshPluginThemes: () => Promise<void>;
   /** Reload contributed work panel views. */
   refreshPluginViews: () => Promise<void>;
+  /** Store the records one session read returned; `undefined` leaves the existing ones. */
+  rememberPluginRewrites: (sessionId: string, rewrites: unknown) => void;
+  /** Re-read one session's rewrite records after the writer reported a new one. */
+  refreshPluginRewrites: (sessionId: string) => Promise<void>;
   refreshNotifications: () => Promise<void>;
   receiveNotification: (notification: AppNotification) => void;
   markNotificationRead: (id: string) => Promise<void>;

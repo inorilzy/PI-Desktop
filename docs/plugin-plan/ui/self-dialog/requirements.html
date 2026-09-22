@@ -1,0 +1,200 @@
+<!-- status: draft · issue #545 · branch feat/528-plugin-slots -->
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>弹窗与悬浮层 · 需求</title>
+<style>
+  :root{
+    --bg:#0e0e0e; --surface:#161616; --line:#2a2a2a; --line-2:#353535;
+    --text:#ededed; --text-2:#b0b0b0; --muted:#7d7d7d; --faint:#5c5c5c;
+    --ok:#40c977; --ok-bg:rgba(64,201,119,.10);
+    --warn:#ff8549; --warn-bg:rgba(255,133,73,.10);
+    --ui:#c27aff; --ui-bg:rgba(194,122,255,.10);
+    --red:#ff6764; --red-bg:rgba(255,103,100,.10);
+    --font:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;
+    --mono:ui-monospace,"SF Mono","Cascadia Code",Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0}
+  body{background:var(--bg);color:var(--text);font-family:var(--font);font-size:14px;line-height:1.65;-webkit-font-smoothing:antialiased}
+  .top{border-bottom:1px solid var(--line);padding:24px 28px 20px;background:linear-gradient(180deg,#141414,#0e0e0e)}
+  .top .crumb{font-family:var(--mono);font-size:11.5px;color:var(--faint);letter-spacing:.06em}
+  .top h1{margin:6px 0 6px;font-size:21px;letter-spacing:-.01em}
+  .top p{margin:0;color:var(--text-2);max-width:80ch}
+  .top .meta{margin-top:8px;color:var(--faint);font-size:12.5px}
+  code{font-family:var(--mono);font-size:12.5px;color:var(--text-2)}
+  main{max-width:920px;margin:0 auto;padding:24px 28px 80px}
+  section{margin:0 0 40px}
+  section > h2{display:flex;align-items:baseline;gap:8px;margin:0 0 10px;font-size:17px;border-top:1px solid var(--line);padding-top:14px}
+  section > h2 .tag{font-family:var(--mono);font-size:11px;padding:1px 6px;border-radius:4px}
+  .tag.decided{color:var(--ok);background:var(--ok-bg)}
+  .tag.proposal{color:var(--warn);background:var(--warn-bg)}
+  .tag.open{color:var(--ui);background:var(--ui-bg)}
+  h3{margin:22px 0 6px;font-size:14.5px;color:var(--text)}
+  p{margin:0 0 10px}
+  ul{margin:0 0 12px;padding-left:1.2em}
+  li{margin:3px 0}
+  table{width:100%;border-collapse:collapse;font-size:13.5px;margin:0 0 14px}
+  th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{color:var(--muted);font-weight:500;font-size:12px;letter-spacing:.03em;text-transform:uppercase}
+  td.id{font-family:var(--mono);font-size:12.5px;color:var(--text-2);white-space:nowrap}
+  .callout{margin:0 0 14px;padding:11px 13px;border-radius:9px;background:var(--surface);color:var(--text-2);font-size:13px}
+  .callout.decided{border-left:2px solid var(--ok)}
+  .callout.warn{border-left:2px solid var(--warn)}
+  .callout.open{border-left:2px solid var(--ui)}
+  .callout b{color:var(--text);font-weight:560}
+  .plan-nav{display:flex;flex-wrap:wrap;align-items:center;gap:4px;padding:10px 28px;background:#0c0c0c;border-bottom:1px solid var(--line);font-size:13px}
+  .plan-nav a{color:var(--text-2);text-decoration:none;padding:3px 8px;border-radius:6px}
+  .plan-nav a:hover{background:var(--surface);color:var(--text)}
+  .plan-nav a[aria-current="page"]{background:var(--surface);color:var(--text);box-shadow:inset 0 0 0 1px var(--line-2)}
+  .plan-nav .sep{color:var(--faint);padding:0 2px}
+  .plan-nav .spacer{flex:1}
+</style>
+</head>
+<body>
+
+<nav class="plan-nav">
+  <a href="../../index.html">插件插槽目录</a>
+  <span class="sep">/</span>
+  <a href="index.html">弹窗与悬浮层</a>
+  <span class="spacer"></span>
+  <a href="index.html">目录</a>
+  <a href="requirements.html" aria-current="page">需求</a>
+  <a href="demo.html">演示</a>
+</nav>
+
+<header class="top">
+  <div class="crumb">docs/plugin-plan · ui/self-dialog</div>
+  <h1>弹窗与悬浮层 · 需求</h1>
+  <p>插件自理的全屏弹窗和角落浮层：没有宿主机制，只有四条底线和一套推荐样式。样式说明落在实处——用组件库的哪些现成形态、主题 token 长什么样、z 序带怎么排。</p>
+  <div class="meta">status: draft · issue #545 · 对照 demo.html · 无数据流页（宿主不经手任何数据）</div>
+</header>
+
+<main>
+<section>
+  <h2>范围 <span class="tag decided">已定</span></h2>
+  <ul>
+    <li><b>弹窗</b>（模态，带遮罩、阻塞）：插件自己画的对话框。</li>
+    <li><b>悬浮层</b>（非阻塞）：角落小浮层、迷你状态条等，不挡聊天。</li>
+    <li>不谈：向用户要一次确认 → <code>ui.confirm()</code>（<code>ui/layers/</code>）；宿主自己的对话框与权限审批卡。</li>
+  </ul>
+</section>
+
+<section>
+  <h2>机制：没有机制 <span class="tag decided">已定</span></h2>
+  <ul>
+    <li><b>无槽、无注册、无抢注</b>：任何插件随时可以画。旧 <code>modal</code> 注册槽「先注先得、全局一个」会堵死其他插件，这是取消注册制的直接原因。</li>
+    <li><b>无宿主 API</b>：没有 open / close 动作——层的出现与消失就是普通 React 组件的挂载与卸载。</li>
+    <li><b>无数据往来</b>：宿主不经手任何东西，所以本目录没有数据流页。</li>
+  </ul>
+  <h3>四条底线 <span class="tag decided">已定</span></h3>
+  <table>
+    <thead><tr><th>底线</th><th>为什么</th></tr></thead>
+    <tbody>
+      <tr><td class="id">画在自己的组件里<br />用 <code>position: fixed</code></td><td>portal 到 <code>body</code> 会逃出 <code>[data-pi-plugin]</code> 样式作用域，插件样式全丢；fixed 定位天生视口级，不需要 portal</td></tr>
+      <tr><td class="id">卸载即消失</td><td>弹窗是组件树的一部分：插件被禁用 / 卸载时随组件卸载，无残留，宿主不用收拾</td></tr>
+      <tr><td class="id">永远压不过宿主卡</td><td>权限审批卡、确认卡队列在宿主最高层带，这是宿主自己定死的；插件层低一档（z 序带见下）</td></tr>
+      <tr><td class="id">插件之间不仲裁</td><td>两三个插件同时浮层：后开的在上（DOM 顺序），遮罩叠加是可接受的结果；真实的协调需求出现前，宿主不做登记机制</td></tr>
+    </tbody>
+  </table>
+  <div class="callout decided"><b>崩溃照常被兜。</b>自理界面在插件组件里渲染，槽级出错隔离罩得住：抛错塌的是这个插件自己的界面，邻居与应用不受影响。</div>
+</section>
+
+<section>
+  <h2>样式说明 <span class="tag decided">已定</span> <span class="tag proposal">推荐值</span></h2>
+  <p>插件界面长在宿主页面里，<b>必须跟着主题走</b>。宿主的视觉系统只有一个来源：<code>apps/desktop/src/styles/tokens.css</code>——dark 是 <code>:root</code> 默认，light 在 <code>:root[data-theme="light"]</code> 覆盖。<b>只用 token，不写死字面量</b>：写死的深色在用户切到浅色主题时会直接坏掉。</p>
+
+  <h3>必用的主题 token</h3>
+  <table>
+    <thead><tr><th>用途</th><th>token</th><th>说明</th></tr></thead>
+    <tbody>
+      <tr><td class="id">弹层表面</td><td><code>--ds-bg-elevated-opaque</code></td><td>所有浮层家族（对话框 / 通知 / toast）共用的不透明 elevated 底</td></tr>
+      <tr><td class="id">边</td><td><code>--ds-border-default</code> / <code>--ds-border-subtle</code></td><td>浮层的 1px 边是「高度提示」，用这两个，不是分隔线</td></tr>
+      <tr><td class="id">阴影</td><td><code>--ds-shadow-dialog</code></td><td>对话框级阴影，浮层家族统一用这一个</td></tr>
+      <tr><td class="id">遮罩</td><td><code>--ds-scrim</code></td><td>模态遮罩；dark ~45% 黑、light ~28% 墨，主题自动切</td></tr>
+      <tr><td class="id">圆角</td><td><code>--radius-lg-plus</code>（卡）/ <code>--radius-md-plus</code>（通知 / toast）</td><td>圆角梯队是唯一的圆角来源</td></tr>
+      <tr><td class="id">文字</td><td><code>--ds-text-primary / secondary / muted</code></td><td>三级文字墨水，别自造灰</td></tr>
+      <tr><td class="id">状态色</td><td><code>--ds-success / warning / error</code></td><td>只用于图标 / 点缀，表面保持中性</td></tr>
+      <tr><td class="id">动效</td><td><code>--motion-duration-normal</code> + <code>--motion-ease-out</code></td><td>入场动画对齐宿主浮层的节奏（下移 8px 淡入）</td></tr>
+      <tr><td class="id">字号 / 字重</td><td><code>--text-*</code> / <code>--font-weight-*</code></td><td>字阶同样禁止字面量</td></tr>
+    </tbody>
+  </table>
+
+  <h3>照抄哪个现成家族</h3>
+  <table>
+    <thead><tr><th>你要画什么</th><th>参照宿主的</th><th>形态要点</th></tr></thead>
+    <tbody>
+      <tr><td class="id">模态弹窗</td><td><code>.search-overlay</code> + <code>.search-dialog</code>（<code>styles/overlays.css</code>）</td><td><code>position:fixed; inset:0</code> 全屏 + <code>--ds-scrim</code> 遮罩 + 居中卡（<code>--radius-lg-plus</code>、<code>--ds-bg-elevated-opaque</code>、1px 边、<code>--ds-shadow-dialog</code>），标题行 + 可滚内容 + 右下按钮排</td></tr>
+      <tr><td class="id">角落悬浮层</td><td><code>.update-notice</code>（同文件）</td><td>fixed 角落、固定宽（~356px）、32px 图标位 + 标题 + 正文 + 右上关闭；<code>--radius-md-plus</code>；非阻塞</td></tr>
+      <tr><td class="id">轻提示</td><td><code>.toast</code>（同文件）</td><td>单行消息 + 状态色图标；表面保持中性，只有图标带色</td></tr>
+      <tr><td class="id">按钮</td><td><code>.btn / .btn-primary / .btn-secondary / .btn-ghost</code>（<code>styles/ui-kit.css</code>）的形态</td><td>高度、圆角、字重照这套；插件画自己的类名，别挂宿主的类名（见下）</td></tr>
+      <tr><td class="id">小徽标</td><td><code>.badge</code>（<code>styles/ui-kit.css</code>）的形态</td><td>圆角胶囊、<code>--text-2xs</code></td></tr>
+    </tbody>
+  </table>
+  <div class="callout warn"><b>别挂宿主的内部类名。</b><code>.search-dialog</code> 这些是宿主实现细节，会随宿主重构漂移。 sanctioned 的公共面是下面两样：主题 token（CSS 变量，会继承进插件容器）+ 宿主打包的<b>插件工具类</b>（见下）。</div>
+
+  <h3>工具类 / 样式片段（宿主打包） <span class="tag decided">已定</span></h3>
+  <p>把上面的推荐形态打包成插件可用的<b>官方工具类</b>：跟随主题、随宿主升级自动演进，插件直接挂类名使用，不再各自复刻。</p>
+  <ul>
+    <li><b>弹窗</b>：<code>pi-dlg-overlay</code>（全屏 + 遮罩）+ <code>pi-dlg</code>（居中卡：表面 / 边 / 阴影 / 圆角）+ 头部 / 内容 / 按钮排片段。</li>
+    <li><b>悬浮层</b>：<code>pi-notice</code>（角落通知卡：32px 图标位 + 标题 + 正文 + 关闭钮）+ <code>pi-toast</code> 形态。</li>
+    <li><b>悬浮层拖动</b>：拖动手势随工具类一起提供（只悬浮层，弹窗不拖）；插件不用自己实现。</li>
+    <li>命名以 <code>pi-</code> 前缀与宿主内部类名划清界限；这组类名是<b>稳定的插件公共面</b>，变更走兼容流程。</li>
+  </ul>
+
+  <h3>交互规则 <span class="tag decided">已定</span></h3>
+  <table>
+    <thead><tr><th>规则</th><th>说明</th></tr></thead>
+    <tbody>
+      <tr><td class="id">Esc 不关闭</td><td>自理弹窗不响应 Esc——与确认卡 / 权限审批卡一致，关闭必须经由明确的界面动作</td></tr>
+      <tr><td class="id">关闭只走 ✕ 钮</td><td>弹窗和悬浮层都必须有可见的关闭（✕）钮，<b>且关闭只走它</b>：点遮罩不关、Esc 不关——用户永远有一条明确、不用键盘的退出路</td></tr>
+      <tr><td class="id">只有悬浮层可拖动</td><td><b>悬浮层建议支持拖动</b>（角落通知卡等），手势随工具类提供；<b>模态弹窗不拖</b>，固定居中</td></tr>
+      <tr><td class="id">不记拖动位置</td><td>拖到哪算哪，不随会话记忆；每次打开回默认位置</td></tr>
+    </tbody>
+  </table>
+
+  <h3>z 序带 <span class="tag decided">已定</span></h3>
+  <p>宿主现有的层带（<code>styles/overlays.css</code>）：叶子弹层 60 / toast 50 / 角落通知 45 / 对话框 40。自理层<b>建议 ≤ 39</b>，且永远低于宿主审批卡与确认卡——这是底线第三条的具体数值。越带宿主不拦截，但越带会在宿主浮层出现时被盖住，属于自担后果。</p>
+</section>
+
+<section>
+  <h2>本轮拍板 <span class="tag decided">已定</span></h2>
+  <table>
+    <thead><tr><th>问题</th><th>结论</th></tr></thead>
+    <tbody>
+      <tr><td>弹窗 / 悬浮层宿主管不管</td><td><b>不管</b>。插件自理；宿主删掉 modal / overlay 槽与 <code>ui.openModal</code> 等四个动作（实现批次处理）</td></tr>
+      <tr><td>多插件抢注怎么办</td><td>没有注册就没有抢注。并发时后开的在上，宿主不仲裁</td></tr>
+      <tr><td>样式从哪来</td><td>主题 token（<code>tokens.css</code>）+ 宿主打包的官方工具类（<code>pi-dlg</code> / <code>pi-notice</code> 等，含拖动手势）；不挂宿主内部类名；z 序 ≤ 39</td></tr>
+      <tr><td>Esc 关不关自理弹窗</td><td><b>不关</b>。与确认卡 / 权限审批卡一致，关闭走明确的界面动作</td></tr>
+      <tr><td>关闭路径</td><td><b>关闭只走 ✕ 钮</b>：弹窗与悬浮层都必须有可见的 ✕，点遮罩不关、Esc 不关</td></tr>
+      <tr><td>能不能拖</td><td><b>只悬浮层建议拖动</b>（手势随工具类提供）；模态弹窗不拖、固定居中</td></tr>
+      <tr><td>拖动位置记不记</td><td><b>不记</b>。每次打开回默认位置</td></tr>
+      <tr><td>多插件并发</td><td><b>维持「后开在上、不仲裁」</b></td></tr>
+      <tr><td>工具类打不打包</td><td><b>打包</b>。推荐形态成为宿主提供的插件工具类（<code>pi-</code> 前缀、稳定公共面、随宿主升级跟随主题）</td></tr>
+      <tr><td>本文件夹要不要数据流页</td><td><b>不要</b>。宿主不经手任何数据；本页记录此决定</td></tr>
+      <tr><td>和确认卡的关系</td><td>分工：问一句话 → <code>ui.confirm()</code>（<code>ui/layers/</code>）；自由界面 → 本目录自理</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<section>
+  <h2>还没定的事 <span class="tag open">未定</span></h2>
+  <ul>
+    <li>工具类的具体类名清单与打包位置（SDK 还是样式文件），实现批次定。</li>
+  </ul>
+</section>
+
+<section>
+  <h2>明确不做 <span class="tag decided">已定</span></h2>
+  <ul>
+    <li>宿主不做槽、不做注册、不做抢注仲裁、不做强制收起（卸载随组件消失已覆盖清理）。</li>
+    <li>不让自理层进确认卡 / 权限审批卡的决策路径，也不允许压过它们。</li>
+    <li>不做 Shadow DOM（会逃出宿主 portal，见 spec 16 §2A.3 的既有结论）。</li>
+  </ul>
+</section>
+
+</main>
+</body>
+</html>

@@ -573,6 +573,159 @@ pub(crate) fn migrate_v17_to_v18_tx(tx: &rusqlite::Transaction<'_>) -> Result<()
     Ok(())
 }
 
+/// v19 makes `artifacts` one row per recorded touch instead of one row per
+/// `(session, path)` (ADR 0295 rule 8). A file changed in three turns becomes
+/// three rows, so "which files did this turn change?" is an indexed per-turn
+/// query and no touch is hidden by deduplication. Existing rows keep their
+/// `path`, `op`, `turn_id`, and `updated_at` verbatim; the rebuild only adds
+/// the surrogate `id` and drops the old primary key. `op` stays unconstrained
+/// in SQL — the vocabulary lives in the typed write path — so no stored value
+/// has to be rewritten for old rows to stay valid.
+pub(crate) fn migrate_v18_to_v19_tx(tx: &rusqlite::Transaction<'_>) -> Result<()> {
+    let has_artifacts: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'artifacts')",
+        [],
+        |row| row.get(0),
+    )?;
+    // Probing the surrogate column keeps the step idempotent for a file that
+    // already created `artifacts` from the current DDL.
+    let already_per_touch: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('artifacts') WHERE name = 'id')",
+        [],
+        |row| row.get(0),
+    )?;
+    if has_artifacts && !already_per_touch {
+        tx.execute_batch(
+            r#"
+            CREATE TABLE artifacts_v19 (
+              id         INTEGER PRIMARY KEY,
+              session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+              path       TEXT NOT NULL,
+              op         TEXT NOT NULL,
+              turn_id    TEXT,
+              updated_at INTEGER NOT NULL
+            );
+            -- Only rows whose session still exists are carried over: every read
+            -- path joins `sessions`, and the sessions cascade means an orphan
+            -- row is already unreachable.
+            INSERT INTO artifacts_v19 (session_id, path, op, turn_id, updated_at)
+              SELECT a.session_id, a.path, a.op, a.turn_id, a.updated_at
+                FROM artifacts a
+               WHERE EXISTS (SELECT 1 FROM sessions s WHERE s.id = a.session_id)
+               ORDER BY a.session_id, a.path;
+            DROP TABLE artifacts;
+            ALTER TABLE artifacts_v19 RENAME TO artifacts;
+            "#,
+        )?;
+    }
+    tx.execute_batch(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_artifacts_time ON artifacts(updated_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_artifacts_session_turn
+          ON artifacts(session_id, turn_id, updated_at);
+        "#,
+    )?;
+    tx.pragma_update(None, "user_version", 19i64)?;
+    Ok(())
+}
+
+/// v20 adds `plugin_rewrites`, the diff-level audit of what a plugin changed
+/// in what the model receives (ADR 0295 rule 5). Additive: no existing row
+/// changes, and the table starts empty because the audit surface lands ahead of
+/// the capability: slot #1 (`runtime.send.before`) is the one producer that
+/// writes it, and slot #6 (`runtime.request.before`) was withdrawn before
+/// shipping, so its kinds are never written. Executing the module's own DDL
+/// keeps the fresh-install shape and this step from drifting.
+pub(crate) fn migrate_v19_to_v20_tx(tx: &rusqlite::Transaction<'_>) -> Result<()> {
+    tx.execute_batch(crate::plugin_rewrites::SCHEMA)?;
+    tx.pragma_update(None, "user_version", 20i64)?;
+    Ok(())
+}
+
+/// v21 makes a turn's audit records attributable (ADR 0295 rule 8, slot #9):
+/// `audit_log` grows the nullable `turn_id` column and its partial index, so
+/// one turn's tool executions are an indexed read instead of a scan of
+/// redacted payloads. Additive: every existing row keeps its content and stays
+/// valid with a NULL turn, and a per-turn read therefore sees only the rows
+/// the host wrote with a turn — the column is a fact, never a backfill guess.
+/// It is appended last because `ALTER TABLE` appends, which keeps a migrated
+/// file and the fresh DDL in `schema.rs` at the same column order. Probing
+/// `pragma_table_info` keeps the step idempotent for a file that already
+/// created `audit_log` from the current DDL.
+pub(crate) fn migrate_v20_to_v21_tx(tx: &rusqlite::Transaction<'_>) -> Result<()> {
+    let has_turn_id: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('audit_log') WHERE name = 'turn_id')",
+        [],
+        |row| row.get(0),
+    )?;
+    if !has_turn_id {
+        tx.execute_batch("ALTER TABLE audit_log ADD COLUMN turn_id TEXT;")?;
+    }
+    tx.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_audit_turn
+           ON audit_log(turn_id, ts) WHERE turn_id IS NOT NULL;",
+    )?;
+    tx.pragma_update(None, "user_version", 21i64)?;
+    Ok(())
+}
+
+/// v22 stores plugin provenance where a queued continuation and the message it
+/// becomes are created (ADR 0293 / ADR 0295 rule 9, slot #10
+/// `runtime.turn.continue`): `turn_queue` gains the nullable
+/// `plugin_id` / `plugin_label` the push request already carried, and
+/// `messages` gains the same pair so the row a plugin asked for can say who
+/// asked. Additive: every existing row keeps its content and stays valid with
+/// NULL provenance, which is exactly "a row the user typed"; nothing is
+/// backfilled from a guess. `idx_messages_turn` is the index behind the
+/// per-turn message read (`turn.messages`, slot #8). Both columns are appended
+/// last because `ALTER TABLE` appends, which keeps a migrated file and the
+/// fresh DDL in `schema.rs` at the same column order. Probing
+/// `pragma_table_info` keeps the step idempotent for a file that already
+/// created the tables from the current DDL.
+pub(crate) fn migrate_v21_to_v22_tx(tx: &rusqlite::Transaction<'_>) -> Result<()> {
+    let has_queue_plugin: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('turn_queue') WHERE name = 'plugin_id')",
+        [],
+        |row| row.get(0),
+    )?;
+    if !has_queue_plugin {
+        tx.execute_batch(
+            "ALTER TABLE turn_queue ADD COLUMN plugin_id TEXT;
+             ALTER TABLE turn_queue ADD COLUMN plugin_label TEXT;",
+        )?;
+    }
+    let has_message_plugin: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('messages') WHERE name = 'plugin_id')",
+        [],
+        |row| row.get(0),
+    )?;
+    if !has_message_plugin {
+        tx.execute_batch(
+            "ALTER TABLE messages ADD COLUMN plugin_id TEXT;
+             ALTER TABLE messages ADD COLUMN plugin_label TEXT;",
+        )?;
+    }
+    tx.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_messages_turn
+           ON messages(turn_id, seq) WHERE turn_id IS NOT NULL;",
+    )?;
+    tx.pragma_update(None, "user_version", 22i64)?;
+    Ok(())
+}
+
+pub(crate) fn migrate_v21_to_v22(conn: &Connection, path: &Path) -> Result<()> {
+    let backup = create_migration_backup(conn, path, 21)?;
+    let tx = conn.unchecked_transaction()?;
+    migrate_v21_to_v22_tx(&tx)?;
+    tx.commit().with_context(|| {
+        format!(
+            "commit schema v21 to v22 migration; backup {} remains",
+            backup.display()
+        )
+    })?;
+    Ok(())
+}
+
 pub(crate) fn migration_backup_path(path: &Path, version: i64) -> PathBuf {
     path.with_extension(format!("sqlite.v{version}.bak"))
 }
@@ -776,6 +929,45 @@ pub(crate) fn migrate_v17_to_v18(conn: &Connection, path: &Path) -> Result<()> {
     tx.commit().with_context(|| {
         format!(
             "commit schema v17 to v18 migration; backup {} remains",
+            backup.display()
+        )
+    })?;
+    Ok(())
+}
+
+pub(crate) fn migrate_v18_to_v19(conn: &Connection, path: &Path) -> Result<()> {
+    let backup = create_migration_backup(conn, path, 18)?;
+    let tx = conn.unchecked_transaction()?;
+    migrate_v18_to_v19_tx(&tx)?;
+    tx.commit().with_context(|| {
+        format!(
+            "commit schema v18 to v19 migration; backup {} remains",
+            backup.display()
+        )
+    })?;
+    Ok(())
+}
+
+pub(crate) fn migrate_v19_to_v20(conn: &Connection, path: &Path) -> Result<()> {
+    let backup = create_migration_backup(conn, path, 19)?;
+    let tx = conn.unchecked_transaction()?;
+    migrate_v19_to_v20_tx(&tx)?;
+    tx.commit().with_context(|| {
+        format!(
+            "commit schema v19 to v20 migration; backup {} remains",
+            backup.display()
+        )
+    })?;
+    Ok(())
+}
+
+pub(crate) fn migrate_v20_to_v21(conn: &Connection, path: &Path) -> Result<()> {
+    let backup = create_migration_backup(conn, path, 20)?;
+    let tx = conn.unchecked_transaction()?;
+    migrate_v20_to_v21_tx(&tx)?;
+    tx.commit().with_context(|| {
+        format!(
+            "commit schema v20 to v21 migration; backup {} remains",
             backup.display()
         )
     })?;

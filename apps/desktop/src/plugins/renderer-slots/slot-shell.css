@@ -1,0 +1,95 @@
+/*
+  Public plugin-slot design surface (spec 07-plugins/16 §2A.3).
+
+  These aliases are the only CSS custom properties a renderer slot may rely
+  on. They map the host's internal `--ds-*` values; those internal names are
+  not a plugin contract and may change without notice. The stability rule is
+  the `--pi-slot-*` prefix plus the list exported as
+  `PLUGIN_SLOT_DESIGN_TOKENS` from `@pi-desktop/plugin-sdk`: additions only.
+
+  `.pi-slot-*` primitives exist only inside `.pi-plugin-slot`. They are not
+  host UI class names and are not shared with host chrome.
+*/
+
+.pi-plugin-slot {
+  /* Inherit host typography so unstyled plugin content still reads as shell. */
+  color: var(--ds-text-primary);
+  font-family: var(--ds-font-sans, inherit);
+  font-size: var(--ds-text-md, inherit);
+  line-height: var(--ds-leading-body, inherit);
+
+  --pi-slot-bg: var(--ds-bg-primary);
+  --pi-slot-bg-elevated: var(--ds-bg-elevated-opaque, var(--ds-bg-secondary));
+  --pi-slot-text: var(--ds-text-primary);
+  --pi-slot-text-muted: var(--ds-text-muted);
+  --pi-slot-text-faint: var(--ds-text-faint);
+  --pi-slot-border: var(--ds-border-default);
+  --pi-slot-accent: var(--ds-accent);
+  --pi-slot-success: var(--ds-success);
+  --pi-slot-warning: var(--ds-warning);
+  --pi-slot-error: var(--ds-error);
+  --pi-slot-radius-sm: var(--radius-sm, 6px);
+  --pi-slot-radius-md: var(--radius-md, 10px);
+  --pi-slot-text-xs: var(--ds-text-xs, 0.75rem);
+  --pi-slot-text-sm: var(--ds-text-sm, 0.8125rem);
+  --pi-slot-text-base: var(--ds-text-md, 0.875rem);
+  --pi-slot-shadow: var(--ds-raised-shadow);
+  --pi-slot-font: var(--ds-font-sans, inherit);
+}
+
+.pi-plugin-slot .pi-slot-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 28px;
+  padding: 4px 10px;
+  border: 1px solid var(--pi-slot-border);
+  border-radius: var(--pi-slot-radius-sm);
+  background: var(--pi-slot-bg-elevated);
+  color: var(--pi-slot-text);
+  font-family: var(--pi-slot-font);
+  font-size: var(--pi-slot-text-sm);
+  line-height: var(--leading-normal);
+  cursor: pointer;
+}
+
+.pi-plugin-slot .pi-slot-btn:hover {
+  background: color-mix(in oklab, var(--pi-slot-text) 8%, var(--pi-slot-bg-elevated));
+}
+
+.pi-plugin-slot .pi-slot-btn:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px color-mix(in oklab, var(--pi-slot-accent) 40%, transparent);
+}
+
+.pi-plugin-slot .pi-slot-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 8px;
+  border-radius: var(--radius-full, 999px);
+  background: color-mix(in oklab, var(--pi-slot-text) 8%, transparent);
+  color: var(--pi-slot-text-muted);
+  font-family: var(--pi-slot-font);
+  font-size: var(--pi-slot-text-xs);
+  line-height: var(--leading-relaxed);
+}
+
+.pi-plugin-slot .pi-slot-field {
+  width: 100%;
+  min-height: 32px;
+  padding: 4px 10px;
+  border: 1px solid var(--pi-slot-border);
+  border-radius: var(--pi-slot-radius-sm);
+  background: var(--pi-slot-bg);
+  color: var(--pi-slot-text);
+  font-family: var(--pi-slot-font);
+  font-size: var(--pi-slot-text-sm);
+  outline: none;
+}
+
+.pi-plugin-slot .pi-slot-field:focus-visible {
+  border-color: var(--pi-slot-accent);
+  box-shadow: 0 0 0 2px color-mix(in oklab, var(--pi-slot-accent) 30%, transparent);
+}

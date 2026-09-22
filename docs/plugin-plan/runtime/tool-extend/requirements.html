@@ -1,0 +1,149 @@
+<!-- status: draft · issue #561 · branch feat/528-plugin-slots -->
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>tool-extend · 需求</title>
+<style>
+  :root{
+    --bg:#0e0e0e; --surface:#161616; --line:#2a2a2a; --line-2:#353535;
+    --text:#ededed; --text-2:#b0b0b0; --muted:#7d7d7d; --faint:#5c5c5c;
+    --ok:#40c977; --ok-bg:rgba(64,201,119,.10);
+    --warn:#ff8549; --warn-bg:rgba(255,133,73,.10);
+    --ui:#c27aff; --ui-bg:rgba(194,122,255,.10);
+    --font:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;
+    --mono:ui-monospace,"SF Mono","Cascadia Code",Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0}
+  body{background:var(--bg);color:var(--text);font-family:var(--font);font-size:14px;line-height:1.65;-webkit-font-smoothing:antialiased}
+  .top{border-bottom:1px solid var(--line);padding:24px 28px 20px;background:linear-gradient(180deg,#141414,#0e0e0e)}
+  .top .crumb{font-family:var(--mono);font-size:11.5px;color:var(--faint);letter-spacing:.06em}
+  .top h1{margin:6px 0 6px;font-size:21px;letter-spacing:-.01em}
+  .top p{margin:0;color:var(--text-2);max-width:80ch}
+  .top .meta{margin-top:8px;color:var(--faint);font-size:12.5px}
+  code{font-family:var(--mono);font-size:12.5px;color:var(--text-2)}
+  main{max-width:920px;margin:0 auto;padding:24px 28px 80px}
+  section{margin:0 0 40px}
+  section > h2{display:flex;align-items:baseline;gap:8px;margin:0 0 10px;font-size:17px;border-top:1px solid var(--line);padding-top:14px}
+  section > h2 .tag{font-family:var(--mono);font-size:11px;padding:1px 6px;border-radius:4px}
+  .tag.verified{color:var(--ok);background:var(--ok-bg)}
+  .tag.proposal{color:var(--warn);background:var(--warn-bg)}
+  .tag.open{color:var(--ui);background:var(--ui-bg)}
+  h3{margin:22px 0 6px;font-size:14.5px;color:var(--text)}
+  p{margin:0 0 10px}
+  ul{margin:0 0 12px;padding-left:1.2em}
+  li{margin:3px 0}
+  table{width:100%;border-collapse:collapse;font-size:13.5px;margin:0 0 14px}
+  th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{color:var(--muted);font-weight:500;font-size:12px;letter-spacing:.03em;text-transform:uppercase}
+  td.id{font-family:var(--mono);font-size:12.5px;color:var(--text-2);white-space:nowrap}
+  .callout{margin:0 0 14px;padding:11px 13px;border-radius:9px;background:var(--surface);color:var(--text-2);font-size:13px}
+  .callout.verified{border-left:2px solid var(--ok)}
+  .callout.warn{border-left:2px solid var(--warn)}
+  .callout.open{border-left:2px solid var(--ui)}
+  .callout b{color:var(--text);font-weight:560}
+  .plan-nav{display:flex;flex-wrap:wrap;align-items:center;gap:4px;padding:10px 28px;background:#0c0c0c;border-bottom:1px solid var(--line);font-size:13px}
+  .plan-nav a{color:var(--text-2);text-decoration:none;padding:3px 8px;border-radius:6px}
+  .plan-nav a:hover{background:var(--surface);color:var(--text)}
+  .plan-nav a[aria-current="page"]{background:var(--surface);color:var(--text);box-shadow:inset 0 0 0 1px var(--line-2)}
+  .plan-nav .sep{color:var(--faint);padding:0 2px}
+  .plan-nav .spacer{flex:1}
+</style>
+</head>
+<body>
+
+<nav class="plan-nav">
+  <a href="../../index.html">插件插槽目录</a>
+  <span class="sep">/</span>
+  <a href="index.html">tool-extend</a>
+  <span class="spacer"></span>
+  <a href="index.html">目录</a>
+  <a href="requirements.html" aria-current="page">需求</a>
+  <a href="data-flow.html">数据流</a>
+</nav>
+
+<header class="top">
+  <div class="crumb">docs/plugin-plan · runtime/tool-extend</div>
+  <h1>tool-extend · 需求</h1>
+  <p>插件工具想变得更强：一次调用可以引出更多工具、把花费报给宿主、必要时请求整轮收工。能力是内核字段，开关是槽权限，归属是「谁的工具谁做主」。</p>
+  <div class="meta">status: draft · issue #561 · 槽 <code>runtime.tool.extend</code></div>
+</header>
+
+<main>
+<section>
+  <h2>范围 <span class="tag verified">已核实</span></h2>
+  <ul>
+    <li>只管<b>插件自有工具</b>返回结果里的三个增强字段。</li>
+    <li>不谈：别家工具的拦截与覆盖（tool-gate）、执行中途的事件流（turn-watch）、往循环追消息（closing / continue）。</li>
+  </ul>
+</section>
+
+<section>
+  <h2>现状（代码核实） <span class="tag verified">已核实</span></h2>
+  <ul>
+    <li><b>内核字段在</b>：<code>AgentToolResult.addedToolNames / usage / terminate</code>（<code>pi-agent-core/dist/types.d.ts:317-331</code>）。</li>
+    <li><b>双端门控</b>：运行时侧 <code>applyExtensionToolCapabilities</code> + <code>toolResultExtensionAllowed</code>（<code>runtime.ts:2231-2262</code>, <code>runner.ts:996-1002</code>）；Electron 主进程对无授权的插件<b>剥离字段</b>并审计 <code>PERMISSION_DENIED</code>（<code>plugin-runtime.ts:1879-1899</code>, <code>host.ts:258-264</code>）。</li>
+    <li><b>标签纠偏</b>：「工具执行期间」不准确——执行中的进度走工具自己的 <code>onUpdate</code>（镜像成 watch 事件）；追消息是 closing / continue 的事。</li>
+    <li><b>总表「内核字段在」属实</b>。</li>
+  </ul>
+</section>
+
+<section>
+  <h2>契约（建议，待拍板） <span class="tag proposal">建议</span></h2>
+  <table>
+    <thead><tr><th>字段</th><th>干什么</th><th>约束</th></tr></thead>
+    <tbody>
+      <tr><td class="id">addedToolNames</td><td>本次调用往循环里<b>引入新工具</b>（下一轮模型可用）</td><td>工具在界面上<b>署名插件作者</b>；受授权门控</td></tr>
+      <tr><td class="id">usage</td><td>上报本次调用的<b>花费</b>（token / 计数）</td><td>展示位待拍板；数值仅供参考不进宿主结算</td></tr>
+      <tr><td class="id">terminate</td><td>请求<b>整轮终止</b>（批量收工）</td><td>与用户中止同一收尾路径；不可伪造原因</td></tr>
+      <tr><td class="id">权限</td><td><code>runtime.tool.extend</code></td><td>没授权 → 字段被剥离 + <code>PERMISSION_DENIED</code> 审计</td></tr>
+    </tbody>
+  </table>
+  <div class="callout warn"><b>归属边界。</b>extend 是「自己工具的特权」：管不了别家插件的工具、管不了宿主工具——那边的字段会被剥掉。</div>
+</section>
+
+<section>
+  <h2>插件场景（建议） <span class="tag proposal">建议</span></h2>
+  <table>
+    <thead><tr><th>#</th><th>场景</th></tr></thead>
+    <tbody>
+      <tr><td>1</td><td>数据库工具：查完 schema 后按需引入「query_table」等后续工具，用到才注册</td></tr>
+      <tr><td>2</td><td>计费工具：每次 API 调用报 usage，宿主在工具卡上展示本次花费</td></tr>
+      <tr><td>3</td><td>批处理工具：跑完发现整体失败无意义，terminate 收工</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<section>
+  <h2>本轮拍板 <span class="tag open">待定</span></h2>
+  <table>
+    <thead><tr><th>问题</th><th>选项</th></tr></thead>
+    <tbody>
+      <tr><td>usage 展示位</td><td>A. 工具卡内行　B. 会话用量汇总里单列「插件」　C. 两者</td></tr>
+      <tr><td>terminate 与 abort 的关系</td><td>A. 同一收尾路径（现状理解）　B. terminate 仅结束本轮工具批次</td></tr>
+      <tr><td>目录标签修正</td><td>「工具执行期间」改为「插件工具的结果增强」</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<section>
+  <h2>还没定的事 <span class="tag open">未定</span></h2>
+  <ul>
+    <li>上面三条。</li>
+  </ul>
+</section>
+
+<section>
+  <h2>明确不做 <span class="tag verified">已核实</span></h2>
+  <ul>
+    <li>不 gate 别家的工具——extend 不提供观察或拦截能力。</li>
+    <li>不注入后续消息轮——那是 closing / continue 的通道。</li>
+    <li>无授权不得越线——三个字段没授权就被剥离并审计，没有「读了再说」。</li>
+  </ul>
+</section>
+
+</main>
+</body>
+</html>

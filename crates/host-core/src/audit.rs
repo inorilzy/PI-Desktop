@@ -7,7 +7,21 @@ use std::sync::OnceLock;
 use crate::db::{now_ms, Database};
 
 pub fn append(db: &Database, kind: &str, session_id: Option<&str>, payload: Value) -> Result<()> {
-    append_to(db.conn(), kind, session_id, payload)
+    append_to(db.conn(), kind, session_id, None, payload)
+}
+
+/// Append a record that belongs to one turn, so a per-turn read finds it by
+/// its own column instead of scanning redacted payloads (schema v21, ADR 0295
+/// rule 8, slot #9). `turn_id` is a fact the caller knows, never inferred from
+/// the payload; `None` keeps the pre-v21 shape.
+pub fn append_turn(
+    db: &Database,
+    kind: &str,
+    session_id: Option<&str>,
+    turn_id: Option<&str>,
+    payload: Value,
+) -> Result<()> {
+    append_to(db.conn(), kind, session_id, turn_id, payload)
 }
 
 /// Append using an existing transaction so security-relevant state changes
@@ -18,21 +32,23 @@ pub fn append_tx(
     session_id: Option<&str>,
     payload: Value,
 ) -> Result<()> {
-    append_to(tx, kind, session_id, payload)
+    append_to(tx, kind, session_id, None, payload)
 }
 
 fn append_to(
     conn: &rusqlite::Connection,
     kind: &str,
     session_id: Option<&str>,
+    turn_id: Option<&str>,
     payload: Value,
 ) -> Result<()> {
     // Redact obvious secrets in payload serialization path (best-effort).
     let redacted = bounded_payload(redact_value(payload));
     conn.prepare_cached(
-        "INSERT INTO audit_log (ts, kind, session_id, payload_json) VALUES (?1, ?2, ?3, ?4)",
+        "INSERT INTO audit_log (ts, kind, session_id, turn_id, payload_json)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
     )?
-    .execute(params![now_ms(), kind, session_id, redacted])?;
+    .execute(params![now_ms(), kind, session_id, turn_id, redacted])?;
     Ok(())
 }
 

@@ -14,8 +14,9 @@ and synthesizes them. Delegates do not message each other.
 ## Install (dev-load)
 
 1. Open PI-Desktop.
-2. Go to **Plugins**.
-3. Open the header overflow menu and choose **Load development plugin**.
+2. Go to **Extensions**.
+3. Choose **Load local plugin** — the button in the empty state, or the same
+   command in the page's overflow menu.
 4. Select the `examples/plugins/roundtable` directory.
 
 The plugin activates on startup and the skill and tool are available

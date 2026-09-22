@@ -1,0 +1,208 @@
+<!-- status: draft · issue #545 · demo first,数据流页不设（见「本轮拍板」） -->
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>块渲染器 · 需求</title>
+<style>
+  :root{
+    --bg:#0e0e0e; --surface:#161616; --line:#2a2a2a; --line-2:#353535;
+    --text:#ededed; --text-2:#b0b0b0; --muted:#7d7d7d; --faint:#5c5c5c;
+    --ok:#40c977; --ok-bg:rgba(64,201,119,.10);
+    --warn:#ff8549; --warn-bg:rgba(255,133,73,.10);
+    --ui:#c27aff; --ui-bg:rgba(194,122,255,.10);
+    --red:#ff6764; --red-bg:rgba(255,103,100,.10);
+    --font:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;
+    --mono:ui-monospace,"SF Mono","Cascadia Code",Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0}
+  body{background:var(--bg);color:var(--text);font-family:var(--font);font-size:14px;line-height:1.65;-webkit-font-smoothing:antialiased}
+  .top{border-bottom:1px solid var(--line);padding:24px 28px 20px;background:linear-gradient(180deg,#141414,#0e0e0e)}
+  .top .crumb{font-family:var(--mono);font-size:11.5px;color:var(--faint);letter-spacing:.06em}
+  .top h1{margin:6px 0 6px;font-size:21px;letter-spacing:-.01em}
+  .top p{margin:0;color:var(--text-2);max-width:80ch}
+  .top .meta{margin-top:8px;color:var(--faint);font-size:12.5px}
+  code{font-family:var(--mono);font-size:12.5px;color:var(--text-2)}
+  main{max-width:920px;margin:0 auto;padding:24px 28px 80px}
+  section{margin:0 0 40px}
+  section > h2{display:flex;align-items:baseline;gap:8px;margin:0 0 10px;font-size:17px;border-top:1px solid var(--line);padding-top:14px}
+  section > h2 .tag{font-family:var(--mono);font-size:11px;padding:1px 6px;border-radius:4px}
+  .tag.decided{color:var(--ok);background:var(--ok-bg)}
+  .tag.proposal{color:var(--warn);background:var(--warn-bg)}
+  h3{margin:22px 0 6px;font-size:14.5px;color:var(--text)}
+  p{margin:0 0 10px}
+  ul{margin:0 0 12px;padding-left:1.2em}
+  li{margin:3px 0}
+  table{width:100%;border-collapse:collapse;font-size:13.5px;margin:0 0 14px}
+  th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{color:var(--muted);font-weight:500;font-size:12px;letter-spacing:.03em;text-transform:uppercase}
+  td.id{font-family:var(--mono);font-size:12.5px;color:var(--text-2);white-space:nowrap}
+  .callout{margin:0 0 14px;padding:11px 13px;border-radius:9px;background:var(--surface);color:var(--text-2);font-size:13px}
+  .callout.decided{border-left:2px solid var(--ok)}
+  .callout.warn{border-left:2px solid var(--warn)}
+  .callout b{color:var(--text);font-weight:560}
+  .ba{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin:0 0 14px}
+  .ba > div{padding:11px 13px;border-radius:9px;background:var(--surface);font-size:13px}
+  .ba .was{border-left:2px solid var(--faint)}
+  .ba .now{border-left:2px solid var(--ok)}
+  .ba h4{margin:0 0 6px;font-size:11.5px;font-family:var(--mono);color:var(--muted);letter-spacing:.06em;text-transform:uppercase;font-weight:500}
+  /* 顶部导航：目录内各页互相跳转 */
+  .plan-nav{display:flex;flex-wrap:wrap;align-items:center;gap:4px;padding:10px 28px;background:#0c0c0c;border-bottom:1px solid var(--line);font-size:13px}
+  .plan-nav a{color:var(--text-2);text-decoration:none;padding:3px 8px;border-radius:6px}
+  .plan-nav a:hover{background:var(--surface);color:var(--text)}
+  .plan-nav a[aria-current="page"]{background:var(--surface);color:var(--text);box-shadow:inset 0 0 0 1px var(--line-2)}
+  .plan-nav .sep{color:var(--faint);padding:0 2px}
+  .plan-nav .spacer{flex:1}
+  @media (max-width:720px){.ba{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+
+<nav class="plan-nav">
+  <a href="../../index.html">插件插槽目录</a>
+  <span class="sep">/</span>
+  <a href="index.html">块渲染器</a>
+  <span class="spacer"></span>
+  <a href="index.html">目录</a>
+  <a href="requirements.html" aria-current="page">需求</a>
+  <a href="demo.html">演示</a>
+</nav>
+
+<header class="top">
+  <div class="crumb">docs/plugin-plan · ui/block-renderer</div>
+  <h1>块渲染器 · 需求</h1>
+  <p>AI 回复里的每一个 fenced code block。一个槽 <code>block-renderer</code>：插件按代码块的<b>语言标签</b>认领，接管这一块的渲染。宿主只把代码块原文交出去，其余都是渲染器自己的事。</p>
+  <div class="meta">status: draft · issue #545 · 对照 demo.html（已确认，2026-09-21）</div>
+</header>
+
+<main>
+<section>
+  <h2>范围 <span class="tag decided">已定</span></h2>
+  <ul>
+    <li>只谈对话流里 <b>AI 回复正文的 fenced code block</b>（<code>```语言标签 … ```</code>）怎么显示：普通代码、数据、图形描述，都指这一块。</li>
+    <li>宿主已经内置了两种「代码块即渲染」：<code>```mermaid</code> 画流程图、LaTeX 数学公式走 KaTeX。这个槽是把同样的位置开放给插件。</li>
+    <li>不谈：代码块内容的产生（模型怎么写、能不能引导模型输出某种格式）、消息正文其他部分的渲染、工具调用卡（另一个槽 <code>tool-card</code>）。</li>
+  </ul>
+</section>
+
+<section>
+  <h2>槽有几个 <span class="tag decided">已定</span></h2>
+  <table>
+    <thead><tr><th>槽</th><th>位置</th><th>插件能做什么</th></tr></thead>
+    <tbody>
+      <tr><td class="id">block-renderer</td><td>一个闭合的代码块整体（含头部那条语言栏的位置）</td><td>整块自己画。头部、操作按钮、错误提示都是渲染器自己的（demo 场景 2/3）</td></tr>
+    </tbody>
+  </table>
+  <p>槽只有这一个，但插件可以按多个语言标签认领——同一个插件能给 <code>chart</code>、<code>csv</code> 各画不同的样子。</p>
+</section>
+
+<section>
+  <h2>按语言标签认领 <span class="tag decided">已定</span></h2>
+  <p>认领键是围栏后那个<b>语言标签</b>（<code>```chart</code> 的 <code>chart</code>），跟 tool-card 按工具全名认领是同一个思路：</p>
+  <table>
+    <thead><tr><th>问题</th><th>结论</th></tr></thead>
+    <tbody>
+      <tr><td>认领键支持到什么程度</td><td>只支持<b>语言标签全名</b>，不做前缀、不做通配</td></tr>
+      <tr><td>大小写</td><td>不区分大小写（<code>```Chart</code> 和 <code>```chart</code> 算同一个）</td></tr>
+      <tr><td>两个插件认领同一个标签</td><td><b>安装的时候提示冲突</b>，让用户当场决定（与 tool-card 一致）</td></tr>
+      <tr><td>宿主内置的标签</td><td><code>mermaid</code> 是宿主内置渲染器，<b>不接受认领</b>；数学公式不走代码块认领</td></tr>
+    </tbody>
+  </table>
+  <div class="callout decided"><b>没被认领的标签永远走宿主默认代码块。</b>宿主不认领，默认代码块就是兜底；这个兜底同时服务三种回退（见下）。</div>
+</section>
+
+<section>
+  <h2>宿主交出什么 <span class="tag decided">已定</span></h2>
+  <p>只有两样，一次交清：</p>
+  <table>
+    <thead><tr><th>给什么</th><th>是什么</th></tr></thead>
+    <tbody>
+      <tr><td class="id">语言标签</td><td>认领命中的那个标签原文</td></tr>
+      <tr><td class="id">代码块原文</td><td>围栏内的全部文本，<b>原样、全量、不解析</b>。宿主不规定内容格式——<code>chart</code> 里写什么 JSON、<code>csv</code> 里逗号还是分号，是渲染器和模型之间的事</td></tr>
+    </tbody>
+  </table>
+  <div class="callout decided"><b>复制、看源码、错误提示，渲染器自己实现。</b>宿主不递现成组件、不递可调用的操作，也不递别的数据——这就是「不强行传递什么」。渲染器要一个复制按钮就自己画一个（demo 场景 2 头部的两个按钮是插件画的）。</div>
+  <p>这与 tool-card 是<b>刻意相反</b>的选择：那边工具返回五花八门，宿主先归一成固定格式再给；这边代码块里写什么是模型和渲染器自己的约定，宿主解析反而多余。</p>
+</section>
+
+<section>
+  <h2>什么时候回退默认代码块 <span class="tag decided">已定</span></h2>
+  <table>
+    <thead><tr><th>时机</th><th>显示什么</th><th>demo</th></tr></thead>
+    <tbody>
+      <tr><td>标签没被任何插件认领</td><td>宿主默认代码块</td><td>场景 1</td></tr>
+      <tr><td><b>流式中围栏还没闭合</b></td><td>宿主默认代码块（内容边到边显示），闭合后才切换成渲染结果</td><td>场景 4</td></tr>
+      <tr><td>内容渲染失败</td><td>渲染器<b>自己</b>显示错误和源码（demo 里的红色错误行是插件画的）</td><td>场景 4</td></tr>
+      <tr><td>插件停用 / 卸载</td><td>宿主默认代码块，同一段原文原样显示</td><td>场景 4</td></tr>
+    </tbody>
+  </table>
+  <p>共同点：回退时显示的就是宿主默认形态，<b>原文一个字不丢</b>——默认代码块随时能接住任何一块。</p>
+</section>
+
+<section>
+  <h2>插件场景 <span class="tag decided">已定</span></h2>
+  <table>
+    <thead><tr><th>#</th><th>场景</th><th>demo</th></tr></thead>
+    <tbody>
+      <tr><td>1</td><td>JSON 数据画成统计图（柱状图 / 环形图）</td><td>场景 2</td></tr>
+      <tr><td>2</td><td>CSV 文本画成表格</td><td>场景 2</td></tr>
+      <tr><td>3</td><td>SVG 源码直接显示成图形</td><td>场景 3</td></tr>
+      <tr><td>4</td><td>diff 文本画成红绿对照</td><td>场景 3</td></tr>
+      <tr><td>5</td><td>流式中未闭合 → 默认代码块，闭合后切换</td><td>场景 4</td></tr>
+      <tr><td>6</td><td>渲染失败 → 渲染器自己显示错误 + 源码</td><td>场景 4</td></tr>
+      <tr><td>7</td><td>插件停用 → 回到宿主默认代码块</td><td>场景 4</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<section>
+  <h2>本轮拍板 <span class="tag decided">已定</span></h2>
+  <table>
+    <thead><tr><th>问题</th><th>结论</th></tr></thead>
+    <tbody>
+      <tr><td>有没有「数据流」</td><td><b>没有。</b>宿主只在渲染那一刻把「标签 + 原文」交给渲染器，之后没有任何数据往来。本文件夹因此不设数据流页</td></tr>
+      <tr><td>复制 / 源码切换 / 错误提示</td><td><b>渲染器自己实现</b>，宿主不递组件、不递操作、不强行传任何东西</td></tr>
+      <tr><td>内容格式</td><td>宿主不规定。每种标签的内容格式是渲染器自己定义、模型照着写的</td></tr>
+      <tr><td>流式中</td><td>围栏没闭合永远显示默认代码块，<b>闭合才接管</b>；渲染器不会收到半截内容</td></tr>
+      <tr><td>插件停用</td><td>同一段原文回到宿主默认代码块，不重排、不丢内容</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<section>
+  <h2>怎么注册（建议，还没定） <span class="tag proposal">建议</span></h2>
+  <p>落到宿主现有的清单结构（<code>contributes.*</code> 声明式贡献，和 themes / providers 同一层）：</p>
+  <ul>
+    <li>清单声明：<code>contributes.blockRenderers: [{ languages: ["chart", "csv"] }]</code>。认领在<b>安装时</b>校验冲突，插件停用后认领随之失效。</li>
+    <li>渲染器本体：插件自带的一个沙箱页面（和面板页面同一套隔离）。宿主在渲染那一刻把 <code>{ language, source }</code> 递进去，页面返回要显示的内容。复制按钮这类交互都发生在这个页面里，宿主不经手。</li>
+    <li>宿主侧挂钩点就在现在拦 <code>mermaid</code> 的那个位置（代码块 → 查注册表 → 命中交给渲染器，未命中走默认代码块），不需要新的渲染管线。</li>
+  </ul>
+  <div class="callout warn"><b>还在犹豫的：</b>同一标签是否允许「复用宿主默认代码块再外包一部分」（像 tool-card 的「复用默认卡 + 追加」）；本页按<b>整块接管、不做混合</b>起草，理由是代码块没有默认卡那套可拆的展开结构。</div>
+</section>
+
+<section>
+  <h2>还没定的事</h2>
+  <ul>
+    <li>要不要权限名（<code>ui.blockRenderer</code> 之类），还是归进现有 UI 权限。</li>
+    <li>信息串里标签后面的附加词（<code>```chart pie</code> 的 <code>pie</code>）要不要原样递给渲染器。</li>
+    <li>渲染器页面的高度约定：内容撑高谁来定、超长怎么滚，是否沿用面板的最小/最大尺寸。</li>
+    <li>渲染器崩溃（页面级错误，不是内容不合法）时宿主兜底的提示样式。</li>
+  </ul>
+</section>
+
+<section>
+  <h2>明确不做</h2>
+  <ul>
+    <li><b>不递消息上下文</b>：整段回复、这条消息是谁发的、别的代码块——渲染器都拿不到，它只看到自己这一块。</li>
+    <li><b>不让渲染器改写消息原文</b>：存储、复制全文、引用跳转里的代码块还是原文，渲染只发生在显示层。</li>
+    <li><b>不让渲染器发起工具调用、访问文件和网络</b>——渲染器页面没有这些能力，也不通过它绕道。</li>
+    <li><b>不做多块联动</b>：一个渲染器实例只对应一个代码块，块与块之间不通信。</li>
+    <li><b>不做半截渲染</b>：流式中围栏未闭合不进渲染器（demo 场景 4）。</li>
+  </ul>
+</section>
+
+</main>
+</body>
+</html>

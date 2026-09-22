@@ -15,7 +15,7 @@ optional `PI_DESKTOP_HOST_BIN` environment variable selects a host binary.
 Use `E2E_KEEP_ARTIFACTS=1` to retain the generated run directory for debugging;
 use `DEBUG_E2E=1` to stream child-process output.
 
-The seed creates six plugin-form fixtures in an isolated temporary directory;
+The seed creates seven plugin-form fixtures in an isolated temporary directory;
 it does not read or write the user's `~/.pi` profile. The driver prints one
 `PASS` / `FAIL` line per assertion and a `SUMMARY` before the runner reports
 its final exit status.
@@ -26,12 +26,13 @@ What the automated run proves:
   scope, loaded/error state, and diagnostics (the runtime portion of
   E2E-241/E2E-244);
 - `registerTool` through ToolSearch activation, `tool_call` blocking,
-  `tool_result` replacement, `before_agent_start`, provider header and request
-  hooks, and lifecycle hooks (E2E-242);
+  `tool_result` replacement, the live session/tool/turn hooks, and proof that
+  the withdrawn slot-6 handlers (`before_agent_start`, `before_provider_headers`,
+  `before_provider_request`, `context`) are never consulted (E2E-242);
 - slash commands in the composer menu and global search, a command with
   `ui.input` / `ui.select` / `ui.confirm` answered through the broker,
   `exec`, `setSessionName`, abort dismissing an open prompt, and
-  `sendUserMessage` through the Host-owned queue (E2E-243);
+  `continueTurn` through the Host-owned queue (E2E-243);
 - a throwing module and unsupported terminal-UI imports degrading to
   diagnostics while the remaining extensions continue to run (E2E-244).
 

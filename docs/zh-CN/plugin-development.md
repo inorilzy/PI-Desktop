@@ -84,8 +84,8 @@ pnpm pi-plugin init panel-basic ../my-first-plugin \
   --name "My First Plugin"
 ```
 
-然后打开PI-Desktop，进入**插件**，选择**加载开发插件**，然后
-选择 `../my-first-plugin`。
+然后打开 PI-Desktop，进入**扩展**，选择**加载本地插件**（空状态里的按钮，或页面溢出
+菜单中的同一命令），然后选择 `../my-first-plugin`。
 
 例如，对已发布的插件使用反向域 ID
 `com.example.workspace-summary`。 `local.` 前缀是一个有用的约定
@@ -606,12 +606,16 @@ unsubscribe = await pi.bus.subscribe("example.build.*", async (message) => {
 
 插件可以携带直接在 agent 进程内运行的代码：一个面向 pi CLI `ExtensionAPI` 编写的
 模块，与 pi 扩展使用同一契约。它可以注册工具、斜杠命令，以及每个回合、每次工具调用
-和每次 provider 请求上的 hook。声明模块和 `agent.extension` 权限：
+上的 hook。Provider 请求类 hook（`before_agent_start`、`context`、
+`before_provider_request`、`before_provider_headers`、`model_select`、
+`thinking_level_select`）注册时会被接受，但永远不会被咨询：槽位 6
+（`runtime.request.before`）已撤回，为它注册的处理器只是死代码。声明模块和
+`agent.extension` 权限：
 
 ```json
 {
   "contributes": { "agentExtensions": ["src/index.ts"] },
-  "permissions": ["agent.extension"]
+  "permissions": ["agent.extension", "runtime.tool.gate"]
 }
 ```
 
@@ -646,6 +650,18 @@ export default function (pi) {
 - **没有沙箱。** 模块在 agent 进程内运行，拥有与 agent 自身工具相同的权限。
   `agent.extension` 是需要用户显式确认的高风险权限；列出模块却没有它的 manifest
   会被拒绝。
+- **钩子需要各自的槽位权限。** `agent.extension` 只说明模块在 agent 进程内运行。
+  只有插件同时持有事件背后的槽位权限时，钩子才会被咨询 —— 这里因为示例要拦截
+  `tool_call`，所以是 `runtime.tool.gate`；缺少该授权时处理器会被跳过，插件行会收到
+  一条 `permission_denied` 诊断。逐槽位的权限名见
+  [权限矩阵](/zh-CN/spec/07-plugins/13-plugin-permissions-matrix) §2。
+- **有些调用背后没有事件。** 每个调用各自对应一个槽位权限：`pi.requestTurnAbort()`
+  需要 `runtime.turn.abort`，`pi.turnFacts()` 需要 `runtime.turn.facts`，`pi.recap()`
+  需要 `runtime.turn.recap`（`scope: "session"` 还需要 `runtime.session.read`），
+  `pi.continueTurn()` 需要 `runtime.turn.continue`；工具结果里
+  带 `usage`、`addedToolNames` 或 `terminate` 需要 `runtime.tool.extend`。这些名字同样要
+  声明：插件无权发起的调用会被拒绝（`requestTurnAbort` 返回 `false`，其余返回
+  `undefined`），并报出同一条 `permission_denied` 诊断，而不是静默地什么都不做。
 - **可以直接写 TypeScript。** 模块由 jiti 加载，`.ts` 不需要构建步骤。`typebox`、
   `@earendil-works/pi-agent-core`、`@earendil-works/pi-ai` 和
   `@earendil-works/pi-coding-agent` 解析到应用自带的副本；`@earendil-works/pi-tui`

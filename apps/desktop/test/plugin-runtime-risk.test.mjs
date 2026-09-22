@@ -80,6 +80,9 @@ test("native plugin notifications stay behind the existing notify permission", (
 test("workspace deletion and panel operations stay bounded", () => {
   assert.match(runtimeSrc, /PANEL_SKILL_CHANNELS/);
   assert.match(runtimeSrc, /method: "panel.invoke"/);
+  // A forwarded renderer call takes the same child channel, so it cannot reach
+  // a plugin's entry without the broker either.
+  assert.match(runtimeSrc, /method: "renderer\.call"/);
   assert.match(runtimeSrc, /"fs.remove"/);
   assert.match(runtimeSrc, /recursive: false/);
   assert.match(runtimeSrc, /cannot remove the root itself/);
@@ -90,6 +93,37 @@ test("workspace deletion and panel operations stay bounded", () => {
   // A single-file remove in a loop empties a workspace as well as `rm -rf`;
   // the rolling window is what tells the two apart.
   assert.match(runtimeSrc, /MAX_DELETES_PER_WINDOW/);
+});
+
+test("a forwarded renderer call is re-checked against the manifest the host loaded", () => {
+  const pluginIpcSrc = readMainModuleSync("ipc/plugin-ipc.ts");
+  // The renderer names its own plugin, so the handler routes the call into the
+  // runtime and carries no declaration a caller could choose.
+  assert.match(pluginIpcSrc, /IPC\.invoke\.pluginRendererCall/);
+  assert.match(pluginIpcSrc, /plugins\.invokeRendererCall\(/);
+  assert.doesNotMatch(pluginIpcSrc, /input\.rendererActions|input\.rendererData/);
+  // The declaration is read from the manifest this process validated at load,
+  // never from anything the renderer sent (ADR 0294 decision 5), and the call
+  // goes to that plugin's own entry over the child channel the panel bridge
+  // already uses.
+  assert.match(
+    runtimeSrc,
+    /\(loaded\.manifest\.rendererActions \?\? \[\]\)\.includes\(RENDERER_CALL_ACTION\)/,
+  );
+  assert.match(runtimeSrc, /PLUGIN_RENDERER_CALL_TIMEOUT_MS/);
+  for (const code of [
+    "PLUGIN_CALL_INVALID",
+    "PLUGIN_CALL_UNKNOWN_PLUGIN",
+    "PLUGIN_CALL_UNDECLARED",
+    "PLUGIN_CALL_NO_ENTRY",
+    "PLUGIN_CALL_NO_PROCESS",
+    "PLUGIN_CALL_TIMEOUT",
+  ]) {
+    assert.match(runtimeSrc, new RegExp(code));
+  }
+  // A UI-only plugin gets a coded refusal, not another entry's answer.
+  assert.match(runtimeSrc, /declares no headless entry to forward to/);
+  assert.match(protocolSrc, /pluginRendererCall: "pi-desktop\/plugin\/renderer\/call"/);
 });
 
 test("the plugins page shows the file scope behind a file permission", () => {
@@ -213,9 +247,16 @@ test("marketplace package downloads stay inside the host allowlist", () => {
   );
   assert.match(hostSrc, /fn package_host_allowed\(package_url: &str, catalog_url: &str\) -> Result<\(\)>/);
   // Refuse before the request leaves the machine, then hold the redirect
-  // chain to the same rule: a release asset always redirects.
-  assert.match(hostSrc, /package_host_allowed\(&info\.url, &catalog_url\)\?;/);
-  assert.match(hostSrc, /download_url_guarded\(&info\.url, Some\(&catalog_url\)\)/);
+  // chain to the same rule: a release asset always redirects. Every package
+  // URL passes through this one path, whichever channel named it — the
+  // official channel's mirror list included.
+  assert.match(hostSrc, /package_host_allowed\(url, &catalog_url\)\?;/);
+  // The observed downloader is the same boundary: it refuses an off-allowlist
+  // host before the request and re-checks the effective URL after redirects.
+  assert.match(
+    hostSrc,
+    /download_url_observed\(\s*url,\s*Some\(&catalog_url\),\s*expected_size,\s*report\)/,
+  );
   assert.match(hostSrc, /"--proto-redir"\.into\(\)/);
   assert.match(hostSrc, /"%\{url_effective\}"\.into\(\)/);
   assert.match(hostSrc, /must not embed credentials/);
@@ -245,7 +286,7 @@ test("a withdrawn version is never offered and never silently disabled", () => {
 test("verified trust is not something a catalog entry can grant itself", () => {
   const hostSrc = marketplaceSrc;
   assert.match(hostSrc, /fn resolve_trust\(&self, entry: &MarketCatalogEntry\) -> String/);
-  assert.match(hostSrc, /"verified" if self\.is_official_market_source\(\) => "verified"/);
+  assert.match(hostSrc, /"verified" if self\.is_trusted_channel\(\) => "verified"/);
   assert.match(hostSrc, /"verified" => "community"/);
 
   assert.match(pageSrc, /function showsVerifiedBadge\(/);

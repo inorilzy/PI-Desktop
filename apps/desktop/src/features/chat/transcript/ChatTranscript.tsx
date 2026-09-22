@@ -1,4 +1,4 @@
-import { memo } from "react";
+import { memo, useMemo } from "react";
 import { useTranslation } from "react-i18next";
 import type { PlanningState, UiMessage } from "@pi-desktop/shared";
 import { proposalKindForMode } from "@pi-desktop/shared";
@@ -19,7 +19,10 @@ import { TranscriptHistory, TranscriptTail } from "./AssistantTurn";
 import { useTranscriptScroll } from "./hooks/useTranscriptScroll";
 import type { TranscriptSearchTarget } from "../../../lib/transcript-reading";
 import { TranscriptSearchContext } from "../../../lib/transcript-search-context";
+import { PluginSlot } from "../../../plugins/renderer-slots/SlotOutlet";
+import { useRendererCandidates } from "../../../plugins/renderer-slots/use-renderer-candidates";
 import { DisclosureAnchorContext } from "../../../lib/disclosure-anchor-context";
+import { inlineConfirmSlotProps } from "./model";
 
 export const ChatTranscript = memo(function ChatTranscript({
   sessionId,
@@ -64,6 +67,19 @@ export const ChatTranscript = memo(function ChatTranscript({
 }) {
   const { t } = useTranslation();
   const transcriptRunning = isRunning && !readingWindow;
+  // Slot 7 (`inlineConfirm`): the host's inline confirmation card is the
+  // permission request it renders below the transcript, so that is the position
+  // a plugin's own card takes. A replace position is handed the data it stands
+  // in for, so the mount hands the pending request over in the slot's own
+  // shape — the component re-renders the confirmation instead of a blank card.
+  const inlineConfirmCandidates = useRendererCandidates();
+  const inlineConfirmProps = useMemo(
+    () =>
+      pendingPermission
+        ? inlineConfirmSlotProps(pendingPermission, queuedPermissions ?? 0)
+        : undefined,
+    [pendingPermission, queuedPermissions],
+  );
   const latestTurnResult = useAppStore((state) =>
     sessionId ? state.latestTurnResults[sessionId] : undefined,
   );
@@ -243,11 +259,17 @@ export const ChatTranscript = memo(function ChatTranscript({
             />
           ) : null}
           {pendingPermission ? (
-            <PermissionCard
-              key={pendingPermission.requestId}
-              permission={pendingPermission}
-              queued={queuedPermissions}
-            />
+            <PluginSlot
+              slot="inlineConfirm"
+              slotProps={inlineConfirmProps}
+              candidates={inlineConfirmCandidates}
+            >
+              <PermissionCard
+                key={pendingPermission.requestId}
+                permission={pendingPermission}
+                queued={queuedPermissions}
+              />
+            </PluginSlot>
           ) : null}
           {runtimeStatusLane ? (
             <div className="transcript-runtime-status">

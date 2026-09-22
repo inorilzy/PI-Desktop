@@ -1,0 +1,202 @@
+<!-- status: draft · issue #545 · branch feat/528-plugin-slots -->
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>提示与浮层 · 需求</title>
+<style>
+  :root{
+    --bg:#0e0e0e; --surface:#161616; --line:#2a2a2a; --line-2:#353535;
+    --text:#ededed; --text-2:#b0b0b0; --muted:#7d7d7d; --faint:#5c5c5c;
+    --ok:#40c977; --ok-bg:rgba(64,201,119,.10);
+    --warn:#ff8549; --warn-bg:rgba(255,133,73,.10);
+    --ui:#c27aff; --ui-bg:rgba(194,122,255,.10);
+    --red:#ff6764; --red-bg:rgba(255,103,100,.10);
+    --font:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;
+    --mono:ui-monospace,"SF Mono","Cascadia Code",Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0}
+  body{background:var(--bg);color:var(--text);font-family:var(--font);font-size:14px;line-height:1.65;-webkit-font-smoothing:antialiased}
+  .top{border-bottom:1px solid var(--line);padding:24px 28px 20px;background:linear-gradient(180deg,#141414,#0e0e0e)}
+  .top .crumb{font-family:var(--mono);font-size:11.5px;color:var(--faint);letter-spacing:.06em}
+  .top h1{margin:6px 0 6px;font-size:21px;letter-spacing:-.01em}
+  .top p{margin:0;color:var(--text-2);max-width:80ch}
+  .top .meta{margin-top:8px;color:var(--faint);font-size:12.5px}
+  code{font-family:var(--mono);font-size:12.5px;color:var(--text-2)}
+  main{max-width:920px;margin:0 auto;padding:24px 28px 80px}
+  section{margin:0 0 40px}
+  section > h2{display:flex;align-items:baseline;gap:8px;margin:0 0 10px;font-size:17px;border-top:1px solid var(--line);padding-top:14px}
+  section > h2 .tag{font-family:var(--mono);font-size:11px;padding:1px 6px;border-radius:4px}
+  .tag.decided{color:var(--ok);background:var(--ok-bg)}
+  .tag.proposal{color:var(--warn);background:var(--warn-bg)}
+  .tag.open{color:var(--ui);background:var(--ui-bg)}
+  h3{margin:22px 0 6px;font-size:14.5px;color:var(--text)}
+  p{margin:0 0 10px}
+  ul{margin:0 0 12px;padding-left:1.2em}
+  li{margin:3px 0}
+  table{width:100%;border-collapse:collapse;font-size:13.5px;margin:0 0 14px}
+  th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{color:var(--muted);font-weight:500;font-size:12px;letter-spacing:.03em;text-transform:uppercase}
+  td.id{font-family:var(--mono);font-size:12.5px;color:var(--text-2);white-space:nowrap}
+  .callout{margin:0 0 14px;padding:11px 13px;border-radius:9px;background:var(--surface);color:var(--text-2);font-size:13px}
+  .callout.decided{border-left:2px solid var(--ok)}
+  .callout.warn{border-left:2px solid var(--warn)}
+  .callout.open{border-left:2px solid var(--ui)}
+  .callout b{color:var(--text);font-weight:560}
+  .ba{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin:0 0 14px}
+  .ba > div{padding:11px 13px;border-radius:9px;background:var(--surface);font-size:13px}
+  .ba .was{border-left:2px solid var(--faint)}
+  .ba .now{border-left:2px solid var(--ok)}
+  .ba h4{margin:0 0 6px;font-size:11.5px;font-family:var(--mono);color:var(--muted);letter-spacing:.06em;text-transform:uppercase;font-weight:500}
+  .plan-nav{display:flex;flex-wrap:wrap;align-items:center;gap:4px;padding:10px 28px;background:#0c0c0c;border-bottom:1px solid var(--line);font-size:13px}
+  .plan-nav a{color:var(--text-2);text-decoration:none;padding:3px 8px;border-radius:6px}
+  .plan-nav a:hover{background:var(--surface);color:var(--text)}
+  .plan-nav a[aria-current="page"]{background:var(--surface);color:var(--text);box-shadow:inset 0 0 0 1px var(--line-2)}
+  .plan-nav .sep{color:var(--faint);padding:0 2px}
+  .plan-nav .spacer{flex:1}
+  @media (max-width:720px){.ba{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+
+<nav class="plan-nav">
+  <a href="../../index.html">插件插槽目录</a>
+  <span class="sep">/</span>
+  <a href="index.html">提示与浮层</a>
+  <span class="spacer"></span>
+  <a href="index.html">目录</a>
+  <a href="requirements.html" aria-current="page">需求</a>
+  <a href="demo.html">演示</a>
+  <a href="data-flow.html">数据流</a>
+</nav>
+
+<header class="top">
+  <div class="crumb">docs/plugin-plan · ui/layers</div>
+  <h1>提示与浮层 · 需求</h1>
+  <p>插件向用户要一次确认怎么办：<code>ui.confirm()</code> 固定格式确认卡。宿主不养层机制，插件不能接管权限审批卡。要全屏弹窗 / 角落浮层 → <code>ui/self-dialog/</code>（插件自理，另立文件夹）。</p>
+  <div class="meta">status: draft · issue #545 · 对照 demo.html · 数据流</div>
+</header>
+
+<main>
+<section>
+  <h2>范围 <span class="tag decided">已定</span></h2>
+  <ul>
+    <li><b>确认卡</b>：插件向用户发起一次确认 / 选择 / 知会，走渲染进程 API <code>ui.confirm()</code>，固定格式，点击回调。</li>
+    <li>不谈：弹窗 / 悬浮层的插件自理（另立文件夹 <code>ui/self-dialog/</code>）、宿主自己权限审批卡的内部实现（宿主的事）、<code>ui.toast</code>（已有）、通知中心。</li>
+  </ul>
+</section>
+
+<section>
+  <h2>确认卡 · 固定格式 <span class="tag decided">已定</span></h2>
+  <p>一条横栏，不是居中弹窗：与输入框<b>同宽（窄 5px）、紧贴输入框上方、无间距、无底部阴影</b>；左边内容、右边按钮。卡壳、位置、按钮样式全是宿主的。</p>
+  <table>
+    <thead><tr><th>部分</th><th>归谁</th><th>说明</th></tr></thead>
+    <tbody>
+      <tr><td class="id">位置 / 卡壳</td><td>宿主</td><td>消息流末尾、与权限审批卡同一个位置；宽度、边框、圆角、排版固定</td></tr>
+      <tr><td class="id">标题</td><td>插件（参数）</td><td>一行文字 + <code>ui.confirm</code> 来源徽标</td></tr>
+      <tr><td class="id">内容</td><td>插件（参数）</td><td>固定字段的文案（描述 / 明细行），宿主排版；<b>不接受组件、不让自绘</b>——要自由界面走 <code>ui/self-dialog/</code></td></tr>
+      <tr><td class="id">按钮</td><td>插件（配置）/ 宿主（样式）</td><td><code>actions: [{ id, label, variant }]</code>，≤3 个；样式宿主固定，文案插件给；支持下拉形态（主钮 + 箭头展开候选）</td></tr>
+      <tr><td class="id">结果</td><td>宿主 → 插件</td><td>用户点击后 <code>Promise</code> 回调按下的 actionId / "ok" / "cancel"</td></tr>
+    </tbody>
+  </table>
+
+  <h3>三种卡型 <span class="tag decided">已定</span></h3>
+  <table>
+    <thead><tr><th>卡型</th><th>按钮</th><th>结果</th></tr></thead>
+    <tbody>
+      <tr><td class="id">confirm 确认</td><td>2 钮（取消 + 主操作）</td><td><code>"ok" | "cancel"</code></td></tr>
+      <tr><td class="id">choice 选择</td><td>主操作 + 下拉候选（≤3 项）</td><td>按下的 actionId</td></tr>
+      <tr><td class="id">alert 知会</td><td>1 钮</td><td><code>"ok"</code></td></tr>
+    </tbody>
+  </table>
+
+  <h3>排队与兼容 <span class="tag decided">已定</span></h3>
+  <ul>
+    <li><b>权限请求永远第一优先</b>：宿主权限审批卡出现时立即插队显示，插件确认卡退回队列、折叠成一条（只留标题 + 排队中徽标），权限卡头部显示「确认卡 N 张等待」。</li>
+    <li><b>插件确认卡 FIFO</b>：同队列一次只显示一张，其余折叠成条；与权限卡的「队首 + 计数徽标」同款语义。</li>
+    <li><b>不响应 Esc</b>：与权限审批卡一致，必须点按钮。</li>
+    <li><b>不设超时</b>：权限卡的倒计时超时自动拒绝是安全设计，确认卡不沿用；插件卸载是唯一的服务端取消。</li>
+    <li>插件被禁用 / 卸载：显示中的卡片移除，排队中的条目移除，所有挂起的 <code>await</code> 收到 <code>{ choice: "cancel", reason: "plugin-unloaded" }</code>。</li>
+  </ul>
+  <div class="callout decided"><b>不提供接管。</b>插件不能认领、重画、替换宿主的权限审批卡——那张卡只属于宿主。旧 <code>inlineConfirm</code> 接管槽在重设计中取消。</div>
+</section>
+
+<section>
+  <h2>插件场景 <span class="tag decided">已定</span></h2>
+  <table>
+    <thead><tr><th>#</th><th>场景</th><th>demo</th></tr></thead>
+    <tbody>
+      <tr><td>1</td><td>权限审批卡（宿主默认形态：横栏 + 下拉选择按钮）</td><td>场景 1</td></tr>
+      <tr><td>2</td><td>ui.confirm 确认卡（固定卡壳 + 参数内容）</td><td>场景 2</td></tr>
+      <tr><td>3</td><td>三种卡型：confirm / choice / alert</td><td>场景 3</td></tr>
+      <tr><td>4</td><td>排队：权限插队、FIFO、折叠成条</td><td>场景 4</td></tr>
+      <tr><td>5</td><td>边界：插件停用、卸载 cancel、权限插队</td><td>场景 5</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<section>
+  <h2>本轮拍板 <span class="tag decided">已定</span></h2>
+  <table>
+    <thead><tr><th>问题</th><th>结论</th></tr></thead>
+    <tbody>
+      <tr><td>确认卡是插槽还是 API</td><td><b>API</b>（<code>ui.confirm()</code>）。固定格式：卡壳宿主、内容走参数、按钮配置化、点击回调。不提供接管宿主审批卡</td></tr>
+      <tr><td>ui.confirm 属于哪一档</td><td><b>属于 renderer</b>：权限归 renderer 档（<code>renderer.extension</code>），不单列权限</td></tr>
+      <tr><td>确认卡长什么样</td><td>与输入框同宽（窄 5px）紧贴其上的横栏，左内容右按钮；不是居中弹窗、无遮罩</td></tr>
+      <tr><td>按钮形态</td><td>单钮或下拉选择钮（主钮 + 箭头展开候选）；≤3 个；样式宿主固定</td></tr>
+      <tr><td>内容怎么来</td><td><b>只传参</b>。固定字段的文案（标题 + 描述），宿主排版；<b>不做内容组件、不让自绘</b>——动态 / 自由界面走自理弹窗（<code>ui/self-dialog/</code>）</td></tr>
+      <tr><td>modal / overlay 槽</td><td><b>取消</b>。注册制（modal 先注先得、全局一个）堵其他插件的路；弹窗 / 悬浮层改插件自理，另立文件夹 <code>ui/self-dialog/</code>；现有 <code>ui.openModal</code> 等四个动作移除（实现批次处理）</td></tr>
+      <tr><td>多插件同时要浮层</td><td>后开的在上，宿主不仲裁——见 <code>ui/self-dialog/</code> 四条底线</td></tr>
+      <tr><td>inline-confirm 接管语义</td><td><b>取消</b>。宿主权限审批卡不可认领、不可改画</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<section>
+  <h2>和现状的关系 <span class="tag decided">边界改口</span></h2>
+  <p>这是产品设计决定，不是实现漏项。实现侧的迁移（删槽位、删动作、改 showcase 示例与测试）排批次处理，不在本目录。</p>
+  <div class="ba">
+    <div class="was">
+      <h4>现状（已实现，spec 07-plugins/16 §2A.5–2A.7）</h4>
+      <ul>
+        <li><code>inlineConfirm</code> 接管槽：插件重画宿主权限审批卡</li>
+        <li><code>modal</code> replace 槽：先注先得，全局一个</li>
+        <li><code>overlay</code> additive 槽 + <code>ui.openModal</code> / <code>ui.closeModal</code> / <code>ui.openOverlay</code> / <code>ui.closeOverlay</code> 四个动作；「层的出现即注册」</li>
+      </ul>
+    </div>
+    <div class="now">
+      <h4>重设计</h4>
+      <ul>
+        <li><code>ui.confirm()</code> 固定格式确认卡（渲染进程 API）</li>
+        <li>弹窗 / 悬浮层自理 → <code>ui/self-dialog/</code>（独立文件夹，含样式说明）</li>
+        <li>接管槽、modal / overlay 槽、四个层动作全部移除</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<section>
+  <h2>还没定的事 <span class="tag open">未定</span></h2>
+  <ul>
+    <li>confirm 卡型是否自动补「取消」钮（插件只给主操作时）。</li>
+    <li>下拉候选的 variant 是否允许每项单独定（当前建议整钮一档）。</li>
+    <li>choice 卡型下拉候选的键盘导航细节。</li>
+    <li>描述文案允许的长度与换行（超长截断还是撑高横栏）。</li>
+  </ul>
+</section>
+
+<section>
+  <h2>明确不做 <span class="tag decided">已定</span></h2>
+  <ul>
+    <li>不让插件接管、重画、替换宿主的权限审批卡，也不让改确认卡的卡壳和按钮样式。</li>
+    <li>不给宿主层机制：确认卡不走注册、不参与抢注仲裁（弹窗 / 悬浮层的自理规则见 <code>ui/self-dialog/</code>）。</li>
+    <li>不做居中遮罩式的宿主确认 API——确认卡就是输入框上方那条横栏。</li>
+    <li>不让确认卡进宿主权限队列的决策路径：卡片只是问用户，决策（允许 / 拒绝）永远走宿主审批卡。</li>
+  </ul>
+</section>
+
+</main>
+</body>
+</html>

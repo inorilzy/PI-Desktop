@@ -1,0 +1,150 @@
+<!-- status: draft · issue #561 · branch feat/528-plugin-slots -->
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>turn-recap · 需求</title>
+<style>
+  :root{
+    --bg:#0e0e0e; --surface:#161616; --line:#2a2a2a; --line-2:#353535;
+    --text:#ededed; --text-2:#b0b0b0; --muted:#7d7d7d; --faint:#5c5c5c;
+    --ok:#40c977; --ok-bg:rgba(64,201,119,.10);
+    --warn:#ff8549; --warn-bg:rgba(255,133,73,.10);
+    --ui:#c27aff; --ui-bg:rgba(194,122,255,.10);
+    --font:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;
+    --mono:ui-monospace,"SF Mono","Cascadia Code",Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0}
+  body{background:var(--bg);color:var(--text);font-family:var(--font);font-size:14px;line-height:1.65;-webkit-font-smoothing:antialiased}
+  .top{border-bottom:1px solid var(--line);padding:24px 28px 20px;background:linear-gradient(180deg,#141414,#0e0e0e)}
+  .top .crumb{font-family:var(--mono);font-size:11.5px;color:var(--faint);letter-spacing:.06em}
+  .top h1{margin:6px 0 6px;font-size:21px;letter-spacing:-.01em}
+  .top p{margin:0;color:var(--text-2);max-width:80ch}
+  .top .meta{margin-top:8px;color:var(--faint);font-size:12.5px}
+  code{font-family:var(--mono);font-size:12.5px;color:var(--text-2)}
+  main{max-width:920px;margin:0 auto;padding:24px 28px 80px}
+  section{margin:0 0 40px}
+  section > h2{display:flex;align-items:baseline;gap:8px;margin:0 0 10px;font-size:17px;border-top:1px solid var(--line);padding-top:14px}
+  section > h2 .tag{font-family:var(--mono);font-size:11px;padding:1px 6px;border-radius:4px}
+  .tag.verified{color:var(--ok);background:var(--ok-bg)}
+  .tag.proposal{color:var(--warn);background:var(--warn-bg)}
+  .tag.open{color:var(--ui);background:var(--ui-bg)}
+  h3{margin:22px 0 6px;font-size:14.5px;color:var(--text)}
+  p{margin:0 0 10px}
+  ul{margin:0 0 12px;padding-left:1.2em}
+  li{margin:3px 0}
+  table{width:100%;border-collapse:collapse;font-size:13.5px;margin:0 0 14px}
+  th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{color:var(--muted);font-weight:500;font-size:12px;letter-spacing:.03em;text-transform:uppercase}
+  td.id{font-family:var(--mono);font-size:12.5px;color:var(--text-2);white-space:nowrap}
+  .callout{margin:0 0 14px;padding:11px 13px;border-radius:9px;background:var(--surface);color:var(--text-2);font-size:13px}
+  .callout.verified{border-left:2px solid var(--ok)}
+  .callout.warn{border-left:2px solid var(--warn)}
+  .callout.open{border-left:2px solid var(--ui)}
+  .callout b{color:var(--text);font-weight:560}
+  .plan-nav{display:flex;flex-wrap:wrap;align-items:center;gap:4px;padding:10px 28px;background:#0c0c0c;border-bottom:1px solid var(--line);font-size:13px}
+  .plan-nav a{color:var(--text-2);text-decoration:none;padding:3px 8px;border-radius:6px}
+  .plan-nav a:hover{background:var(--surface);color:var(--text)}
+  .plan-nav a[aria-current="page"]{background:var(--surface);color:var(--text);box-shadow:inset 0 0 0 1px var(--line-2)}
+  .plan-nav .sep{color:var(--faint);padding:0 2px}
+  .plan-nav .spacer{flex:1}
+</style>
+</head>
+<body>
+
+<nav class="plan-nav">
+  <a href="../../index.html">插件插槽目录</a>
+  <span class="sep">/</span>
+  <a href="index.html">turn-recap</a>
+  <span class="spacer"></span>
+  <a href="index.html">目录</a>
+  <a href="requirements.html" aria-current="page">需求</a>
+  <a href="data-flow.html">数据流</a>
+</nav>
+
+<header class="top">
+  <div class="crumb">docs/plugin-plan · runtime/turn-recap</div>
+  <h1>turn-recap · 需求</h1>
+  <p>插件的对话回读 API：轮范围看事实，会话范围看最近消息行。只读、拉取式、有上限。</p>
+  <div class="meta">status: draft · issue #561 · 槽 <code>runtime.turn.recap</code> · 风险 high</div>
+</header>
+
+<main>
+<section>
+  <h2>范围 <span class="tag verified">已核实</span></h2>
+  <ul>
+    <li><b>拉取式读取</b>：插件自己调 <code>pi.recap()</code>，不是推送事件。</li>
+    <li>不谈：轮过程观察（turn-watch）、写路径（无）、压缩前拦截（session-lifecycle 的 before_compact）。</li>
+  </ul>
+</section>
+
+<section>
+  <h2>现状（代码核实） <span class="tag verified">已核实</span></h2>
+  <ul>
+    <li><b>已实现，非禁用</b>：槽 8 API <code>recap: "runtime.turn.recap"</code>（<code>trusted-extensions.ts:478</code>），风险 high（<code>model.ts:67</code>）；实现走 host <code>session.get</code>（<code>runtime.ts:2780-2786</code>）。总表「桌面端禁了」不成立。</li>
+    <li><b>会话范围要双权限</b>：<code>runtime.turn.recap</code> + <code>runtime.session.read</code>（<code>trusted-extensions.ts:490, 502-509</code>）。</li>
+    <li><b>单轮正文缺口</b>：turn 范围返回 <code>messages: null</code>、<code>messagesUnavailable: "no-host-turn-read"</code>（<code>trusted-extensions.ts:711-728</code>）——<b>一轮的对话文本在宿主侧没有读取口</b>，这不是开关，是要新写的宿主能力。</li>
+    <li><b>行数上限</b>：默认 200，封顶 500（<code>trusted-extensions.ts:512-515</code>）。</li>
+  </ul>
+</section>
+
+<section>
+  <h2>契约（建议，待拍板） <span class="tag proposal">建议</span></h2>
+  <table>
+    <thead><tr><th>方面</th><th>内容</th></tr></thead>
+    <tbody>
+      <tr><td class="id">调用</td><td><code>pi.recap({ scope, turnId?, limit? })</code>——拉取式，任意时刻可调</td></tr>
+      <tr><td class="id">scope: "turn"</td><td>返回该轮<b>事实</b>（状态、token、工具计数、动过的文件）；<b>没有正文</b></td></tr>
+      <tr><td class="id">scope: "session"</td><td>返回最近消息行 + <code>truncated</code> 标记；默认 200 行，上限 500</td></tr>
+      <tr><td class="id">权限</td><td><code>runtime.turn.recap</code>（high）；会话范围追加 <code>runtime.session.read</code></td></tr>
+    </tbody>
+  </table>
+  <div class="callout warn"><b>单轮正文是独立缺口。</b>想在 closing 钩子里看「这轮说了什么」来决定续不续——现在做不到：recap 给不了，需要宿主新开一轮文本读取（新宿主能力，不是解锁）。</div>
+</section>
+
+<section>
+  <h2>插件场景（建议） <span class="tag proposal">建议</span></h2>
+  <table>
+    <thead><tr><th>#</th><th>场景</th></tr></thead>
+    <tbody>
+      <tr><td>1</td><td>会话摘要卡片：定期拉最近 200 行，在自己面板生成摘要</td></tr>
+      <tr><td>2</td><td>协作插件：turn 结束后按 turnId 拉该轮事实，决定是否续跑（配合 closing）</td></tr>
+      <tr><td>3</td><td>检索辅助：在会话行里做本地全文检索</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<section>
+  <h2>本轮拍板 <span class="tag open">待定</span></h2>
+  <table>
+    <thead><tr><th>问题</th><th>选项</th></tr></thead>
+    <tbody>
+      <tr><td>单轮正文读取</td><td>A. 维持缺口（turn 范围只有事实）　B. 宿主新开 per-turn 文本读取（新 host-core 能力）</td></tr>
+      <tr><td>行数上限</td><td>A. 维持 200/500　B. 可调</td></tr>
+      <tr><td>目录现状列</td><td>「桌面端禁了」改为「已实现（turn=事实 / session=行）」</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<section>
+  <h2>还没定的事 <span class="tag open">未定</span></h2>
+  <ul>
+    <li>上面三条。</li>
+  </ul>
+</section>
+
+<section>
+  <h2>明确不做 <span class="tag verified">已核实</span></h2>
+  <ul>
+    <li>不给无上限拉取——500 行封顶。</li>
+    <li>不给写路径——recap 只读。</li>
+    <li>不做推送——拉取式；要事件流去 turn-watch。</li>
+    <li>不跨会话——只读本插件所在的会话。</li>
+  </ul>
+</section>
+
+</main>
+</body>
+</html>

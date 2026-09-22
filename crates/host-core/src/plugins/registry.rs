@@ -23,8 +23,15 @@ pub struct PluginManager {
     /// build stops shipping must stop being protected immediately, whatever the
     /// row that survives it looks like.
     pub(crate) bundled_ids: BTreeSet<String>,
-    /// Catalog URL pinned by app settings; `None` keeps the official default.
-    pub(crate) market_source: Option<String>,
+    /// Catalog channel pinned by app settings, and the URL for `custom`.
+    pub(crate) market_channel: MarketChannel,
+    pub(crate) market_custom_url: Option<String>,
+    /// Cancel token of the install currently running, when one is.
+    ///
+    /// The renderer's cancel action flips it and the download loop reads it.
+    /// Only one install runs at a time — the RPC that starts one holds the
+    /// state lock — so a single slot is enough.
+    pub(crate) install_cancel: Option<CancelToken>,
     /// Locale a row's display fields are resolved against.
     ///
     /// The desktop shell owns the app language — `settings.language`, or the
@@ -34,17 +41,23 @@ pub struct PluginManager {
 }
 
 impl PluginManager {
-    /// Build a manager against a specific catalog source.
+    /// Build a manager against a specific catalog channel.
     ///
-    /// The source is applied before the first catalog fetch so a mirror
-    /// configured in settings is honoured on the very first launch, not only
-    /// after an explicit refresh.
-    pub fn new(data_dir: &Path, market_source: Option<String>) -> Self {
+    /// The channel is applied before the first catalog fetch so a non-default
+    /// source configured in settings is honoured on the very first launch, not
+    /// only after an explicit refresh.
+    pub fn new(
+        data_dir: &Path,
+        market_channel: MarketChannel,
+        market_custom_url: Option<String>,
+    ) -> Self {
         let mut mgr = Self {
             data_dir: data_dir.to_path_buf(),
             runtime: Vec::new(),
             bundled_ids: BTreeSet::new(),
-            market_source,
+            market_channel,
+            market_custom_url,
+            install_cancel: None,
             locale: "en".into(),
         };
         let _ = mgr.ensure_dirs();
@@ -133,6 +146,8 @@ impl PluginManager {
                     fs: manifest.fs.clone(),
                     settings: derive_settings(&manifest),
                     i18n: manifest.i18n.clone(),
+                    renderer_data: manifest.renderer_data.clone(),
+                    renderer_actions: manifest.renderer_actions.clone(),
                 });
             }
         }
@@ -264,6 +279,8 @@ impl PluginManager {
             };
             plugin.settings = derive_settings(&manifest);
             plugin.i18n = manifest.i18n.clone();
+            plugin.renderer_data = manifest.renderer_data.clone();
+            plugin.renderer_actions = manifest.renderer_actions.clone();
         }
         Ok(())
     }
@@ -317,6 +334,8 @@ impl PluginManager {
             fs: manifest.fs.clone(),
             settings: derive_settings(&manifest),
             i18n: manifest.i18n.clone(),
+            renderer_data: manifest.renderer_data.clone(),
+            renderer_actions: manifest.renderer_actions.clone(),
         };
         self.upsert_summary(summary)
     }

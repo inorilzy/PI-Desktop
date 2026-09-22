@@ -1,0 +1,303 @@
+<!-- status: draft · issue #545 · branch feat/528-plugin-slots -->
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>工具调用卡 · 数据流</title>
+<style>
+  :root{
+    --bg:#0e0e0e; --surface:#161616; --surface-2:#1b1b1b; --line:#2a2a2a; --line-2:#353535;
+    --text:#ededed; --text-2:#b0b0b0; --muted:#7d7d7d; --faint:#5c5c5c;
+    --host:#4c8dff; --host-bg:rgba(76,141,255,.10);
+    --plugin:#c27aff; --plugin-bg:rgba(194,122,255,.10);
+    --slot:#ff8549; --slot-bg:rgba(255,133,73,.10);
+    --ok:#40c977; --ok-bg:rgba(64,201,119,.10);
+    --red:#ff6764; --red-bg:rgba(255,103,100,.10);
+    --font:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;
+    --mono:ui-monospace,"SF Mono","Cascadia Code",Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0}
+  body{background:var(--bg);color:var(--text);font-family:var(--font);font-size:14px;line-height:1.65;-webkit-font-smoothing:antialiased}
+  .top{border-bottom:1px solid var(--line);padding:24px 28px 20px;background:linear-gradient(180deg,#141414,#0e0e0e)}
+  .top .crumb{font-family:var(--mono);font-size:11.5px;color:var(--faint);letter-spacing:.06em}
+  .top h1{margin:6px 0;font-size:21px}
+  .top p{margin:0;color:var(--text-2);max-width:80ch}
+  .top .meta{margin-top:8px;color:var(--faint);font-size:12.5px}
+  code{font-family:var(--mono);font-size:12.5px;color:var(--text-2)}
+  main{max-width:960px;margin:0 auto;padding:24px 28px 90px}
+  section{margin:0 0 44px}
+  section > h2{display:flex;align-items:baseline;gap:8px;margin:0 0 6px;font-size:17px;border-top:1px solid var(--line);padding-top:14px}
+  section > h2 .n{font-family:var(--mono);font-size:11.5px;color:var(--muted)}
+  section > h2 .tag{font-family:var(--mono);font-size:11px;padding:1px 6px;border-radius:4px}
+  .tag.decided{color:var(--ok);background:var(--ok-bg)}
+  .tag.proposal{color:var(--slot);background:var(--slot-bg)}
+  .lead{margin:0 0 14px;color:var(--text-2);max-width:82ch}
+  h3{margin:20px 0 6px;font-size:14.5px}
+  p{margin:0 0 10px}
+  ul{margin:0 0 12px;padding-left:1.2em}li{margin:3px 0}
+  table{width:100%;border-collapse:collapse;font-size:13.5px;margin:0 0 14px}
+  th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{color:var(--muted);font-weight:500;font-size:12px;text-transform:uppercase;letter-spacing:.03em}
+  td.id{font-family:var(--mono);font-size:12.5px;color:var(--text-2);white-space:nowrap}
+  pre{margin:0 0 14px;padding:12px 14px;border-radius:9px;background:#121212;border:1px solid var(--line);overflow-x:auto;font-family:var(--mono);font-size:12.5px;line-height:1.6;color:var(--text-2)}
+  pre .k{color:var(--plugin)}
+  pre .c{color:var(--faint)}
+  .callout{margin:0 0 14px;padding:11px 13px;border-radius:9px;background:var(--surface);color:var(--text-2);font-size:13px}
+  .callout.warn{border-left:2px solid var(--slot)}
+  .callout.stop{border-left:2px solid var(--red)}
+  .callout b{color:var(--text);font-weight:560}
+  .legend{display:flex;flex-wrap:wrap;gap:8px 16px;margin:0 0 14px;font-size:12.5px;color:var(--muted)}
+  .chip{display:inline-block;padding:1px 7px;border-radius:99px;font-size:11px;font-family:var(--mono)}
+  .chip.host{color:var(--host);background:var(--host-bg)}
+  .chip.plugin{color:var(--plugin);background:var(--plugin-bg)}
+  .chip.slot{color:var(--slot);background:var(--slot-bg)}
+
+  /* --- 三栏流向图 --- */
+  .flow{border:1px solid var(--line);border-radius:12px;background:var(--surface);overflow:hidden;margin:0 0 16px}
+  .flow-head{display:grid;grid-template-columns:1fr 1fr 1fr;border-bottom:1px solid var(--line);font-size:12px;color:var(--muted);font-family:var(--mono);letter-spacing:.04em}
+  .flow-head div{padding:9px 14px}
+  .flow-head div + div{border-left:1px solid var(--line)}
+  .flow-head .h{color:var(--host)}
+  .flow-head .s{color:var(--slot)}
+  .flow-head .p{color:var(--plugin)}
+  .flow-body{display:grid;grid-template-columns:1fr 1fr 1fr}
+  .lane{padding:12px 14px;font-size:13px}
+  .lane + .lane{border-left:1px solid var(--line)}
+  .lane ul{margin:0;padding:0;list-style:none}
+  .lane li{padding:5px 0;border-bottom:1px dashed var(--line)}
+  .lane li:last-child{border-bottom:0}
+  .lane .what{display:block;font-family:var(--mono);font-size:12px;color:var(--text)}
+  .lane .why{display:block;color:var(--muted);font-size:12px}
+  .arrow-row{display:grid;grid-template-columns:1fr 1fr 1fr;border-top:1px solid var(--line);background:var(--surface-2);font-family:var(--mono);font-size:12px;color:var(--muted)}
+  .arrow-row div{padding:8px 14px}
+  .arrow-row div + div{border-left:1px solid var(--line)}
+  .arrow-row .x{color:var(--host)}.arrow-row .y{color:var(--plugin)}
+  /* 顶部导航：目录内各页互相跳转 */
+  .plan-nav{display:flex;flex-wrap:wrap;align-items:center;gap:4px;padding:10px 28px;background:#0c0c0c;border-bottom:1px solid var(--line);font-size:13px}
+  .plan-nav a{color:var(--text-2);text-decoration:none;padding:3px 8px;border-radius:6px}
+  .plan-nav a:hover{background:var(--surface);color:var(--text)}
+  .plan-nav a[aria-current="page"]{background:var(--surface);color:var(--text);box-shadow:inset 0 0 0 1px var(--line-2)}
+  .plan-nav .sep{color:var(--faint);padding:0 2px}
+  .plan-nav .spacer{flex:1}
+</style>
+</head>
+<body>
+
+<nav class="plan-nav">
+  <a href="../../index.html">插件插槽目录</a>
+  <span class="sep">/</span>
+  <a href="index.html">工具调用卡</a>
+  <span class="spacer"></span>
+  <a href="index.html">目录</a>
+  <a href="requirements.html">需求</a>
+  <a href="demo.html">演示</a>
+  <a href="data-flow.html" aria-current="page">数据流</a>
+</nav>
+
+<header class="top">
+  <div class="crumb">docs/plugin-plan · ui/tool-card</div>
+  <h1>工具调用卡 · 数据流</h1>
+  <p>插件能拿到什么（一份固定格式的数据）、自己画什么、出错时发生什么。六节固定：接口约定 / 数据怎么走 / 出错怎么办 / 不提供什么 / 相关条目 / 还没定的事。</p>
+  <div class="meta">status: draft · issue #545 · 接口里的字段名是建议值，还没定</div>
+</header>
+
+<main>
+
+<!-- ============ 1 接口约定 ============ -->
+<section>
+  <h2><span class="n">1</span>接口约定 <span class="tag proposal">建议</span></h2>
+  <p class="lead">权限名沿用 <code>renderer.extension</code>：一个权限名管所有组件插槽，不用每个槽单独授权。</p>
+
+  <h3>认领方式（插件清单里声明）</h3>
+<pre>{
+  <span class="k">toolCards</span>: [
+    { <span class="k">tool</span>: "mcp_github_get-issue" },      <span class="c">// 只按工具全名认领，不做通配</span>
+    { <span class="k">tool</span>: "plugin_demo_db-query" },
+    { <span class="k">tool</span>: "plugin_demo_code-stats" }
+  ]
+}</pre>
+  <div class="callout warn">两个插件认领同一个全名：<b>安装的时候提示冲突</b>，让用户当场决定。已定的是：没被认领的工具永远走宿主默认卡。可认领的内置工具全名单见 <a href="requirements.html" style="color:var(--text-2)">requirements.html</a>；<b>Task / TaskWait / TaskList / TaskStop 本轮不开放认领</b>（拓扑画布与工作面板侧栏是独立的一层），认领了也不生效。</div>
+
+  <h3>插件能拿到的数据（固定格式）</h3>
+  <p>工具很多、返回各异。宿主先把每一次调用归一成下面这一份，再交给插件；<b>所有工具共用这一份格式</b>。原始返回块原样附在 <code>result.content</code> 里，不丢信息。</p>
+<pre>{
+  <span class="k">tool</span>: {
+    name,                        <span class="c">// 完整工具名，也是认领键：Read / mcp_github_get-issue / plugin_demo_db-query</span>
+    display,                     <span class="c">// 给人看的名字</span>
+    source: "host" | "plugin" | "mcp",
+    pluginId?, serverId?         <span class="c">// 来源是谁，host 来源没有这两项</span>
+  },
+  <span class="k">call</span>: {
+    id,                          <span class="c">// 这次调用的 id</span>
+    args,                        <span class="c">// 入参，工具收到什么这里就是什么</span>
+    status: "running" | "success" | "error",
+    startedAt, durationMs,
+    usage: { argumentTokens, resultTokens, totalTokens }
+  },
+  <span class="k">result</span>: {
+    text,                        <span class="c">// 拼好的文本结果（多段按顺序拼）；没有就是 null</span>
+    data,                        <span class="c">// 结构化结果（宿主详情或 MCP structuredContent），对象原样；没有就是 null</span>
+    content: [                   <span class="c">// 原始返回块，按工具返回的顺序</span>
+      { type: "text", text } | { type: "image", data, mimeType } | { type: "resource", … }
+    ],
+    isTruncated, notice
+  },
+  <span class="k">error</span>: { message, code } | null
+}</pre>
+  <div class="callout warn"><b>全量给，不设上限、不截断。</b>显示什么、怎么省是插件自己的事。数据里的 <code>isTruncated</code> 只反映工具自己截了（如 Bash 超长输出），宿主不额外截。</div>
+
+  <h3>宿主提供的现成组件</h3>
+  <p>想「跟 UI 一样」就渲染 <code>ToolCard</code>；想重绘可以只借里面的块组件。不是必须套的外壳。</p>
+  <table>
+    <thead><tr><th>组件</th><th>画什么</th><th>不用它的话，插件要自己做什么</th></tr></thead>
+    <tbody>
+      <tr><td class="id">ToolCard</td><td>整张默认卡：头部（动作词 / 摘要 / 芯片 / 状态点）+ 展开体</td><td>头部和展开体的全部信息自己排</td></tr>
+      <tr><td class="id">CodeBlock</td><td>带行号和语法高亮的代码块</td><td>高亮、行号、滚动自己处理</td></tr>
+      <tr><td class="id">FileList</td><td>可点击的文件列表</td><td>点击打开走 <code>openPreview</code></td></tr>
+      <tr><td class="id">MatchList</td><td>按文件分组的命中列表（带行号、命中高亮）</td><td>分组和高亮自己处理</td></tr>
+      <tr><td class="id">FieldsTable</td><td>字段名 / 值两列表</td><td>排版自己处理</td></tr>
+      <tr><td class="id">Chips</td><td>结果小芯片（行数 / 条数 / 退出码 / 已截断）</td><td>数字自己算</td></tr>
+    </tbody>
+  </table>
+
+  <h3>插件能调用的操作</h3>
+  <table>
+    <thead><tr><th>操作</th><th>做什么</th><th>什么时候不能用</th></tr></thead>
+    <tbody>
+      <tr><td class="id">openPreview(target)</td><td>用宿主现有的方式打开文件 / 网址（工作面板 / 文件视图 / 内置浏览器）</td><td>目标不存在时给个提示</td></tr>
+      <tr><td class="id">copy(text)</td><td>把一段文本放进系统剪贴板</td><td>—</td></tr>
+    </tbody>
+  </table>
+  <div class="callout warn">就这两个。凡是能让对话「等一下」的操作——提交、审批、取消调用、重新执行——都<b>不</b>在这个槽里。</div>
+</section>
+
+<!-- ============ 2 数据怎么走 ============ -->
+<section>
+  <h2><span class="n">2</span>数据怎么走 <span class="tag proposal">建议</span></h2>
+  <div class="legend">
+    <span><span class="chip host">host</span> 宿主页面</span>
+    <span><span class="chip slot">slot</span> 插槽边界</span>
+    <span><span class="chip plugin">plugin</span> 插件组件</span>
+  </div>
+
+  <div class="flow">
+    <div class="flow-head">
+      <div class="h">宿主（工具卡这一行）</div>
+      <div class="s">&lt;PluginSlot&gt; 插槽</div>
+      <div class="p">插件组件</div>
+    </div>
+    <div class="flow-body">
+      <div class="lane">
+        <ul>
+          <li><span class="what">归一后的固定数据</span><span class="why">这一次调用的全部显示数据，一次给全</span></li>
+          <li><span class="what">现成组件</span><span class="why">ToolCard / CodeBlock 等</span></li>
+          <li><span class="what">操作函数</span><span class="why">openPreview / copy，跟这次调用绑定</span></li>
+          <li><span class="what">出错隔离</span><span class="why">每张卡单独隔开</span></li>
+          <li><span class="what">带插件 id 的外层容器</span><span class="why">插件的样式只在这里生效</span></li>
+        </ul>
+      </div>
+      <div class="lane">
+        <ul>
+          <li><span class="what">位置</span><span class="why">这一次调用的卡整体</span></li>
+          <li><span class="what">认领匹配</span><span class="why">谁声明了这个工具全名，谁上；冲突在安装时就提示</span></li>
+          <li><span class="what">出错兜底</span><span class="why">报错就换回默认卡</span></li>
+          <li><span class="what">插件被关掉后</span><span class="why">这张卡变回默认卡，不留空位</span></li>
+        </ul>
+      </div>
+      <div class="lane">
+        <ul>
+          <li><span class="what">画界面</span><span class="why">复用默认卡，或整个自己画</span></li>
+          <li><span class="what">自己管状态</span><span class="why">选中、展开的子视图</span></li>
+          <li><span class="what">调用操作</span><span class="why">openPreview / copy</span></li>
+          <li><span class="what">加样式</span><span class="why">必须通过宿主提供的样式接口</span></li>
+        </ul>
+      </div>
+    </div>
+    <div class="arrow-row">
+      <div class="x">数据往下传 →</div>
+      <div class="x">同一个页面进程，直接传 →</div>
+      <div class="y">← 操作回调</div>
+    </div>
+  </div>
+
+  <h3>调用的一生，卡收到什么</h3>
+  <table>
+    <thead><tr><th>阶段</th><th>数据里的变化</th><th>宿主做什么</th></tr></thead>
+    <tbody>
+      <tr><td class="id">开始执行</td><td><code>status: "running"</code>，<code>args</code> 已完整，<code>result</code> 为空</td><td>按认领把卡交给插件</td></tr>
+      <tr><td class="id">执行中</td><td>流式输出按节拍（约 0.1 秒）更新 <code>result</code>，状态一直是 <code>running</code></td><td>每次更新把<b>新的一整份</b>数据递给插件重画；插件不用自己订阅</td></tr>
+      <tr><td class="id">成功 / 失败</td><td><code>status</code> 变成 <code>success</code> / <code>error</code>，<code>result</code> / <code>error</code> 给全，附耗时</td><td>最后一次递数据，之后这张卡不再变</td></tr>
+      <tr><td class="id">历史回放</td><td>重开会话时直接是终态数据</td><td>跟实时成功 / 失败同一个渲染路径</td></tr>
+    </tbody>
+  </table>
+
+  <h3>谁能认领、认领了管多大</h3>
+  <table>
+    <thead><tr><th></th><th>规则</th></tr></thead>
+    <tbody>
+      <tr><td class="id">谁</td><td>任何插件都能认领；对<b>所有</b>工具调用生效，不看这条消息是谁产生的</td></tr>
+      <tr><td class="id">范围</td><td>只认工具<b>全名</b>，不做前缀 / 按动作通配；一个声明管这一种工具的全部调用，同一个插件可以声明多个</td></tr>
+      <tr><td class="id">粒度</td><td>整卡替换或整卡复用，不做「只换头部 / 只换展开体一半」的局部替换</td></tr>
+    </tbody>
+  </table>
+  <div class="callout stop">本轮不做等待性质的卡：审批、确认、下一步、重试再跑。需要用户点头的流程是另外的槽，不在 <code>tool-card</code> 的数据里。</div>
+</section>
+
+<!-- ============ 3 出错怎么办 ============ -->
+<section>
+  <h2><span class="n">3</span>出错怎么办 <span class="tag decided">一定会遇到</span></h2>
+  <table>
+    <thead><tr><th>情况</th><th>这张卡会变成什么</th><th>靠什么保证</th></tr></thead>
+    <tbody>
+      <tr><td class="id">组件报错 / 卡死</td><td>换回默认卡；旁边的卡不受影响</td><td>每张卡独立的出错隔离</td></tr>
+      <tr><td class="id">插件被关掉 / 崩溃 / 禁用</td><td>这张卡变回默认卡，不留空位；历史记录里的卡也一样</td><td>插件不在就不占位置</td></tr>
+      <tr><td class="id">工具本身失败</td><td>不是插件出错：数据里 <code>status: "error"</code> + <code>error</code>，插件照常画，也可以不画错误（宿主兜底卡会画）</td><td>工具失败和插件失败分开</td></tr>
+      <tr><td class="id">流式中途出错</td><td>最后一份 <code>error</code> 数据递给插件，之后卡定格</td><td>同一份数据格式</td></tr>
+      <tr><td class="id">插件没声明 renderer 入口</td><td>认领声明跳过注册，普通插件不受影响</td><td>信任档</td></tr>
+    </tbody>
+  </table>
+  <div class="callout warn"><b>挡不住的：</b>受信插件故意把卡画坏，比如把错误藏起来、把结果画反。它和宿主跑在同一个页面进程里，这是已经接受的代价。能保证的是：它改不了这次调用的记录，也弄不垮整场对话。</div>
+</section>
+
+<!-- ============ 4 不提供什么 ============ -->
+<section>
+  <h2><span class="n">4</span>不提供什么 <span class="tag decided">已定</span></h2>
+  <table>
+    <thead><tr><th>不给</th><th>为什么</th><th>真需要就走哪</th></tr></thead>
+    <tbody>
+      <tr><td class="id">等待性质的操作</td><td>审批 / 确认 / 下一步 / 重试会让对话停在卡上等用户点头，这不是展示卡该管的事</td><td>本轮没有这条路；将来是另外的槽</td></tr>
+      <tr><td class="id">执行控制</td><td>改入参、拦截、放行、取消是工具执行的事，跟显示分开</td><td><code>runtime/tool-gate</code>（还没开）</td></tr>
+      <tr><td class="id">发起新调用</td><td>卡不能反过来调用工具，否则显示和执行绕回去了</td><td>本轮没有这条路</td></tr>
+      <tr><td class="id">整段对话、旁边的卡</td><td>槽只拿到这一次调用的数据</td><td>没有这条路</td></tr>
+      <tr><td class="id">改记录的权力</td><td>调用的入参和结果是历史记录，插件不能改</td><td>没有这条路</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<!-- ============ 5 相关条目 ============ -->
+<section>
+  <h2><span class="n">5</span>相关条目</h2>
+  <table>
+    <thead><tr><th>谁</th><th>关系</th><th>位置</th></tr></thead>
+    <tbody>
+      <tr><td class="id">user-message（#545 第 1 项）</td><td>同一批组件槽里先做的一个；信任档、出错隔离、样式接口都同一套</td><td><code>ui/user-message/</code></td></tr>
+      <tr><td class="id">tool-gate</td><td>工具执行前后、改参数 / 拦截的钩子；跟显示分开，本轮不动</td><td><code>runtime/tool-gate/</code>（还没开）</td></tr>
+      <tr><td class="id">改动审阅卡（Write / Edit）</td><td>已拍板：从工具卡旁边移走，固定显示在<b>输入框上方</b>；不再属于工具卡区域</td><td>—</td></tr>
+      <tr><td class="id">tool-extend</td><td>执行中给工具追加能力的钩子，同样跟显示分开</td><td><code>runtime/tool-extend/</code>（还没开）</td></tr>
+      <tr><td class="id">api/open-attachment</td><td>文件点击收到一个入口，<code>openPreview</code> 落在这里</td><td><code>api/open-attachment/</code>（候选）</td></tr>
+      <tr><td class="id">renderer 宿主</td><td>这个槽的前提：插件代码能跑进宿主页面、共用同一个 React</td><td>批次 0（#528）</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<!-- ============ 6 还没定的事 ============ -->
+<section>
+  <h2><span class="n">6</span>还没定的事</h2>
+  <p style="color:var(--text-2)">本轮的问题都已拍板。子代理的拓扑画布和工作面板侧栏本轮不开放认领；将来要放开时另开一轮。</p>
+</section>
+
+</main>
+</body>
+</html>

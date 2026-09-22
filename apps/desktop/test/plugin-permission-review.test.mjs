@@ -7,8 +7,9 @@ import {
 import assert from "node:assert/strict";
 import test from "node:test";
 import { readFileSync } from "node:fs";
+import { register } from "node:module";
 import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const desktopRoot = join(here, "..");
@@ -26,6 +27,30 @@ const protocolSrc = readFileSync(
   join(repoRoot, "packages/shared/src/protocol.ts"),
   "utf8",
 );
+
+register(pathToFileURL(join(here, "helpers/ts-import-hooks.mjs")));
+
+const { declarationLabel, rendererDeclaration } = await import(
+  "../src/features/plugins/model.ts"
+);
+const { catalogs, flattenCatalog } = await import(
+  "../../../packages/i18n/src/index.ts"
+);
+// The vocabulary is the SDK's, not a copy: a name added or removed there has to
+// reach the catalogs in the same change (issue #528).
+const { PLUGIN_RENDERER_ACTIONS, PLUGIN_RENDERER_DATA } = await import(
+  "../../../packages/plugin-sdk/src/renderer.ts"
+);
+
+const DECLARED_DATA = [...PLUGIN_RENDERER_DATA];
+const DECLARED_ACTIONS = [...PLUGIN_RENDERER_ACTIONS];
+
+const english = flattenCatalog(catalogs.en);
+
+/** i18next resolution for one catalog: the value, else the key's fallback. */
+function translator(flat) {
+  return (key, options) => flat[key] ?? options?.defaultValue ?? key;
+}
 
 function slice(source, from, to) {
   const start = source.indexOf(from);
@@ -185,4 +210,135 @@ test("the review contract is shared, not re-declared on each side", () => {
   assert.match(sharedTypesSrc, /kind: "load" \| "reload"/);
   assert.match(protocolSrc, /pluginLoadDevConfirm: "pi-desktop\/plugin\/loadDevConfirm"/);
   assert.match(protocolSrc, /pluginReloadConfirm: "pi-desktop\/plugin\/reloadConfirm"/);
+});
+
+/**
+ * Issue #528: a manifest may declare what its own UI code reads and calls. The
+ * review shows that list back and does nothing else — a plugin that declares
+ * neither must look exactly as it did before the fields existed.
+ */
+test("a plugin that declares nothing renders no declaration block", () => {
+  for (const plugin of [
+    undefined,
+    null,
+    {},
+    { rendererData: [] },
+    { rendererActions: [] },
+    { rendererData: [], rendererActions: [] },
+  ]) {
+    assert.equal(rendererDeclaration(plugin), null, JSON.stringify(plugin));
+  }
+
+  // The dialog asks the same question before it draws anything, so "declared
+  // nothing" cannot turn into an empty heading or a placeholder line.
+  const block = slice(pluginsUiSrc, "function RendererDeclaration(", "\n/* ");
+  assert.match(block, /const declaration = rendererDeclaration\(plugin\)/);
+  assert.match(block, /if \(!declaration\) return null;/);
+  assert.ok(
+    block.indexOf("if (!declaration) return null;") < block.indexOf("plugins-declaration"),
+    "the guard runs before the first piece of the block",
+  );
+  // No hardcoded copy: every visible string comes from the catalog.
+  assert.doesNotMatch(block, />\s*[A-Za-z]/);
+});
+
+test("declared data and actions reach the review in the author's order", () => {
+  assert.deepEqual(
+    rendererDeclaration({
+      rendererData: ["entry", "draft"],
+      rendererActions: ["plugin.call", "ui.toast"],
+    }),
+    { data: ["entry", "draft"], actions: ["plugin.call", "ui.toast"] },
+  );
+  // One list alone is enough for the block; the other group is simply absent.
+  assert.deepEqual(rendererDeclaration({ rendererData: ["theme"] }), {
+    data: ["theme"],
+    actions: [],
+  });
+});
+
+test("a known value gets its label and an unknown value keeps its own name", () => {
+  const englishT = translator(english);
+  assert.equal(declarationLabel("data", "entry", englishT), "Transcript entries");
+  assert.equal(declarationLabel("actions", "ui.toast", englishT), "Show a notification");
+  // A name outside the vocabulary is still something the plugin declared, so it
+  // is shown as written instead of being dropped or left as a catalog key.
+  for (const unknown of ["acme.telemetry", "entryExtra", "ui.openPanel"]) {
+    assert.equal(declarationLabel("data", unknown, englishT), unknown);
+    assert.equal(declarationLabel("actions", unknown, englishT), unknown);
+    assert.equal(DECLARED_DATA.includes(unknown), false);
+  }
+  // The same value in both lists keeps its own namespace: an action name never
+  // borrows the data label or the other way round.
+  assert.equal(declarationLabel("data", "code", englishT), "Code blocks");
+  assert.equal(declarationLabel("actions", "code", englishT), "code");
+
+  const block = slice(pluginsUiSrc, "function RendererDeclaration(", "\n/* ");
+  assert.match(block, /declarationLabel\("data", value, t\)/);
+  assert.match(block, /declarationLabel\("actions", value, t\)/);
+  // Label mapping is driven by the SDK vocabulary, so a name the host stops
+  // understanding falls back to the raw value instead of a stale label.
+  const label = slice(pluginsUiSrc, "const DECLARED_VALUES", "\n/* ");
+  assert.match(label, /data: PLUGIN_RENDERER_DATA,/);
+  assert.match(label, /actions: PLUGIN_RENDERER_ACTIONS,/);
+  assert.match(label, /defaultValue: value/);
+});
+
+test("every locale names every value in the declaration vocabulary", () => {
+  for (const [id, catalog] of Object.entries(catalogs)) {
+    const flat = flattenCatalog(catalog);
+    for (const key of [
+      "plugins.declaration.title",
+      "plugins.declaration.dataLabel",
+      "plugins.declaration.actionsLabel",
+    ]) {
+      assert.equal(typeof flat[key], "string", `${id} ${key}`);
+    }
+    for (const [kind, values] of [
+      ["data", DECLARED_DATA],
+      ["actions", DECLARED_ACTIONS],
+    ]) {
+      for (const value of values) {
+        const key = `plugins.declaration.${kind}.${value}`;
+        const text = flat[key];
+        assert.equal(typeof text, "string", `${id} ${key}`);
+        assert.notEqual(text, value, `${id} ${key} repeats the raw value`);
+        if (id !== "en") {
+          assert.notEqual(text, english[key], `${id} ${key} is still English`);
+        }
+      }
+    }
+  }
+});
+
+test("the declaration reaches the review that owns the manifest it belongs to", () => {
+  // The development review reads the folder's manifest that the load will use,
+  // and passes both lists through, so the renderer never has to read one.
+  assert.match(pluginIpcSrc, /rendererData: declared\.manifest\.rendererData \?\? \[\]/);
+  assert.match(
+    pluginIpcSrc,
+    /rendererActions: declared\.manifest\.rendererActions \?\? \[\]/,
+  );
+  // The shared contract stays plain `string[]`: it sits under the SDK and does
+  // not hold the vocabulary.
+  assert.match(sharedTypesSrc, /rendererData\?: string\[\];/);
+  assert.match(sharedTypesSrc, /rendererActions\?: string\[\];/);
+
+  // Only that review draws the block. An install or update review is answered
+  // from catalog metadata or from the installed plugin's own row, and neither
+  // is the manifest being installed: rendering their lists would state what
+  // some other version declares while the user consents to this one.
+  const dialogs = slice(pluginsUiSrc, "export function PluginDialogs(", "\n/* ");
+  assert.equal(dialogs.match(/<RendererDeclaration /g)?.length, 1);
+  assert.match(dialogs, /<RendererDeclaration t=\{t\} plugin=\{pendingReview\} \/>/);
+  assert.doesNotMatch(dialogs, /<RendererDeclaration[^>]*pendingInstall/);
+  // The block takes a review payload, not any object that happens to carry the
+  // two lists, so a plugin row cannot be handed to it by mistake.
+  assert.match(dialogs, /plugin\?: PluginPermissionReview \| null;/);
+
+  // No path feeds the installed plugin's or the catalog's lists into a review.
+  assert.doesNotMatch(pluginsUiSrc, /rendererData: plugin\.rendererData/);
+  assert.doesNotMatch(pluginsUiSrc, /rendererActions: plugin\.rendererActions/);
+  assert.doesNotMatch(pluginsUiSrc, /rendererData: input\.rendererData/);
+  assert.doesNotMatch(pluginsUiSrc, /rendererActions: input\.rendererActions/);
 });

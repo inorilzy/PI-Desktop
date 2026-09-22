@@ -59,6 +59,14 @@ pub struct PluginSummary {
     pub path: Option<String>,
     #[serde(default)]
     pub capabilities: Vec<String>,
+    /// `manifest.rendererData` / `manifest.rendererActions`, carried so the
+    /// renderer host knows what a plugin declared before it loads the module.
+    /// Declarations only: they grant nothing, and a dispatch is checked against
+    /// the declared list again in Electron main (ADR 0294 §3, §5).
+    #[serde(default)]
+    pub renderer_data: Vec<String>,
+    #[serde(default)]
+    pub renderer_actions: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

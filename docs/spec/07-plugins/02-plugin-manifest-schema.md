@@ -9,10 +9,13 @@ exactly one type: `length` (`unit: "px"`, numeric `min`, `max`, and `default`),
 (fixed safe `values` and default). Host-reserved prefixes are refused. Values
 are not CSS fragments.
 
-`contributes.settingsDestinations` declares sandboxed Settings entries with a
-stable `id`, localized `label`, closed icon token, optional localized keywords,
-and a plugin-relative `.html` `entry`. An entry requires `ui.settings`; it is
-rendered only in the host-owned Extensions group.
+`contributes.scenicThemes` declares a data-only host-rendered Settings entry:
+a stable `id`, localized label and description, `palette` icon token, localized
+keywords, and one to twelve ordered cards. Every card names a same-plugin
+theme, localized name/description, and a relative image asset declared by that
+theme. It requires both `ui.settings` and `ui.theme`. Plugins provide neither
+Settings HTML nor CSS or JavaScript: the host renders the Extensions entry,
+cards, range control, and Apply action in its normal React tree.
 
 ## 1. Purpose
 
@@ -49,7 +52,32 @@ type PluginManifestV1 = {
  };
  repository?: string;
  icon?: string; // relative path
- main?: string; // plugin runtime entry
+ /**
+  * Headless entry: a plugin-relative module the host runs in its own process.
+  * Optional: a UI-only plugin may declare just `renderer`, or only a plugin
+  * page. At least one entry must exist across this field, `renderer`,
+  * `ui.panel`, `views[].entry`, and `settingsDestinations[].entry` (rule 19).
+  */
+ main?: string;
+ /**
+  * Trusted renderer entry: a plugin-relative ES module that runs inside the
+  * host renderer (the app's own window) and registers React components into
+  * host-owned slots. Requires `renderer.extension` (rule 20) and is fetched
+  * lazily, the first time one of its slots really renders (spec 16 §2A).
+  */
+ renderer?: string;
+ /**
+  * Host data the plugin renderer declares it reads, each name picked from the
+  * host-owned `PluginRendererDataKey` vocabulary below. Optional: an absent
+  * field declares nothing.
+  */
+ rendererData?: PluginRendererDataKey[];
+ /**
+  * Host actions the plugin renderer declares it dispatches, each name picked
+  * from the host-owned `PluginRendererActionName` vocabulary below. Optional:
+  * an absent field declares nothing.
+  */
+ rendererActions?: PluginRendererActionName[];
  ui?: PluginUiConfig;
  contributes?: PluginContributes;
  permissions?: PluginPermission[];
@@ -74,6 +102,29 @@ type PluginManifestV1 = {
   */
  enabledByDefault?: boolean;
 };
+
+/** Data names a plugin may declare in `rendererData`; the host owns this list. */
+type PluginRendererDataKey =
+ | "entry"
+ | "session"
+ | "code"
+ | "theme"
+ | "selection"
+ | "draft"
+ | "attachments"
+ | "locale";
+
+/** Action names a plugin may declare in `rendererActions`; the host owns this list. */
+type PluginRendererActionName =
+ | "plugin.call"
+ | "composer.replaceDraft"
+ | "composer.insertText"
+ | "composer.attachPath"
+ | "ui.openOverlay"
+ | "ui.closeOverlay"
+ | "ui.openModal"
+ | "ui.closeModal"
+ | "ui.toast";
 ```
 
 ## 3. UI config
@@ -128,6 +179,11 @@ Rules:
 4. The block is display metadata. A malformed one (not an object of locale →
    object) fails manifest validation; unknown locales and unknown fields inside
    an entry are ignored.
+5. The block is identity only (`name`, `description`, `safetyNotes`). Plugin-owned
+   copy — panels, views, widgets, generated settings, toasts, runtime command
+   titles — is not translated here. The host publishes the active language
+   (`pi.app.getLocale`, `appearance:changed`); the plugin localizes itself
+   (ADR 0280).
 
 ## 4. contributes
 
@@ -140,6 +196,7 @@ type PluginContributes = {
  providers?: PluginProviderContrib[]; // Host-owned provider rows; needs `provider.register` (spec 13)
  settings?: PluginSettingContrib[];
  themes?: PluginThemeContrib[];
+ scenicThemes?: PluginScenicThemesContrib;
  windowAppearance?: PluginWindowAppearanceContrib; // native window background; needs `ui.window.appearance`
  mcpServers?: PluginMcpServerContrib[];
   services?: PluginServiceContrib[];
@@ -169,7 +226,7 @@ type PluginAgentToolContrib = {
 
 type PluginSettingContrib = {
  key: string;
- title: string;
+ title: string; // author language; the generated sheet does not localize
  description?: string;
  type: "string" | "number" | "boolean" | "select" | "json" | "shortcut";
  default?: unknown;
@@ -208,6 +265,20 @@ type PluginThemeContrib = {
  base?: "light" | "dark"; // palette the overrides layer on, default `dark`
  assets?: string[]; // absolute png/jpg/jpeg/webp/avif/svg/woff2, 4 MB summed;
                     // each matching `url()` is rewritten to `plugin-asset://`
+};
+
+type PluginScenicThemesContrib = {
+ id: string;
+ label: { en: string; "zh-CN": string };
+ description: { en: string; "zh-CN": string };
+ keywords?: Array<{ en: string; "zh-CN": string }>;
+ icon: "palette";
+ themes: Array<{
+   themeId: string;
+   label: { en: string; "zh-CN": string };
+   description: { en: string; "zh-CN": string };
+   previewAsset: string;
+ }>;
 };
 
 type PluginWindowAppearanceContrib = {
@@ -289,6 +360,7 @@ type PluginPermission =
  | "fs.delete"
  | "agent.tool.register"
  | "agent.prompt.inject"
+ | "renderer.extension" // trusted UI tier: one name for every component slot (spec 16 §2A)
  | "provider.register"
  | "net.fetch"
  | "shell.openExternal"
@@ -305,8 +377,10 @@ type PluginPermission =
  | "session.read.own"
  | "session.update.own"
  | "session.delete.own"
+ | "usage.read"
  | "audio.capture.background"
  | "audio.playback.background"
+ | "speech.adapter.register"
  | "keyboard.globalShortcut"
  | "net.websocket";
 ```
@@ -435,7 +509,10 @@ MVP may implement only:
 3. Whether a manifest that declares `ui.panel` needs the `ui.panel` permission implicitly (auto-filled) or by explicit declaration is an **open question** (tracked in [08-meta/open-questions.md](../08-meta/open-questions.md))
 4. If `agentTools` are present, `agent.tool.register` must be declared
 5. Path fields must not use absolute paths or `..`
-6. `main` / `ui.panel` / skills / `views[].entry` paths must exist
+6. `main` / `renderer` / `ui.panel` / skills / `views[].entry` paths must
+   exist when declared. A missing `main` reports
+   `PLUGIN_LOAD_FAILED: main entry missing`; a missing `renderer` reports
+   `PLUGIN_LOAD_FAILED: renderer entry missing`
 7. tool `name` allows only `[a-zA-Z][a-zA-Z0-9_]*`
 8. Contribution ids (`themes`, `mcpServers`, `services`, `views`) must match
    `[a-zA-Z][a-zA-Z0-9_-]{0,63}` and be unique within their own list;
@@ -450,13 +527,13 @@ MVP may implement only:
 11. `bus.publish` entries must be concrete topics and `bus.subscribe` entries
    valid patterns (§5.1)
 12. A contribution that needs a permission fails validation when the permission
-   is missing: `themes` → `ui.theme`, `views` → `ui.view`, `providers` →
-   `provider.register`, stdio servers → `mcp.server.local`, remote
-   servers → `mcp.server.remote`, `services` → `background.service`,
-   `bus.publish` → `bus.publish`, `bus.subscribe` → `bus.subscribe`.
-   `skills` is the exception — it predates the permission gate, so a manifest
-   without `agent.prompt.inject` still validates and the runtime simply skips
-   the skills
+   is missing: `renderer` → `renderer.extension`, `themes` → `ui.theme`,
+   `views` → `ui.view`, `providers` → `provider.register`, stdio servers →
+   `mcp.server.local`, remote servers → `mcp.server.remote`, `services` →
+   `background.service`, `bus.publish` → `bus.publish`, `bus.subscribe` →
+   `bus.subscribe`. `skills` is the exception — it predates the permission
+   gate, so a manifest without `agent.prompt.inject` still validates and the
+   runtime simply skips the skills
 13. Settings keys are unique. `shortcut` settings require `command`, may only
     use the `plugin` scope, and are validated as modifier-plus-key or F-key
     bindings. Secrets are rejected until secure plugin-secret storage exists.
@@ -479,6 +556,35 @@ MVP may implement only:
    `[a-zA-Z][a-zA-Z0-9._-]{0,63}` and is unique; `command` must be declared in
    `contributes.commands`; `default`, when present, uses the same
    modifier-plus-key / F-key grammar as `shortcut` settings
+19. `main` is optional, but a manifest must declare at least one entry across
+   `main`, `renderer`, `ui.panel`, `views[].entry`, and
+   `settingsDestinations[].entry`. Contributions that are not entries —
+   `agentExtensions`, `services`, `providers`, `themes`, `mcpServers`,
+   `skills`, `commands` — do not satisfy the rule. The TypeScript message is
+   `manifest needs one of main, renderer, or a plugin page`; the host-core
+   message is `PLUGIN_INVALID: one of main/renderer/panel/view/destination
+   required`
+20. `renderer` declares the trusted UI tier: an ESM module that runs inside the
+   host renderer, in the same realm as the host UI, and registers React
+   components into host-owned slots (spec 16 §2A). It requires
+   `renderer.extension`, and a manifest that declares `renderer` without it
+   fails with `manifest.renderer requires the renderer.extension permission`
+   (host-core: `PLUGIN_INVALID: renderer requires the renderer.extension
+   permission`). One permission covers every component slot: slots are
+   authorized by tier, never one at a time (ADR 0291)
+21. `rendererData` and `rendererActions` are optional lists drawn from two
+   host-owned vocabularies; a plugin picks from them and never invents a name
+   of its own. `rendererData` accepts `entry`, `session`, `code`, `theme`,
+   `selection`, `draft`, `attachments`, `locale`; `rendererActions` accepts
+   `plugin.call`, `composer.replaceDraft`, `composer.insertText`,
+   `composer.attachPath`, `ui.openOverlay`, `ui.closeOverlay`, `ui.openModal`,
+   `ui.closeModal`, `ui.toast`. Omitting a field declares nothing for it, so
+   existing manifests stay valid. An unknown or duplicated member, a
+   non-array value, or a non-string element fails validation, and the message
+   names the field. Neither list is an entry, so neither satisfies rule 19.
+   Both are declarations that grant nothing, do not appear in the permission
+   list, do not change grants, and are shown in the install review; a manifest
+   that declares them without `renderer` still validates
 
 ## 8. Example: minimal plugin
 
@@ -580,6 +686,22 @@ MVP may implement only:
 
 `{ "setting": "<key>" }` reads the plugin's own settings; the host environment is
 never passed through (D018).
+
+## 9.2 Example: renderer-only plugin
+
+A plugin whose only entry is a trusted component slot ships no headless module
+and no page, which is why `main` is optional and rule 19 exists:
+
+```json
+{
+ "schemaVersion": 1,
+ "id": "demo.word-count",
+ "name": "Word Count",
+ "version": "0.1.0",
+ "renderer": "renderer/index.mjs",
+ "permissions": ["renderer.extension"]
+}
+```
 
 ## 10. Compatibility strategy
 

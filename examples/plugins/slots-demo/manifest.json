@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "id": "acme.slots-demo",
+  "name": "Slots Demo",
+  "version": "0.1.0",
+  "description": "PI-Desktop example plugin: trusted renderer slots (React components) plus a namespaced injected stylesheet",
+  "author": "PI-Desktop",
+  "main": "main.js",
+  "renderer": "renderer/index.mjs",
+  "rendererData": ["entry"],
+  "rendererActions": ["ui.toast", "plugin.call"],
+  "contributes": {
+    "commands": [
+      {
+        "id": "acme.slots-demo.about",
+        "title": "Slots Demo: What this plugin adds",
+        "keywords": ["slots", "renderer", "react", "demo"],
+        "category": "Demo"
+      }
+    ]
+  },
+  "permissions": ["renderer.extension"],
+  "engines": {
+    "piDesktop": ">=0.1.0"
+  },
+  "activationEvents": ["onStartup"]
+}

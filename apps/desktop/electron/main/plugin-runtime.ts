@@ -70,13 +70,15 @@ import {
   type PluginServiceStatus,
   type PluginSettingDefinition,
   type PluginWorkspaceInfo,
+  BUILTIN_SPEECH_PROTOCOL_IDS,
+  PLUGIN_TOOL_EXTEND_PERMISSION,
 } from "@pi-desktop/shared";
 import {
   previewFile,
   resolveRealPathForCreateWithinRoot,
   resolveRealPathWithinRoot,
   resolveWithinRoot,
-} from "./fs-panel";
+} from "@pi-desktop/host-runtime";
 import { McpServerClient, type McpServerClientOptions } from "./plugin-mcp";
 import { PluginToolInvocations, type PluginToolInvocation } from "./plugin-tool-invocations";
 import { DevPluginWatcher, type DevPluginWatcherDeps } from "./plugin-watcher";
@@ -93,6 +95,7 @@ import {
   type PluginShortcutEntry,
   type PluginShortcutRegistry,
 } from "./plugin-shortcut-registry";
+import { repairImportedExtensionWrapper } from "./imported-plugin-wrapper";
 
 export type RegisteredCommand = {
   id: string;
@@ -284,8 +287,9 @@ export type PluginHostServices = {
   /**
    * The appearance the host is currently showing (palette, language, active
    * plugin theme). Panels and plugin processes read it through `app.getAppearance`;
-   * the host broadcasts `appearance:changed` to open panels and docked views
-   * when it changes. Workspace switches push `workspace:changed` the same way.
+   * the host broadcasts `appearance:changed` to open panels, docked views, and
+   * loaded plugin processes when it changes (ADR 0280). Workspace switches push
+   * `workspace:changed` the same way.
    */
   getAppearance?: () => PluginAppearance;
   /**
@@ -432,6 +436,10 @@ export type PluginHostServices = {
   project?: {
     create: (pluginId: string, input: Record<string, unknown>) => Promise<unknown>;
   };
+  /** Read-only completed-turn facts served by host-core's usage domain. */
+  usage?: {
+    listTurns: (pluginId: string, input: Record<string, unknown>) => Promise<unknown>;
+  };
 };
 
 /** Host APIs a plugin process may reach. Anything else does not exist (spec 04 §2). */
@@ -511,7 +519,10 @@ const HOST_API_ALLOWLIST = new Set([
   "session.importBatch",
   "session.rename",
   "session.delete",
+  "usage.listTurns",
   "agent.complete",
+  "agent.model.complete",
+  "ai.complete",
   "keyboard.registerGlobalShortcut",
   "keyboard.unregisterGlobalShortcut",
   "keyboard.listGlobalShortcuts",
@@ -537,6 +548,18 @@ const PLUGIN_TOOL_TIMEOUT_MS = 110_000;
 export const PLUGIN_COMPLETE_TIMEOUT_MS = 90_000;
 /** Fixed panel operations are user-facing and must not hang the renderer. */
 const PLUGIN_PANEL_TIMEOUT_MS = 30_000;
+/**
+ * A forwarded renderer action is awaited by a component the user is looking
+ * at, which is the promise a fixed panel operation makes, so it gets the same
+ * budget.
+ */
+const PLUGIN_RENDERER_CALL_TIMEOUT_MS = PLUGIN_PANEL_TIMEOUT_MS;
+/**
+ * The one renderer action this runtime forwards. The vocabulary is host-owned
+ * (ADR 0294 decision 2); this is the name a manifest has to declare before a
+ * call is relayed at all.
+ */
+const RENDERER_CALL_ACTION = "plugin.call";
 const PANEL_SKILL_CHANNELS = new Set([
   "skill.list",
   "skill.read",
@@ -690,6 +713,26 @@ function apiError(code: string, message: string): PluginApiError {
   const err = new Error(message) as PluginApiError;
   err.code = code;
   return err;
+}
+
+/**
+ * One refused or failed renderer call (ADR 0294 decision 4). `code` is what the
+ * caller branches on; `errorCode` carries the same value under the name the IPC
+ * result envelope reads before it falls back to a generic `INTERNAL`
+ * (register.ts `wrap`), so the code a plugin author sees is the code the host
+ * chose rather than a collapse of every failure into one.
+ */
+function rendererCallRefusal(code: string, message: string): PluginApiError {
+  return Object.assign(apiError(code, message), { errorCode: code });
+}
+
+/**
+ * The headless entry a manifest declares, or `""`. A UI-only plugin declares
+ * `renderer`, a page or a destination instead, and then nothing runs in a host
+ * process: it has no entry of its own for a forwarded call to reach.
+ */
+function headlessEntry(manifest: PluginManifest): string {
+  return typeof manifest.main === "string" ? manifest.main : "";
 }
 
 /**
@@ -885,6 +928,81 @@ function normalizePluginSessionInput(
   return { ...(input as Record<string, unknown>) };
 }
 
+/**
+ * Bounds for the read-only usage fact listing. The host RPC re-checks the
+ * same windows, so a caller that skips this main-process side still cannot
+ * widen the scan (spec 07-plugins/03 §usage).
+ */
+const PLUGIN_USAGE_MAX_WINDOW_MS = 365 * 24 * 60 * 60 * 1000;
+const PLUGIN_USAGE_DEFAULT_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
+
+/** Absent/null keeps the host default; anything else must be an integer. */
+function pluginUsageProjectId(value: Record<string, unknown>): number | undefined {
+  const raw = value.projectId;
+  if (raw === undefined || raw === null) return undefined;
+  if (typeof raw !== "number" || !Number.isInteger(raw)) {
+    throw apiError("INVALID_PARAMS", "projectId must be an integer");
+  }
+  return raw;
+}
+
+/**
+ * Mirrors the host-side validation for `usage.listTurns`: absent/null fields
+ * stay absent (the host applies the 30-day default window and 200-row page),
+ * and anything out of range is rejected here so a plugin sees a plain
+ * INVALID_PARAMS instead of a host round-trip. Implied bounds (now / now-30d)
+ * are used only to check order and the 365-day cap.
+ */
+function normalizePluginUsageListTurnsInput(input: unknown): Record<string, unknown> {
+  if (input === undefined || input === null) return {};
+  if (typeof input !== "object" || Array.isArray(input)) {
+    throw apiError("INVALID_PARAMS", "usage input must be an object");
+  }
+  const value = input as Record<string, unknown>;
+  const normalized: Record<string, unknown> = {};
+  const intField = (key: string): number | undefined => {
+    const raw = value[key];
+    if (raw === undefined || raw === null) return undefined;
+    if (typeof raw !== "number" || !Number.isInteger(raw) || raw < 0) {
+      throw apiError("INVALID_PARAMS", `${key} must be a non-negative integer`);
+    }
+    normalized[key] = raw;
+    return raw;
+  };
+  const fromMs = intField("fromMs");
+  const toMs = intField("toMs");
+  const resolvedTo = toMs ?? Date.now();
+  const resolvedFrom = fromMs ?? resolvedTo - PLUGIN_USAGE_DEFAULT_WINDOW_MS;
+  if (resolvedTo < resolvedFrom) {
+    throw apiError("INVALID_PARAMS", "toMs must be >= fromMs");
+  }
+  if (resolvedTo - resolvedFrom > PLUGIN_USAGE_MAX_WINDOW_MS) {
+    throw apiError("INVALID_PARAMS", "usage window must span at most 365 days");
+  }
+  if (value.sessionId !== undefined && value.sessionId !== null) {
+    if (typeof value.sessionId !== "string" || !value.sessionId.trim()) {
+      throw apiError("INVALID_PARAMS", "sessionId must be a non-empty string");
+    }
+    normalized.sessionId = value.sessionId;
+  }
+  const projectId = pluginUsageProjectId(value);
+  if (projectId !== undefined) normalized.projectId = projectId;
+  if (value.cursor !== undefined && value.cursor !== null) {
+    if (typeof value.cursor !== "string") {
+      throw apiError("INVALID_PARAMS", "cursor must be a string");
+    }
+    if (value.cursor) normalized.cursor = value.cursor;
+  }
+  if (value.limit !== undefined && value.limit !== null) {
+    const limit = value.limit;
+    if (typeof limit !== "number" || !Number.isInteger(limit) || limit < 1 || limit > 500) {
+      throw apiError("INVALID_PARAMS", "limit must be an integer between 1 and 500");
+    }
+    normalized.limit = limit;
+  }
+  return normalized;
+}
+
 /** Key for the per-service supervision map. */
 function serviceStateKey(pluginId: string, serviceId: string): string {
   return `${pluginId}:${serviceId}`;
@@ -984,7 +1102,7 @@ export function readDevPluginDeclaration(pluginPath: string): {
 
 /**
  * `realpath` with the input as its own fallback, for a path that may not exist
- * yet. Containment is decided by `fs-panel`'s checks; this only exists so the
+ * yet. Containment is decided by the host-runtime workspace-files checks; this only exists so the
  * relative path we compare scopes against is expressed in the same terms.
  */
 function realpathOrSelf(path: string): string {
@@ -1016,7 +1134,7 @@ export function resolveInsidePlugin(pluginPath: string, relative: string): strin
  * referencing one is refused instead of served from a half-honoured list.
  */
 function resolveThemeAssets(
-  _pluginPath: string,
+  pluginPath: string,
   declared: readonly string[],
 ): { files: Map<string, string>; dropped: number } {
   const files = new Map<string, string>();
@@ -1024,16 +1142,15 @@ function resolveThemeAssets(
   let total = 0;
   let dropped = 0;
   for (const asset of declared) {
-    // A theme asset is an absolute path; `normalizeThemeAssetPath` rejects
-    // package-relative references, so nothing is resolved against the package
-    // root any more. The plugin is the one naming the file.
     const normalized = normalizeThemeAssetPath(asset);
-    if (!normalized) {
+    if (!normalized || normalized.split("/").includes("node_modules")) {
       dropped += 1;
       continue;
     }
-    const absolute = normalized;
-    if (!existsSync(absolute)) {
+    const absolute = isExternalThemeAssetPath(normalized)
+      ? normalized
+      : resolveInsidePlugin(pluginPath, normalized);
+    if (!absolute || !existsSync(absolute)) {
       dropped += 1;
       continue;
     }
@@ -1110,9 +1227,65 @@ const spawnUtilityProcess: PluginProcessSpawner = async ({ pluginId, entry }) =>
   };
 };
 
+const SPEECH_HTTP_PARSE = new Set([
+  "bytes",
+  "json-text",
+  "json-path",
+  "openai-transcription",
+  "openai-chat-audio",
+]);
+
+function parseSpeechAdapterReply(value: unknown): {
+  kind: "text" | "audio" | "http";
+  text?: string;
+  mimeType?: string;
+  data?: string;
+  call?: Record<string, unknown>;
+} {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw apiError("INVALID_ARGUMENT", "speech adapter reply is invalid");
+  }
+  const record = value as Record<string, unknown>;
+  if (record.kind === "text") {
+    const text = typeof record.text === "string" ? record.text.trim() : "";
+    if (!text) throw apiError("PROVIDER_ERROR", "speech adapter returned empty text");
+    return { kind: "text", text };
+  }
+  if (record.kind === "audio") {
+    const data = typeof record.data === "string" ? record.data.trim() : "";
+    const mimeType =
+      typeof record.mimeType === "string" && record.mimeType.trim()
+        ? record.mimeType.trim()
+        : "application/octet-stream";
+    if (!data) throw apiError("PROVIDER_ERROR", "speech adapter returned empty audio");
+    return { kind: "audio", mimeType, data };
+  }
+  if (record.kind === "http") {
+    const call = record.call;
+    if (!call || typeof call !== "object" || Array.isArray(call)) {
+      throw apiError("INVALID_ARGUMENT", "speech adapter http call is invalid");
+    }
+    const spec = call as Record<string, unknown>;
+    if (typeof spec.url !== "string" || !spec.url.trim()) {
+      throw apiError("INVALID_ARGUMENT", "speech adapter http call is invalid");
+    }
+    if (typeof spec.parse !== "string" || !SPEECH_HTTP_PARSE.has(spec.parse)) {
+      throw apiError("INVALID_ARGUMENT", "speech adapter http parse is invalid");
+    }
+    return { kind: "http", call: spec };
+  }
+  throw apiError("INVALID_ARGUMENT", "speech adapter reply kind is invalid");
+}
+
 export class PluginRuntime {
   private commands = new Map<string, RegisteredCommand>();
   private tools = new Map<string, RegisteredPluginTool>();
+  private speechAdapters = new Map<string, {
+    protocol: string;
+    label: string;
+    roles: Array<"transcribe" | "synthesize">;
+    pluginId: string;
+  }>();
   private skills = new Map<string, RegisteredPluginSkill>();
   private agentExtensions = new Map<string, RegisteredAgentExtension>();
   private themes = new Map<string, RegisteredPluginTheme>();
@@ -1216,6 +1389,44 @@ export class PluginRuntime {
     return [...this.tools.values()];
   }
 
+  getSpeechAdapter(protocol: string) {
+    return this.speechAdapters.get(protocol);
+  }
+
+  listSpeechAdapters() {
+    return [...this.speechAdapters.values()].map((entry) => ({
+      id: entry.protocol,
+      label: entry.label,
+      roles: [...entry.roles],
+      source: "plugin" as const,
+      pluginId: entry.pluginId,
+    }));
+  }
+
+  async runSpeechAdapter(
+    job: { binding: { protocol: string } } & Record<string, unknown>,
+    payload: Record<string, unknown>,
+  ) {
+    const adapter = this.speechAdapters.get(String(job.binding.protocol));
+    if (!adapter) {
+      throw apiError("SPEECH_PROTOCOL_UNSUPPORTED", `unknown speech protocol: ${job.binding.protocol}`);
+    }
+    const loaded = this.loaded.get(adapter.pluginId);
+    if (!loaded?.child || loaded.disposing) {
+      throw apiError("NOT_FOUND", `plugin not loaded: ${adapter.pluginId}`);
+    }
+    const reply = await this.sendToChild(
+      loaded,
+      {
+        t: "call",
+        method: "speech.handle",
+        payload: { protocol: adapter.protocol, ...payload, role: (job as { role?: string }).role },
+      },
+      60_000,
+    );
+    return parseSpeechAdapterReply(reply);
+  }
+
   /** ExtensionAPI modules from loaded plugins holding `agent.extension`. */
   getAgentExtensions(): RegisteredAgentExtension[] {
     return [...this.agentExtensions.values()].sort((a, b) => a.id.localeCompare(b.id));
@@ -1273,6 +1484,48 @@ export class PluginRuntime {
     if (!normalized) return null;
     return this.themeAssets.get(pluginId)?.get(normalized) ?? null;
   }
+  /**
+   * A loaded plugin that may run a renderer entry right now: it declared
+   * `manifest.renderer`, it still holds the `renderer.extension` grant, and it
+   * is not on its way out. Everything the renderer host is allowed to fetch or
+   * evaluate goes through this one gate (ADR 0291).
+   */
+  private rendererPlugin(pluginId: string): LoadedPlugin | null {
+    const loaded = this.loaded.get(pluginId);
+    if (!loaded || loaded.disposing) return null;
+    const declared = typeof loaded.manifest.renderer === "string" ? loaded.manifest.renderer : "";
+    if (!declared) return null;
+    return loaded.permissions.has("renderer.extension") ? loaded : null;
+  }
+
+  /** The declared renderer entry path, for the renderer's lazy load. */
+  rendererEntry(pluginId: string): string | null {
+    const loaded = this.rendererPlugin(pluginId);
+    if (!loaded) return null;
+    // Two React copies in one tree break hooks and context, and the failure
+    // shows up as a plugin bug rather than a packaging mistake. Refusing here
+    // puts the real reason in the diagnostics list instead.
+    if (
+      existsSync(join(loaded.path, "node_modules", "react", "package.json")) ||
+      existsSync(join(loaded.path, "node_modules", "react-dom", "package.json"))
+    ) {
+      throw apiError(
+        "PLUGIN_INVALID",
+        "renderer entry bundles its own react; the host provides one React for every plugin",
+      );
+    }
+    return loaded.manifest.renderer ?? null;
+  }
+
+  /**
+   * Resolve one file a plugin's renderer module asked for. The path has to stay
+   * inside that plugin's package, so one plugin has no URL that reaches
+   * another's files, and a plugin whose grant was revoked has no URL at all.
+   */
+  resolveRendererSource(pluginId: string, requestPath: string): string | null {
+    const loaded = this.rendererPlugin(pluginId);
+    return loaded ? resolveInsidePlugin(loaded.path, requestPath) : null;
+  }
 
   /** Supervision state of every resident service, ordered for a stable list. */
   getServiceStates(): PluginServiceStatus[] {
@@ -1321,7 +1574,26 @@ export class PluginRuntime {
     return this.loaded.get(pluginId);
   }
 
-  /** Return the manifest-backed settings view for the installed-plugin UI. */
+  /**
+   * Read a persisted declared variable without exposing the plugin's private
+   * settings record. Host-rendered scenic destinations use this only after
+   * validating the matching declaration themselves.
+   */
+  getThemeVariableValue(pluginId: string, themeId: string, name: string): unknown {
+    const loaded = this.loaded.get(pluginId);
+    if (!loaded) return undefined;
+    return this.readThemeVariableValues(loaded, themeId)[name];
+  }
+
+  async setScenicThemeBlur(pluginId: string, themeId: string, blur: number): Promise<void> {
+    const loaded = this.loaded.get(pluginId);
+    if (!loaded || !loaded.permissions.has("ui.theme")) {
+      throw apiError("PERMISSION_DENIED", "ui.theme");
+    }
+    await this.hostApi(loaded).themes.setVariables(themeId, { "--nexus-backdrop-blur": blur });
+  }
+
+  /** Manifest settings as the installed-plugin sheet reads them. Titles stay the author's language; plugin-owned UI localizes via `app.getLocale` / `appearance:changed` (ADR 0280). */
   async getPluginSettings(pluginId: string): Promise<PluginSettingDefinition[]> {
     const loaded = this.loaded.get(pluginId);
     if (!loaded) throw apiError("NOT_FOUND", `plugin not loaded: ${pluginId}`);
@@ -1468,6 +1740,8 @@ export class PluginRuntime {
     if (!existsSync(manifestPath)) {
       throw new Error("PLUGIN_INVALID: manifest.json missing");
     }
+    // Generated no-op `main.js` wrappers fail under package `"type":"module"`.
+    repairImportedExtensionWrapper(pluginPath);
     const raw = JSON.parse(readFileSync(manifestPath, "utf8"));
     const validated = validateManifest(raw);
     if (!validated.ok || !validated.manifest) {
@@ -1476,12 +1750,17 @@ export class PluginRuntime {
     const manifest = validated.manifest;
     await this.unload(manifest.id);
 
-    const mainPath = resolveInsidePlugin(pluginPath, manifest.main);
-    if (!mainPath) {
-      throw new Error("PLUGIN_INVALID: main entry must stay inside the plugin directory");
-    }
-    if (!existsSync(mainPath)) {
-      throw new Error("PLUGIN_LOAD_FAILED: main entry missing");
+    // The headless module is optional: a UI-only plugin declares `renderer`, a
+    // page, or a destination instead, and then nothing runs in a host process.
+    const headlessMain = headlessEntry(manifest);
+    if (headlessMain) {
+      const mainPath = resolveInsidePlugin(pluginPath, headlessMain);
+      if (!mainPath) {
+        throw new Error("PLUGIN_INVALID: main entry must stay inside the plugin directory");
+      }
+      if (!existsSync(mainPath)) {
+        throw new Error("PLUGIN_LOAD_FAILED: main entry missing");
+      }
     }
 
     // Legacy `fs.*.workspace` names resolve to the scoped form, so an install
@@ -1504,7 +1783,9 @@ export class PluginRuntime {
 
     const entry = this.services.hostEntry ?? join(__dirname, "plugin-host-process.js");
     const spawn = this.services.spawnProcess ?? spawnUtilityProcess;
-    const child = await spawn({ pluginId: manifest.id, entry, pluginPath });
+    const child = headlessMain
+      ? await spawn({ pluginId: manifest.id, entry, pluginPath })
+      : undefined;
 
     const loaded: LoadedPlugin = {
       manifest,
@@ -1522,41 +1803,46 @@ export class PluginRuntime {
     };
     this.loaded.set(manifest.id, loaded);
 
-    child.onMessage((message) => this.handleChildMessage(loaded, message));
-    child.onExit((code) => this.handleChildExit(loaded, code));
-    child.onLog?.((level, message) => {
-      if (!message) return;
-      this.services.audit?.({
-        pluginId: manifest.id,
-        api: "plugin.stdio",
-        level,
-        message,
-        ts: Date.now(),
-      });
-    });
-
-    try {
-      await this.sendToChild(
-        loaded,
-        {
-          t: "init",
+    // No headless module means no host process to talk to: everything this
+    // plugin contributes is either declarative or belongs to another entry
+    // (`renderer` / `views`), so the load path stops here.
+    if (child) {
+      child.onMessage((message) => this.handleChildMessage(loaded, message));
+      child.onExit((code) => this.handleChildExit(loaded, code));
+      child.onLog?.((level, message) => {
+        if (!message) return;
+        this.services.audit?.({
           pluginId: manifest.id,
-          pluginPath,
-          main: manifest.main,
-          manifest,
-        },
-        PLUGIN_LOAD_TIMEOUT_MS,
-      );
-    } catch (error) {
-      await this.unload(manifest.id);
-      this.services.audit?.({
-        pluginId: manifest.id,
-        api: "plugin.load.error",
-        ok: false,
-        errorCode: (error as PluginApiError).code ?? "PLUGIN_LOAD_FAILED",
-        ts: Date.now(),
+          api: "plugin.stdio",
+          level,
+          message,
+          ts: Date.now(),
+        });
       });
-      throw error;
+
+      try {
+        await this.sendToChild(
+          loaded,
+          {
+            t: "init",
+            pluginId: manifest.id,
+            pluginPath,
+            main: headlessMain,
+            manifest,
+          },
+          PLUGIN_LOAD_TIMEOUT_MS,
+        );
+      } catch (error) {
+        await this.unload(manifest.id);
+        this.services.audit?.({
+          pluginId: manifest.id,
+          api: "plugin.load.error",
+          ok: false,
+          errorCode: (error as PluginApiError).code ?? "PLUGIN_LOAD_FAILED",
+          ts: Date.now(),
+        });
+        throw error;
+      }
     }
 
     this.registerSkills(loaded);
@@ -1580,6 +1866,36 @@ export class PluginRuntime {
   /** Abort this session's invocations without affecting sibling sessions. */
   cancelSessionTools(sessionId: string, reason = "Session tool execution aborted"): void {
     this.toolInvocations.cancelSession(sessionId, reason);
+  }
+
+  /**
+   * Slot 5 (`runtime.tool.extend`, ADR 0295 rule 2): the kernel fields a
+   * plugin tool may attach to its result — `addedToolNames`, `usage`,
+   * `terminate`. They are read here, where the plugin's recorded grants are
+   * known, and dropped when the plugin does not hold the slot. A refusal is
+   * audited rather than silent, so the author can see why the fields did
+   * nothing; the rest of the result is returned unchanged.
+   */
+  extendToolResult(pluginId: string, result: unknown): unknown {
+    if (!result || typeof result !== "object" || Array.isArray(result)) return result;
+    const record = result as Record<string, unknown>;
+    const usesSlotFields =
+      (Array.isArray(record.addedToolNames) && record.addedToolNames.length > 0) ||
+      (record.usage !== undefined && record.usage !== null) ||
+      record.terminate === true;
+    if (!usesSlotFields) return result;
+    if (this.loaded.get(pluginId)?.permissions.has(PLUGIN_TOOL_EXTEND_PERMISSION)) {
+      return result;
+    }
+    const { addedToolNames: _added, usage: _usage, terminate: _terminate, ...rest } = record;
+    this.services.audit?.({
+      pluginId,
+      api: "agent.toolResult.extend",
+      ok: false,
+      errorCode: "PERMISSION_DENIED",
+      ts: Date.now(),
+    });
+    return rest;
   }
 
   /** Deregister contributions, run `onUnload` in the child, then stop it. */
@@ -1707,15 +2023,18 @@ export class PluginRuntime {
   private async disposePlugin(loaded: LoadedPlugin): Promise<void> {
     const pluginId = loaded.manifest.id;
     await this.stopServices(loaded);
-    if (!loaded.child) return;
-    try {
-      await this.sendToChild(
-        loaded,
-        { t: "call", method: "lifecycle.unload", payload: {} },
-        PLUGIN_SHUTDOWN_HOOK_TIMEOUT_MS,
-      );
-    } catch {
-      // A stuck or already-dead child must never block quit.
+    // A plugin with no headless module has no unload hook to run, but its
+    // declarative contributions still have to be released.
+    if (loaded.child) {
+      try {
+        await this.sendToChild(
+          loaded,
+          { t: "call", method: "lifecycle.unload", payload: {} },
+          PLUGIN_SHUTDOWN_HOOK_TIMEOUT_MS,
+        );
+      } catch {
+        // A stuck or already-dead child must never block quit.
+      }
     }
     this.rejectPending(loaded, apiError("PLUGIN_UNLOADED", `plugin unloaded: ${pluginId}`));
     this.clearContributions(pluginId);
@@ -1955,6 +2274,86 @@ export class PluginRuntime {
           PLUGIN_PANEL_TIMEOUT_MS,
         );
     }
+  }
+
+  /**
+   * Relay one `plugin.call` renderer action to the calling plugin's own
+   * headless entry and answer with what that entry returned (ADR 0294
+   * decision 4).
+   *
+   * The plugin id arrives from the renderer, so nothing it claims is trusted:
+   * the record, the manifest and the declaration are all read from what this
+   * process loaded, which is what makes the call reach the calling plugin's own
+   * entry rather than a neighbour's (ADR 0294 decision 5). Every refusal is
+   * coded, because a silent no-op is indistinguishable from a plugin bug.
+   */
+  async invokeRendererCall(
+    pluginId: string,
+    method: string,
+    args: unknown,
+  ): Promise<unknown> {
+    if (!pluginId || !method) {
+      throw rendererCallRefusal(
+        "PLUGIN_CALL_INVALID",
+        "a forwarded renderer call needs a plugin id and a method name",
+      );
+    }
+    const loaded = this.loaded.get(pluginId);
+    if (!loaded || loaded.disposing) {
+      throw rendererCallRefusal("PLUGIN_CALL_UNKNOWN_PLUGIN", `plugin not loaded: ${pluginId}`);
+    }
+    if (!(loaded.manifest.rendererActions ?? []).includes(RENDERER_CALL_ACTION)) {
+      throw rendererCallRefusal(
+        "PLUGIN_CALL_UNDECLARED",
+        `plugin ${pluginId} does not declare "${RENDERER_CALL_ACTION}" in rendererActions`,
+      );
+    }
+    // A UI-only plugin has no headless entry, so there is nothing to forward to
+    // and no page relay to fall back on: "its own entry" simply does not exist
+    // (ADR 0294 decision 4). Refusing says so, where a fallback would run the
+    // call in an entry the renderer never named.
+    if (!headlessEntry(loaded.manifest)) {
+      throw rendererCallRefusal(
+        "PLUGIN_CALL_NO_ENTRY",
+        `plugin ${pluginId} declares no headless entry to forward to`,
+      );
+    }
+    if (!loaded.child) {
+      throw rendererCallRefusal("PLUGIN_CALL_NO_PROCESS", `plugin host process gone: ${pluginId}`);
+    }
+    try {
+      return await this.sendToChild(
+        loaded,
+        {
+          t: "call",
+          method: "renderer.call",
+          payload: { method, args: args ?? null },
+        },
+        PLUGIN_RENDERER_CALL_TIMEOUT_MS,
+      );
+    } catch (error) {
+      throw this.rendererCallFailure(pluginId, method, error);
+    }
+  }
+
+  /**
+   * One failed `renderer.call`, under the code that names it. A timeout is the
+   * one failure the child cannot report itself; everything else arrives with
+   * the child's own code — `PLUGIN_CALL_NO_HANDLER`,
+   * `PLUGIN_CALL_UNSERIALIZABLE`, or whatever code a throw from the plugin
+   * carried. The code is re-stamped so the result envelope keeps it instead of
+   * collapsing it into a generic `INTERNAL`.
+   */
+  private rendererCallFailure(pluginId: string, method: string, error: unknown): PluginApiError {
+    const raw = (error as PluginApiError | undefined)?.code;
+    const code = typeof raw === "string" && raw ? raw : "PLUGIN_CALL_FAILED";
+    if (code === "TIMEOUT") {
+      return rendererCallRefusal(
+        "PLUGIN_CALL_TIMEOUT",
+        `plugin ${pluginId} did not answer renderer call "${method}" in time`,
+      );
+    }
+    return rendererCallRefusal(code, error instanceof Error ? error.message : String(error));
   }
 
   // --- plugin host process plumbing -------------------------------------
@@ -2353,6 +2752,51 @@ export class PluginRuntime {
         this.tools.delete(pluginToolName(pluginId, String(args[0] ?? "")));
         return { ok: true };
       }
+      case "speech.registerAdapter": {
+        this.assertPermission(loaded, "speech.adapter.register");
+        const descriptor = (args[0] ?? {}) as {
+          protocol?: string;
+          label?: string;
+          roles?: unknown;
+        };
+        const protocol = String(descriptor.protocol ?? "").trim();
+        if (!/^[a-z][a-z0-9._-]{0,63}$/.test(protocol)) {
+          throw apiError("INVALID_ARGUMENT", "speech protocol is invalid");
+        }
+        if ((BUILTIN_SPEECH_PROTOCOL_IDS as readonly string[]).includes(protocol)) {
+          throw apiError("CONFLICT", "speech protocol is reserved");
+        }
+        const existing = this.speechAdapters.get(protocol);
+        if (existing && existing.pluginId !== pluginId) {
+          throw apiError("CONFLICT", `speech protocol in use: ${protocol}`);
+        }
+        const roles = Array.isArray(descriptor.roles)
+          ? descriptor.roles.filter((role): role is "transcribe" | "synthesize" =>
+              role === "transcribe" || role === "synthesize",
+            )
+          : [];
+        if (roles.length === 0) throw apiError("INVALID_ARGUMENT", "speech roles are required");
+        this.speechAdapters.set(protocol, {
+          protocol,
+          label: String(descriptor.label ?? protocol),
+          roles: [...new Set(roles)],
+          pluginId,
+        });
+        this.services.audit?.({
+          pluginId,
+          api: "speech.registerAdapter",
+          ok: true,
+          ts: Date.now(),
+          protocol,
+        });
+        return { ok: true };
+      }
+      case "speech.unregisterAdapter": {
+        const protocol = String(args[0] ?? "").trim();
+        const existing = this.speechAdapters.get(protocol);
+        if (existing?.pluginId === pluginId) this.speechAdapters.delete(protocol);
+        return { ok: true };
+      }
       case "models.list": {
         this.assertPermission(loaded, "models.list");
         const models = (await this.services.listModels?.()) ?? [];
@@ -2453,9 +2897,21 @@ export class PluginRuntime {
         }
         return this.services.session.delete(loaded.manifest.id, input);
       }
-      case "agent.complete": {
-        return this.runAgentComplete(loaded, (args[0] ?? {}) as PluginCompleteInput);
+      case "usage.listTurns": {
+        // Read-only completed-turn facts (spec 07-plugins/03 §usage): flat
+        // counters and identifiers, no message body, no write path. Every
+        // dashboard shape stays the plugin's own computation.
+        this.assertPermission(loaded, "usage.read");
+        const input = normalizePluginUsageListTurnsInput(args[0]);
+        if (!this.services.usage?.listTurns) {
+          throw apiError("UNSUPPORTED", "host api not available: usage.listTurns");
+        }
+        return this.services.usage.listTurns(loaded.manifest.id, input);
       }
+      case "agent.complete":
+      case "agent.model.complete":
+      case "ai.complete":
+        return this.runAgentComplete(loaded, (args[0] ?? {}) as PluginCompleteInput);
       default: {
         if (!HOST_API_ALLOWLIST.has(api)) {
           this.services.audit?.({
@@ -2749,6 +3205,9 @@ export class PluginRuntime {
     }
     for (const [name, tool] of this.tools) {
       if (tool.pluginId === pluginId) this.tools.delete(name);
+    }
+    for (const [protocol, adapter] of this.speechAdapters) {
+      if (adapter.pluginId === pluginId) this.speechAdapters.delete(protocol);
     }
     for (const [id, skill] of this.skills) {
       if (skill.pluginId === pluginId) this.skills.delete(id);
@@ -3683,13 +4142,61 @@ export class PluginRuntime {
     return context;
   }
 
+  /**
+   * Agent-extension / plugin-process AI complete (`agent.model.complete`).
+   * Credentials stay in this process; callers never receive API keys.
+   */
+  async invokeAgentModelComplete(
+    pluginId: string,
+    input: PluginCompleteInput & { permissions?: readonly string[] },
+  ): Promise<PluginCompleteResult> {
+    const loaded = this.loaded.get(pluginId);
+    if (loaded) return this.runAgentComplete(loaded, input);
+    // Manual/user extensions have no LoadedPlugin row: honor the grants the
+    // sidecar already gated on, using a synthetic permission set.
+    const synthetic = {
+      manifest: { id: pluginId || "extension", name: pluginId || "extension" },
+      permissions: new Set(
+        (input.permissions ?? []).filter((name): name is string => typeof name === "string"),
+      ),
+    } as LoadedPlugin;
+    return this.runAgentComplete(synthetic, input);
+  }
+
   private async runAgentComplete(
     loaded: LoadedPlugin,
     input: PluginCompleteInput,
   ): Promise<PluginCompleteResult> {
-    this.assertPermission(loaded, "agent.complete");
-    const modelKey = String(input.modelKey ?? "").trim();
-    if (!modelKey || !modelKey.includes("/")) {
+    // Product name `agent.model.complete`; existing grant `agent.complete`
+    // remains valid for plugins installed before the rename.
+    if (
+      !loaded.permissions.has("agent.model.complete") &&
+      !loaded.permissions.has("agent.complete")
+    ) {
+      throw apiError("PERMISSION_DENIED", "agent.model.complete");
+    }
+    let modelKey = String(input.modelKey ?? "").trim();
+    if (!modelKey) {
+      // Omitted model → host default from the ready catalog (isDefault).
+      // Use services.listModels directly: this grant must not require models.list.
+      const rows = (await this.services.listModels?.()) ?? [];
+      const list = Array.isArray(rows) ? rows : [];
+      // Rows are `PluginModelInfo`: the model identity is `key`
+      // (`providerId/modelId`), and the host's own default row is `isDefault`.
+      const keyOf = (item: unknown): string => {
+        if (!item || typeof item !== "object") return "";
+        const key = (item as { key?: unknown }).key;
+        return typeof key === "string" ? key.trim() : "";
+      };
+      const preferred = list.find(
+        (item) => (item as { isDefault?: boolean }).isDefault === true && keyOf(item) !== "",
+      );
+      modelKey = keyOf(preferred) || keyOf(list.find((item) => keyOf(item) !== ""));
+      if (!modelKey || !modelKey.includes("/")) {
+        throw apiError("NO_MODEL", "no configured model for agent.model.complete");
+      }
+    }
+    if (!modelKey.includes("/")) {
       throw apiError("INVALID_ARGUMENT", "modelKey must be providerId/modelId");
     }
     const system = typeof input.system === "string" ? input.system : "";

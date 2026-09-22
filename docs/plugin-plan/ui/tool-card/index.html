@@ -1,0 +1,105 @@
+<!-- status: draft · issue #545 · branch feat/528-plugin-slots -->
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>工具调用卡 · 目录</title>
+<style>
+  :root{
+    --bg:#0e0e0e; --surface:#161616; --line:#2a2a2a; --line-2:#353535;
+    --text:#ededed; --text-2:#b0b0b0; --muted:#7d7d7d; --faint:#5c5c5c;
+    --ok:#40c977; --ok-bg:rgba(64,201,119,.10);
+    --warn:#ff8549; --warn-bg:rgba(255,133,73,.10);
+    --font:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;
+    --mono:ui-monospace,"SF Mono","Cascadia Code",Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0}
+  body{background:var(--bg);color:var(--text);font-family:var(--font);font-size:14px;line-height:1.65;-webkit-font-smoothing:antialiased}
+  code{font-family:var(--mono);font-size:12.5px;color:var(--text-2)}
+
+  /* 顶部导航：目录内各页互相跳转 */
+  .plan-nav{display:flex;flex-wrap:wrap;align-items:center;gap:4px;padding:10px 28px;background:#0c0c0c;border-bottom:1px solid var(--line);font-size:13px}
+  .plan-nav a{color:var(--text-2);text-decoration:none;padding:3px 8px;border-radius:6px}
+  .plan-nav a:hover{background:var(--surface);color:var(--text)}
+  .plan-nav a[aria-current="page"]{background:var(--surface);color:var(--text);box-shadow:inset 0 0 0 1px var(--line-2)}
+  .plan-nav .sep{color:var(--faint);padding:0 2px}
+  .plan-nav .spacer{flex:1}
+
+  .top{border-bottom:1px solid var(--line);padding:24px 28px 20px;background:linear-gradient(180deg,#141414,#0e0e0e)}
+  .top .crumb{font-family:var(--mono);font-size:11.5px;color:var(--faint);letter-spacing:.06em}
+  .top h1{margin:6px 0;font-size:21px}
+  .top p{margin:0;color:var(--text-2);max-width:80ch}
+  .top .meta{margin-top:8px;color:var(--faint);font-size:12.5px}
+  main{max-width:880px;margin:0 auto;padding:24px 28px 80px}
+  h2{font-size:15px;margin:28px 0 10px;padding-top:14px;border-top:1px solid var(--line)}
+  h2:first-child{margin-top:0;border-top:0;padding-top:0}
+  .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px}
+  .card{display:block;padding:14px 16px;border-radius:11px;background:var(--surface);border:1px solid var(--line);text-decoration:none;color:inherit}
+  .card:hover{border-color:var(--line-2);background:#191919}
+  .card .name{font-family:var(--mono);font-size:12.5px;color:var(--text-2)}
+  .card .what{margin:6px 0 0;font-size:13.5px}
+  .card .files{margin:8px 0 0;font-family:var(--mono);font-size:11.5px;color:var(--faint)}
+  ul{margin:0;padding-left:1.2em}
+  li{margin:3px 0}
+</style>
+</head>
+<body>
+
+<nav class="plan-nav">
+  <a href="../../index.html">插件插槽目录</a>
+  <span class="sep">/</span>
+  <a href="index.html" aria-current="page">工具调用卡</a>
+  <span class="spacer"></span>
+  <a href="index.html" aria-current="page">目录</a>
+  <a href="requirements.html">需求</a>
+  <a href="demo.html">演示</a>
+  <a href="data-flow.html">数据流</a>
+</nav>
+
+<header class="top">
+  <div class="crumb">docs/plugin-plan · ui · tool-card</div>
+  <h1>工具调用卡</h1>
+  <p>对话里每一次工具调用显示的那张卡。一个槽 <code>tool-card</code>：插件按工具名认领，拿到固定格式的数据 + 宿主默认卡，可以整体重绘，也可以原样复用再包一层。本期只做展示，不做等待 / 审批性质的卡。</p>
+  <div class="meta">status: draft · issue #545 · branch feat/528-plugin-slots</div>
+</header>
+
+<main>
+
+  <h2>这个目录里有什么</h2>
+  <div class="cards">
+    <a class="card" href="requirements.html">
+      <div class="name">requirements.html</div>
+      <p class="what">要什么：范围、槽怎么认领、必须提供什么、插件场景、明确不做。</p>
+      <p class="files">已定 / 建议 / 还没定 分开标色</p>
+    </a>
+    <a class="card" href="demo.html">
+      <div class="name">demo.html</div>
+      <p class="what">长什么样：一场对话，7 个场景，从宿主默认卡到重绘、图表、MCP、图片、运行中与失败。</p>
+      <p class="files">不写说明文字，只有界面；紫色虚线框 = 插件接管的槽</p>
+    </a>
+    <a class="card" href="data-flow.html">
+      <div class="name">data-flow.html</div>
+      <p class="what">怎么接：固定数据格式长什么样、数据怎么走、出错怎么办、不提供什么。</p>
+      <p class="files">接口约定 / 数据怎么走 / 出错怎么办 / 不提供什么 / 相关条目 / 还没定的事</p>
+    </a>
+  </div>
+
+  <h2>一句话回顾</h2>
+  <ul>
+    <li>工具很多、形状各异，所以插件拿到的不是某个工具的原始返回，而是宿主归一后的<b>一份固定数据格式</b>；原始返回块原样附在 <code>result.content</code> 里，不丢信息。</li>
+    <li>槽只有一个，挂在默认卡的位置上；插件按<b>工具全名</b>认领（不做通配），两个插件认领同一个名字在<b>安装时提示冲突</b>；没认领的工具保持宿主默认卡。</li>
+    <li>认领的卡拿到：这份固定数据 + 宿主默认卡组件。可以整块换掉，也可以原样复用再包一层。</li>
+    <li>本期<b>只做展示</b>：凡是带等待性质的——下一步、审批、确认、重试再跑——都不做。</li>
+    <li>Write / Edit 旁的改动审阅卡移到<b>输入框上方</b>固定显示，不再跟着工具卡走。</li>
+    <li><b>数据全量给，不截断</b>；显示什么、怎么省是插件自己的事。卡的折叠展开状态也<b>插件管</b>。</li>
+    <li>运行中的卡也在槽里：流式输出按节拍把新数据递给插件重画。</li>
+  </ul>
+
+  <h2>还没定的事</h2>
+  <p style="color:var(--muted);font-size:13px">本轮的问题都已拍板。子代理的拓扑画布和工作面板侧栏本轮不开放认领（Task / TaskWait / TaskList / TaskStop 认领无效）；将来要放开时另开一轮。</p>
+
+</main>
+</body>
+</html>

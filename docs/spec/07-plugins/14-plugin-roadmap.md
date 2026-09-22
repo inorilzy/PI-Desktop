@@ -77,6 +77,52 @@ Local plugins usable → developer-friendly → marketplace distribution → sig
   prompt routing
 - Spec: [16-trusted-extensions.md](16-trusted-extensions.md); ADR 0214, ADR 0215
 
+### R8 — Trusted renderer host (issue #528, batch 0 ✅)
+- `manifest.renderer`: a plugin-relative ES module that runs inside the host
+  renderer and registers React components into host-owned slots ✅
+- `manifest.main` became optional, with one new rule: at least one entry across
+  `main`, `renderer`, `ui.panel`, `views[].entry`, and
+  `settingsDestinations[].entry` ✅
+- `renderer.extension` (high) is the single permission for the trusted UI tier;
+  component slots are authorized by tier, never one by one ✅
+- Component-slot ids: `entry`, `toolCard`, `codeBlock`, `entryExtra`,
+  `composerControl`, `completionSource`, `inlineConfirm`, `modal`, `overlay`,
+  `composerReference` ✅
+- Lazy fetch and evaluation over the `plugin-renderer` scheme, namespace style
+  isolation, the React singleton rule, per-slot error boundaries, and a
+  `renderer` capability chip on the plugin row ✅
+- Spec: [16-trusted-extensions.md](16-trusted-extensions.md) §2A; ADR 0291
+
+### R9 — Runtime slots (issue #561)
+- The slot-permission model is shipped: every `runtime.*` name ADR 0295 builds is
+  registered, and the sidecar resolves a wired event's slot permission before a
+  handler runs, so a plugin that holds only `agent.extension` is refused with a
+  `permission_denied` diagnostic (spec 13 §2C, ADR 0295 rule 2). That retires
+  the D1 deviation this section used to describe.
+- Batch A of ADR 0295's phasing is shipped: Abort Turn (3) has its entry point
+  (`requestTurnAbort`) plus the turn's cancellation signal that plugin work
+  observes; Tool Extend (5) reaches the tool-result fold; and Turn Facts (9) is
+  answered by host-core through the `turn.facts` RPC on schema v21
+  (04-data-storage §4.16). A plugin-facing reader for those facts is not built
+  yet, so the slot's grant has nothing a plugin can call.
+- Turn Closing (7) still reaches the kernel through `shouldStopAfterTurn`, and
+  the hooks that were already wired — Turn Watch (2) and Tool Gate (4) — keep
+  the behaviour they had; spec 13 §2C states per event which hook points the
+  desktop emits today.
+- Shipped: Before Send (1) — the runtime's `input` hook fires after Electron main
+  persisted the user's message and before it is queued, honours all three kernel
+  actions, and every rewrite a plugin performs is stored at diff level through
+  the `plugin.rewrites.record` RPC (04-data-storage §4.15) and marked on the
+  message row (ADR 0295 rule 5) — and Session Lifecycle (11) — create, switch,
+  delete and fork are announced informed-only, with the compaction handover
+  keeping its cancel.
+- Not shipped: Turn Recap (8) and Turn Continue (10) — a registered name with no
+  hook or call behind it; Approval Before (12) — not built.
+- Before Request (6) was withdrawn before shipping: its six events are never
+  consulted and its permission is registered nowhere; the slot set, the
+  per-slot permissions and the order of work are all fixed in
+  [ADR 0295](../../adr/0295-runtime-slots-and-their-permissions.md).
+
 ## 3. Mapping to product milestones
 
 | Product milestone | Plugin goal |

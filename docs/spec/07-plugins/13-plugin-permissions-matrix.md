@@ -46,7 +46,23 @@ Provide a permission–capability–risk–default-policy reference table for re
 | `session.read.own` | medium | `pi.session.list`, `pi.session.get`, `pi.session.listMessages` | Confirm at install | Reads only sessions imported by the calling plugin; no cross-plugin access |
 | `session.update.own` | medium | `pi.session.rename` | Confirm at install | Renames only the calling plugin's active imported sessions |
 | `session.delete.own` | high | `pi.session.delete` | Confirm at install | Trash/purge only the calling plugin's imported sessions; rate-limited |
+| `usage.read` | medium | `pi.usage.listTurns` | Confirm at install | Read-only listing of completed-turn facts (per-turn token counters and identifiers, keyset-paginated); no message body and no write path |
 | `agent.complete` | high | `pi.agent.complete` | Confirm at install | Host-owned one-shot; spends user quota; `includeSessionContext` also needs `session.read` |
+| `speech.adapter.register` | high | `pi.speech.registerAdapter` / `unregisterAdapter` | Confirm at install | Registers a speech protocol. Handles stay in the guest; HTTP plans are executed by the host with the bound provider key and must stay on that origin. Built-in protocol ids are reserved |
+| `renderer.extension` | high | Run `manifest.renderer` as an ES module inside the host renderer and register components into host-owned slots | Explicit confirmation; by tier, never per slot | The module runs inside the app window, in the host's own realm, with no process isolation. One permission covers every component slot (spec 16 §2A, ADR 0291) |
+| `agent.model.complete` | high | Plugin AI on user-configured models | Confirm at install | One-shot plugin completion (`pi.ai.complete`); optional `model` limited to the user provider catalog; `system` is not auto-merged with the session prompt. Existing `agent.complete` remains accepted. |
+| `runtime.request.before` | — | withdrawn | — | Slot 6 is not offered; silent request rewrites are not a plugin surface. |
+| `runtime.send.before` | high | Runtime slot consult: Before Send | Confirm at install | Consulted after the user presses send and before the message is queued: read it (attachments included), block it, or rewrite what the model receives; a rewrite is marked on the message row. The slot rides the `input` event |
+| `runtime.session.lifecycle` | high | Runtime slot consult: Session Lifecycle | Confirm at install | Told about create / switch / delete / fork and compaction. Informed-only on destructive actions; it may cancel a compaction and receives the segment about to be compacted, while a session switch or delete never waits on a plugin (ADR 0295 rule 11) |
+| `runtime.session.read` | high | Runtime slot consult: Session Read | Confirm at install | Reading a session's content. Reads are not logged one by one; the install review and the plugin row are the consent surface (ADR 0295 rule 7) |
+| `runtime.tool.extend` | high | Runtime slot consult: Tool Extend | Confirm at install | A plugin tool may introduce a tool at runtime, report its own spend, and request early termination of the batch; a runtime-introduced tool is labelled as such in the UI. Gated per tool result through `TRUSTED_EXTENSION_API_PERMISSIONS.toolResult` |
+| `runtime.tool.gate` | high | Runtime slot consult: Tool Gate | Confirm at install | A `tool_call` handler may block a call with a reason; a `tool_result` handler may replace a tool's result. Changing the call's arguments is permanently excluded (ADR 0295 rule 4), and asking the user is the plugin's job (rule 6) |
+| `runtime.turn.abort` | high | Runtime slot consult: Abort Turn | Confirm at install | Asks the host to stop the current turn; the plugin's own long-running work receives the same cancellation signal. Both halves ship together (ADR 0295 slot 3) |
+| `runtime.turn.closing` | high | Runtime slot consult: Turn Closing | Confirm at install | Consulted while a turn is still running and may ask the agent to keep going, which spends more tokens with no new message from the user. The continuation is persisted as a visible row with plugin provenance (ADR 0293) |
+| `runtime.turn.continue` | high | Runtime slot consult: Turn Continue | Confirm at install | Starts another continuation after a turn ends. No numeric quota: the host's own loops have none, so visibility and the audit trail are the control (ADR 0295 rule 9) |
+| `runtime.turn.facts` | low | Runtime slot consult: Turn Facts | Confirm at install | Structured facts about a turn — tool calls and outcomes, tokens, spend, duration, files touched — with no conversation text. The per-turn query surface behind it is shipped: host-core answers `turn.facts` from its own tables on schema v21 (`artifacts` with `turn_id`; 04-data-storage §4.16). No plugin-facing reader exists yet, so a plugin that holds this grant has nothing to call |
+| `runtime.turn.recap` | high | Runtime slot consult: Turn Recap | Confirm at install | Reads what a turn contained, including conversation text. A whole-session read also needs `runtime.session.read` (ADR 0295 rule 7) |
+| `runtime.turn.watch` | medium | Runtime slot consult: Turn Watch | Confirm at install | Live observation of the running turn — the kernel's message, tool-execution, turn and agent events — delivered best-effort with no receipt and no redelivery. It can watch and nothing else (ADR 0295 slot 2) |
 
 ## 2A. A permission is the switch; the manifest carries the range
 
@@ -85,6 +101,68 @@ plugin, so it carries three bounds the other modes do not:
 3. **A rate brake.** 50 deletes per rolling 60s per plugin. Past it the user is
    asked once with the reason given as rate rather than path, because
    `recursive: false` bounds one call and not a `glob` plus a loop.
+
+## 2C. Trust tiers
+
+Trust tier comes before slot here: this section maps entries to tiers, and the
+rows in §2 are the permissions those entries may draw on. Trust is per entry,
+and the tiers are orthogonal, not a ladder: declaring one tier grants nothing in
+another, and a plugin may declare any combination.
+
+| Entry | Where the code runs | Permission | Component slots |
+|---|---|---|---|
+| `main` / `ui.panel` / `views[].entry` / `settingsDestinations[].entry` | plugin `utilityProcess` / plugin `webContents` | the manifest's own permissions | none |
+| `renderer` | the host renderer, same realm as the host UI | `renderer.extension` (high) | allowed, by tier |
+| `contributes.agentExtensions` | the agent sidecar | `agent.extension` (high) | none |
+
+Component slots are never authorized individually. `renderer.extension` is the
+single grant for all of them (spec 16 §2A, ADR 0291); a plugin that does not
+declare `renderer` cannot register one, and a registration attempt is skipped
+and reported as a diagnostic rather than dropped silently. The runtime
+permissions in §2 differ in shape — one name per slot, because each one changes
+a different point of a running turn.
+
+Every runtime slot ADR 0295 builds is registered and enforced. The agent sidecar
+resolves a wired event's slot permission before a handler runs, skips the
+handler when the plugin does not hold it, and reports the skip as a
+`permission_denied` diagnostic on the plugin row. A tier permission says where
+the code runs and never implies a slot grant (ADR 0295 rule 2), so a plugin that
+holds only `agent.extension` has every slot-gated handler skipped — loudly, with
+the permission named. The same holds for the non-event calls named in
+`TRUSTED_EXTENSION_API_PERMISSIONS`: `requestTurnAbort` needs
+`runtime.turn.abort`, and a plugin tool's extended result needs
+`runtime.tool.extend`.
+
+The gate's input is the registry, not a filter: the eleven `runtime.*` names
+that ship are in `PLUGIN_PERMISSIONS` (ten slots plus `runtime.session.read`),
+and `REGISTERED_SLOT_PERMISSIONS` in `@pi-desktop/shared` mirrors them, with the
+desktop guard test failing when the two lists drift. Slot 6
+(`runtime.request.before`) was withdrawn and is deliberately absent from both
+lists; `runtime.approval.before` is the one slot the record leaves unbuilt, so
+no event maps to it and no registry holds it either.
+Modifying a tool call's arguments is not a slot and is
+permanently excluded (ADR 0295 rule 4): a `tool_call` handler can block with a
+reason, and nothing else.
+
+Some mapped events ride hook points the desktop does not emit yet
+(`project_trust`, `resources_discover`). Their permission is enforced on the
+mapping, so the gate is already in place the moment the hook point is wired;
+until then no handler runs, because no event fires. The six withdrawn slot-6
+events (`before_agent_start`, `context`, `before_provider_request`,
+`before_provider_headers`, `model_select`, `thinking_level_select`) are mapped
+nowhere: a registered handler is accepted silently and never consulted.
+The session lifecycle notices are the
+opposite case: `session_before_switch`, `session_before_fork` and
+`session_lifecycle` are emitted, and they are informed-only, so the result the
+gate would allow is ignored by the caller (ADR 0295 rule 11).
+
+Separate from the permission question, the trusted-extension sidecar's
+result-bearing event set
+(`packages/agent-runtime/src/extensions/runner.ts:116-130`) gives the 30 s
+handler budget to events whose result is ignored: the informed-only lifecycle
+notices by design (ADR 0295 rule 11), and `message_end`, which the desktop's
+forwarding path discards. The budget is what keeps a stalled handler from
+holding the notification loop; no permission or trust decision is involved.
 
 ## 3. Permission dependencies
 
@@ -147,11 +225,26 @@ so "Modify the files it lists" is followed by the list.
 | `session.read.own` | Read sessions imported by this plugin | 读取此插件导入的会话 |
 | `session.update.own` | Rename sessions imported by this plugin | 重命名此插件导入的会话 |
 | `session.delete.own` | Trash or purge sessions imported by this plugin | 将此插件导入的会话移入回收站或清除 |
+| `usage.read` | Read usage statistics | 读取用量统计 |
 | `agent.complete` | Run a one-shot completion with your models | 用你的模型发起一次补全 |
+| `agent.model.complete` | Use your configured models for one-shot plugin AI | 使用你已配置的模型发起一次性插件 AI |
+| `speech.adapter.register` | Register a speech adapter | 注册语音适配器 |
 | `audio.capture.background` | Use the microphone in the background | 后台使用麦克风 |
 | `audio.playback.background` | Play audio in the background | 后台播放声音 |
 | `keyboard.globalShortcut` | Register system-wide shortcuts | 注册系统级快捷键 |
 | `net.websocket` | Open real-time connections | 建立实时双向连接 |
+| `renderer.extension` | Run plugin UI inside the app window | 在应用窗口内运行插件界面 |
+| `runtime.send.before` | Inspect a message before it is sent | 在消息发送前检查 |
+| `runtime.tool.extend` | Add tools while the agent runs | 在 agent 运行时添加工具 |
+| `runtime.turn.abort` | Stop the running turn | 停止正在运行的轮次 |
+| `runtime.turn.closing` | Act just before a turn ends | 在轮次结束前介入 |
+| `runtime.turn.facts` | Read structured facts about a turn | 读取本轮的结构化事实 |
+| `runtime.session.lifecycle` | Follow session and compaction events | 跟踪会话与压缩事件 |
+| `runtime.session.read` | Read a session's content | 读取会话内容 |
+| `runtime.tool.gate` | Block tool calls and replace tool results | 拦截工具调用并替换工具结果 |
+| `runtime.turn.continue` | Start another turn after one ends | 在轮次结束后再发起一轮 |
+| `runtime.turn.recap` | Read what a turn contained | 读取某一轮的内容 |
+| `runtime.turn.watch` | Watch the running turn | 观察运行中的轮次 |
 
 ## 5. Adding permissions on upgrade
 

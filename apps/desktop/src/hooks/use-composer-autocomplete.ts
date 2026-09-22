@@ -13,7 +13,6 @@ import {
   type ComposerTrigger,
   type FsIndexEntry,
   type FuzzyMatch,
-  type SessionSummary,
 } from "@pi-desktop/shared";
 import { api } from "../lib/api";
 import { useAppStore } from "../stores/app-store";
@@ -26,13 +25,11 @@ import { useAppStore } from "../stores/app-store";
  */
 
 const MAX_FILE_ITEMS = 50;
-const MAX_SESSION_ITEMS = 8;
 const SOURCE_TTL_MS = 10_000;
 
 export type AutocompleteItem =
   | { kind: "command"; command: ComposerCommand; match: FuzzyMatch }
-  | { kind: "path"; entry: FsIndexEntry; match: FuzzyMatch }
-  | { kind: "session"; session: { id: string; title: string }; match: FuzzyMatch };
+  | { kind: "path"; entry: FsIndexEntry; match: FuzzyMatch };
 
 /** Module-level TTL caches so re-triggering stays IPC-free. */
 let commandsCache: { key: string; at: number; commands: ComposerCommand[] } | null =
@@ -107,43 +104,6 @@ function filterFiles(entries: FsIndexEntry[], query: string): AutocompleteItem[]
   })).map(({ entry, match }) => ({ kind: "path", entry, match }));
 }
 
-function filterSessions(
-  sessions: SessionSummary[],
-  query: string,
-  excludeId: string | null | undefined,
-): AutocompleteItem[] {
-  const matched: Array<{
-    session: { id: string; title: string };
-    match: FuzzyMatch;
-    updatedAt: string;
-  }> = [];
-  for (const session of sessions) {
-    if (session.id === excludeId) continue;
-    const title = session.title.trim() || session.id;
-    const match =
-      fuzzyMatchCommand(query, title) ??
-      (query ? fuzzyMatchCommand(query, session.id) : null);
-    if (!match) continue;
-    matched.push({
-      session: { id: session.id, title },
-      match,
-      updatedAt: session.updatedAt,
-    });
-  }
-  if (!query) {
-    matched.sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
-    return matched.slice(0, MAX_SESSION_ITEMS).map(({ session, match }) => ({
-      kind: "session",
-      session,
-      match,
-    }));
-  }
-  return selectBestMatches(matched, MAX_SESSION_ITEMS, ({ session, match }) => ({
-    score: match.score,
-    text: session.title,
-  })).map(({ session, match }) => ({ kind: "session", session, match }));
-}
-
 /**
  * Resolve a typed "/name" against the merged command and skill list at send
  * time (builtin/plugin dispatch and skill validation); templates and unknown
@@ -180,10 +140,11 @@ export function useComposerAutocomplete({
   composing: boolean;
   enabled: boolean;
 }) {
+  const sessionId = useAppStore((s) => s.activeSessionId);
+  const live = useRef({ value, cursor, composing, enabled, sessionId });
+  live.current = { value, cursor, composing, enabled, sessionId };
   const workspaceKey = useAppStore((s) => s.workspace?.path ?? "");
   const hasWorkspace = workspaceKey !== "";
-  const sessions = useAppStore((s) => s.sessions);
-  const activeSessionId = useAppStore((s) => s.activeSessionId);
   const [commands, setCommands] = useState<ComposerCommand[] | null>(null);
   const [files, setFiles] = useState<{
     entries: FsIndexEntry[];
@@ -276,10 +237,8 @@ export function useComposerAutocomplete({
     if (trigger.mode === "slash") {
       return commands ? filterCommands(commands, trigger.query) : [];
     }
-    const sessionItems = filterSessions(sessions, trigger.query, activeSessionId);
-    const fileItems = files ? filterFiles(files.entries, trigger.query) : [];
-    return [...sessionItems, ...fileItems];
-  }, [trigger, dismissed, commands, files, sessions, activeSessionId]);
+    return files ? filterFiles(files.entries, trigger.query) : [];
+  }, [trigger, dismissed, commands, files]);
 
   // New query or mode restarts keyboard navigation at the top hit.
   const itemsKey = trigger ? `${trigger.mode}:${trigger.query}` : "";
@@ -303,22 +262,12 @@ export function useComposerAutocomplete({
       | {
           value: string;
           cursor: number;
-          fileReference?: { path: string; name: string; kind?: "file" | "session" };
+          fileReference?: { path: string; name: string };
         }
       | null => {
       if (!trigger) return null;
       const item = items[index];
       if (!item) return null;
-      if (item.kind === "session") {
-        return {
-          ...applyCompletion(value, trigger, ""),
-          fileReference: {
-            path: item.session.id,
-            name: item.session.title,
-            kind: "session",
-          },
-        };
-      }
       if (item.kind === "path" && item.entry.kind === "file") {
         return {
           ...applyCompletion(value, trigger, ""),
@@ -337,7 +286,18 @@ export function useComposerAutocomplete({
     [trigger, items, value],
   );
 
+  const acceptText = (text: string) => {
+    const current = live.current;
+    if (!open || !trigger || current.composing || !current.enabled ||
+        current.value !== value || current.cursor !== cursor ||
+        current.sessionId !== sessionId || typeof text !== "string" ||
+        !text || text.length > 4096) return null;
+    return applyCompletion(value, trigger, text);
+  };
+
   return {
+    sessionId,
+    acceptText,
     open,
     mode: open && trigger ? trigger.mode : null,
     query: open && trigger ? trigger.query : "",

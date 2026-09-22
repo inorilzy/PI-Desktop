@@ -92,7 +92,7 @@ docs/spec/
    `.pi/plan/*.md`神器； title/question 保持结构化
    `plan_approvals`，批准打开工件，仅限 approve/reject，并且
    `PLAN_APPROVAL_TIMEOUT` 在 30 绝对分钟后过期
-9. 协议 v11 和存储架构 v15 对 Plan/Goal 检查点、
+9. 协议 v11 和存储架构 v21 对 Plan/Goal 检查点、
    `plan_approvals` 执行字段、启动中断和外壳身份具有权威性。
    v11 撤回 v10 添加的 A2A 方法域。
 10、权限超时120s拒绝； Bash 超时默认 60 秒

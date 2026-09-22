@@ -1,0 +1,1091 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!--
+      A docked work-panel view (ADR 0104) is the same isolated page a `ui.panel`
+      window hosts, so this one entry file renders in both placements: the host
+      publishes `--pi-plugin-titlebar-height` (0px docked, 46px in a detached
+      window) and `data-pi-plugin-panel-shape` (`view` | `panel` | `widget`)
+      before page scripts run, and the page branches on those instead of
+      guessing. `:root[data-base]` is applied from `app.getAppearance` and the
+      `appearance:changed` event.
+    -->
+    <meta name="pi-plugin-chrome" content="v2" />
+    <title>插件自检控制台 · Showcase Console</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --c-bg: #181818;
+        --c-surface: #202020;
+        --c-text: #ffffff;
+        --c-muted: color-mix(in oklab, #ffffff 60%, transparent);
+        --c-faint: color-mix(in oklab, #ffffff 38%, transparent);
+        --c-border: color-mix(in oklab, #ffffff 11%, transparent);
+        --c-hover: color-mix(in oklab, #ffffff 5%, transparent);
+        --c-accent: #6ea8fe;
+        --c-ok: #6ee7a8;
+        --c-warn: #f2c15b;
+        --c-bad: #f08a8a;
+        --c-radius-sm: 8px;
+        --c-radius-md: 12px;
+        --c-font: ui-sans-serif, system-ui, "Segoe UI", "Microsoft YaHei", sans-serif;
+        --c-mono: ui-monospace, "Cascadia Mono", Consolas, monospace;
+      }
+      :root[data-base="light"] {
+        color-scheme: light;
+        --c-bg: #ffffff;
+        --c-surface: #f7f7f8;
+        --c-text: #1a1c1f;
+        --c-muted: color-mix(in oklab, #1a1c1f 68%, transparent);
+        --c-faint: color-mix(in oklab, #1a1c1f 46%, transparent);
+        --c-border: color-mix(in oklab, #1a1c1f 12%, transparent);
+        --c-hover: color-mix(in oklab, #1a1c1f 5%, transparent);
+        --c-accent: #2f6fdb;
+        --c-ok: #1c8a54;
+        --c-warn: #9a6a05;
+        --c-bad: #b9393f;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        padding: var(--pi-plugin-titlebar-height, 0px) 0 0;
+        background: var(--c-bg);
+        color: var(--c-text);
+        font-family: var(--c-font);
+        font-size: 13px;
+        line-height: 1.5;
+        display: flex;
+        flex-direction: column;
+      }
+      .console-head {
+        padding: 12px 14px 10px;
+        border-bottom: 1px solid var(--c-border);
+      }
+      .console-title {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        flex-wrap: wrap;
+      }
+      .console-title b {
+        font-size: 15px;
+      }
+      .ver,
+      .shape {
+        font-size: 11px;
+        color: var(--c-faint);
+      }
+      .shape {
+        border: 1px solid var(--c-border);
+        border-radius: 999px;
+        padding: 1px 8px;
+      }
+      .spacer {
+        flex: 1;
+      }
+      .chips {
+        display: flex;
+        gap: 6px;
+        flex-wrap: wrap;
+        margin-top: 9px;
+      }
+      .chip {
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        padding: 1px 8px;
+        border-radius: 999px;
+        border: 1px solid var(--c-border);
+        font-size: 11px;
+        color: var(--c-muted);
+        background: color-mix(in oklab, var(--c-text) 4%, transparent);
+      }
+      .chip.served {
+        border-color: color-mix(in oklab, var(--c-ok) 45%, transparent);
+        color: var(--c-ok);
+      }
+      .chip.unserved {
+        border-style: dashed;
+        border-color: color-mix(in oklab, var(--c-warn) 55%, transparent);
+        color: var(--c-warn);
+      }
+      .live {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+        gap: 6px;
+        margin-top: 9px;
+      }
+      .live-tile {
+        border: 1px solid var(--c-border);
+        border-radius: var(--c-radius-sm);
+        background: var(--c-surface);
+        padding: 6px 8px;
+        font-size: 11px;
+        color: var(--c-muted);
+      }
+      .live-tile b {
+        display: block;
+        color: var(--c-text);
+        font-size: 12px;
+        font-weight: 600;
+      }
+      .tools {
+        display: flex;
+        gap: 8px;
+        padding: 10px 14px;
+        border-bottom: 1px solid var(--c-border);
+        align-items: center;
+        flex-wrap: wrap;
+      }
+      .tools input {
+        flex: 1;
+        min-width: 140px;
+        background: var(--c-surface);
+        border: 1px solid var(--c-border);
+        border-radius: var(--c-radius-sm);
+        color: var(--c-text);
+        padding: 6px 9px;
+        font-family: inherit;
+        font-size: 12px;
+      }
+      button {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 6px;
+        min-height: 28px;
+        padding: 4px 10px;
+        border: 1px solid var(--c-border);
+        border-radius: var(--c-radius-sm);
+        background: var(--c-surface);
+        color: var(--c-text);
+        font: inherit;
+        font-size: 12px;
+        cursor: pointer;
+      }
+      button:hover {
+        background: color-mix(in oklab, var(--c-text) 10%, var(--c-surface));
+      }
+      button.primary {
+        border-color: color-mix(in oklab, var(--c-accent) 60%, transparent);
+      }
+      button.ghost {
+        background: transparent;
+      }
+      button[disabled] {
+        opacity: 0.45;
+        cursor: not-allowed;
+      }
+      .groups {
+        flex: 1;
+        overflow: auto;
+        padding: 6px 8px 10px;
+      }
+      details.group {
+        border: 1px solid var(--c-border);
+        border-radius: var(--c-radius-md);
+        background: var(--c-surface);
+        margin: 8px 6px;
+      }
+      details.group > summary {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+        padding: 9px 11px;
+        font-size: 13px;
+        font-weight: 600;
+        cursor: pointer;
+        list-style: none;
+      }
+      details.group > summary::-webkit-details-marker {
+        display: none;
+      }
+      details.group > summary .count {
+        font-size: 11px;
+        font-weight: 400;
+        color: var(--c-faint);
+      }
+      details.group > summary .caret {
+        color: var(--c-faint);
+        transition: transform 0.15s;
+      }
+      details.group[open] > summary .caret {
+        transform: rotate(90deg);
+      }
+      .scope-note,
+      .gap {
+        font-size: 11px;
+        line-height: 1.6;
+        padding: 0 11px 7px;
+        color: var(--c-faint);
+      }
+      .gap {
+        margin: 0 11px 8px;
+        padding: 6px 8px;
+        border: 1px dashed color-mix(in oklab, var(--c-warn) 45%, transparent);
+        border-radius: var(--c-radius-sm);
+        color: var(--c-warn);
+      }
+      .item {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto auto;
+        gap: 8px;
+        align-items: center;
+        padding: 7px 11px;
+        border-top: 1px solid var(--c-border);
+      }
+      .item:hover {
+        background: var(--c-hover);
+      }
+      .item .desc {
+        display: block;
+        font-size: 11px;
+        color: var(--c-faint);
+        margin-top: 2px;
+      }
+      .item code {
+        font-family: var(--c-mono);
+        font-size: 12px;
+        color: var(--c-text);
+      }
+      .item .status {
+        font-size: 10.5px;
+        min-width: 62px;
+        text-align: right;
+        color: var(--c-faint);
+      }
+      .item .status.ok {
+        color: var(--c-ok);
+      }
+      .item .status.refused {
+        color: var(--c-bad);
+      }
+      .item .status.warn {
+        color: var(--c-warn);
+      }
+      .pill {
+        font-size: 10.5px;
+        padding: 1px 7px;
+        border-radius: 999px;
+        white-space: nowrap;
+        border: 1px solid var(--c-border);
+        color: var(--c-muted);
+      }
+      .pill.replace {
+        color: var(--c-warn);
+        border-color: color-mix(in oklab, var(--c-warn) 45%, transparent);
+      }
+      .pill.additive {
+        color: var(--c-ok);
+        border-color: color-mix(in oklab, var(--c-ok) 40%, transparent);
+      }
+      .pill.ambient {
+        color: #9fd0ff;
+        border-color: color-mix(in oklab, #9fd0ff 45%, transparent);
+      }
+      .pill.unserved,
+      .pill.unimpl {
+        color: var(--c-warn);
+        border-color: color-mix(in oklab, var(--c-warn) 45%, transparent);
+      }
+      .log {
+        border-top: 1px solid var(--c-border);
+        max-height: 42%;
+        display: flex;
+        flex-direction: column;
+        min-height: 120px;
+      }
+      .log-head {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 8px 12px;
+        font-size: 11px;
+        color: var(--c-muted);
+      }
+      .log-body {
+        overflow: auto;
+        padding: 0 8px 10px;
+        font-family: var(--c-mono);
+        font-size: 11px;
+      }
+      .log-line {
+        padding: 4px 6px;
+        border-bottom: 1px dashed color-mix(in oklab, var(--c-text) 7%, transparent);
+        color: var(--c-muted);
+        white-space: pre-wrap;
+        word-break: break-word;
+      }
+      .log-line .t {
+        color: var(--c-faint);
+      }
+      .log-line .surface {
+        color: var(--c-faint);
+      }
+      .log-line .ok {
+        color: var(--c-ok);
+      }
+      .log-line .warn {
+        color: var(--c-warn);
+      }
+      .log-line .refused {
+        color: var(--c-bad);
+      }
+      .log-empty {
+        color: var(--c-faint);
+      }
+      @media (prefers-reduced-motion: reduce) {
+        details.group > summary .caret {
+          transition: none;
+        }
+      }
+    </style>
+  </head>
+  <body data-pi-console-ready="0" data-pi-console-bridge="unknown">
+    <header class="console-head">
+      <div class="console-title">
+        <b>插件自检控制台</b>
+        <span class="ver" data-pi-console-version>acme.plugin-showcase</span>
+        <span class="shape" data-pi-console-shape>…</span>
+        <span class="spacer"></span>
+        <button class="ghost" data-pi-console-action="status.refresh" type="button">刷新状态</button>
+      </div>
+      <div class="chips" data-pi-console-live="ambient"></div>
+      <div class="live" data-pi-console-live="status"></div>
+      <div class="scope-note" data-pi-console-live="note"></div>
+    </header>
+
+    <div class="tools">
+      <input
+        data-pi-console-filter
+        type="search"
+        placeholder="过滤条目…（例如 modal、injectStyle、turn.facts）"
+        aria-label="过滤条目"
+      />
+      <button data-pi-console-action="panel.open" type="button">打开独立窗口</button>
+      <button data-pi-console-action="panel.close" type="button">关闭独立窗口</button>
+    </div>
+
+    <main
+      class="groups"
+      data-pi-console-inventory
+      data-pi-console-slots="0"
+      data-pi-console-actions="0"
+      data-pi-console-data="0"
+      data-pi-console-permissions="0"
+    ></main>
+
+    <section class="log">
+      <div class="log-head">
+        <span>回执日志（每条都是一次真实调用的结果，代码就是宿主或插件进程返回的代码）</span>
+        <span class="spacer"></span>
+        <button class="ghost" data-pi-console-action="log.clear" type="button">清空</button>
+      </div>
+      <div class="log-body" data-pi-console-log>
+        <div class="log-empty">还没有回执。</div>
+      </div>
+    </section>
+
+    <script type="module">
+      const PLUGIN_ID = "acme.plugin-showcase";
+      const SHAPE_LABELS = {
+        view: "停靠视图（work panel）",
+        panel: "独立窗口（ui.panel）",
+        widget: "浮动挂件",
+      };
+      /**
+       * Panel channels this page may call. None of them is host-built-in: the
+       * panel bridge forwards a channel the host does not implement to the
+       * plugin's own `onPanelInvoke(channel, payload)` in the plugin process
+       * (spec 07-plugins/03 §6), so every button below is a real round trip to
+       * `main.js` and back.
+       */
+      const CHANNEL = {
+        status: "showcase.console.status",
+        ai: "showcase.console.ai",
+        models: "showcase.console.models",
+        log: "showcase.console.log",
+        session: "showcase.console.session",
+        panel: "showcase.console.panel",
+        runtime: "showcase.console.runtime",
+      };
+      const bridge = window.pluginBridge;
+      const logEl = document.querySelector("[data-pi-console-log]");
+
+      /* ---------------------------------------------------------------------
+       * Inventory: the declared surface, grouped exactly like the host's own
+       * vocabularies (packages/plugin-sdk: PLUGIN_RENDERER_SLOTS,
+       * PLUGIN_RENDERER_ACTIONS, PLUGIN_RENDERER_DATA, PLUGIN_PERMISSIONS).
+       * `drive` names what the sidebar can really do about the entry; entries
+       * whose `drive` is null cannot be driven from this page at all and say so
+       * through `gapKey` instead of growing a dead button.
+       * ------------------------------------------------------------------ */
+      const GROUPS = [
+        {
+          id: "slots",
+          title: "界面槽位 · pi.slots.register()",
+          count: 10,
+          open: true,
+          hint:
+            "替换型只能一个占用（先到先得，后来者 PLUGIN_SLOT_DUPLICATE）；叠加型按注册顺序叠；codeBlock 按语言 claim。",
+          gapKey: "slots",
+          gap:
+            "侧边栏不能注册槽位：注册表只属于 app 窗口里的渲染模块（pi.slots.register 由槽位运行时持有），插件后台进程没有到那个 realm 的通道。真的注册/注销在插件自己的槽位控制条上：输入框左行的「Showcase: inline card」、右行的「Showcase: modal / overlay」，切换结果会由渲染模块上报到这里（回执来源显示「槽位」）。",
+          items: [
+            { name: "entry", note: "整条消息行", badge: "替换型", kind: "replace", served: true },
+            { name: "toolCard", note: "工具调用卡片（只对工具所有者）", badge: "替换型", kind: "replace", served: true },
+            { name: "inlineConfirm", note: "行内确认位置（权限卡所在处）", badge: "替换型", kind: "replace" },
+            { name: "modal", note: "阻塞式浮层（带遮罩）", badge: "替换型", kind: "replace" },
+            { name: "entryExtra", note: "消息行下方一行", badge: "叠加型", kind: "additive", served: true },
+            { name: "overlay", note: "非阻塞浮层", badge: "叠加型", kind: "additive" },
+            { name: "composerControl", note: "输入框左右两侧 + 发送键左侧的接管区（模型选择 / 上下文占用 / 提示增强由宿主整体交出，顺序由插件决定）", badge: "叠加型", kind: "additive", served: true },
+            { name: "completionSource", note: "/ 补全候选行", badge: "叠加型", kind: "additive", served: true },
+            { name: "composerReference", note: "附件芯片区", badge: "叠加型", kind: "additive", served: true },
+            { name: "codeBlock", note: "按语言 claim：acme.plugin-showcase:kv", badge: "按语言", kind: "additive", served: true },
+          ],
+        },
+        {
+          id: "actions",
+          title: "渲染动作 · dispatch(action, payload)",
+          count: 10,
+          open: true,
+          hint:
+            "宿主自做 ui.toast 与 composer.*；plugin.call 转到插件自己的后台进程。未实现的动作返回 PLUGIN_ACTION_UNROUTED。",
+          gapKey: "actions",
+          gap:
+            "侧边栏不能派发渲染动作：dispatch 只作为 props 交给 app 窗口里已挂载的槽位组件，插件进程与面板页都没有这个通道。每个动作的「派发」入口在槽位的控制条上（槽位卡片里的按钮就是一次真实 dispatch）。",
+          items: [
+            { name: "plugin.call", note: '{ method: "renderer.report", args: { … } } — 渲染模块用它把槽位状态上报到这里', badge: "已实现", kind: "additive" },
+            { name: "composer.replaceDraft", note: "写入草稿；带过期 expectedGeneration 时 DRAFT_CONFLICT", badge: "已实现", kind: "additive" },
+            { name: "composer.readDraft", note: "读回快照 { sessionId, generation, text, fileReferences }", badge: "已实现", kind: "additive" },
+            { name: "composer.insertText", note: "宿主尚未实现", badge: "未实现", kind: "unimpl" },
+            { name: "composer.attachPath", note: "宿主尚未实现", badge: "未实现", kind: "unimpl" },
+            { name: "ui.openOverlay", note: "打开非阻塞浮层", badge: "已实现", kind: "additive" },
+            { name: "ui.closeOverlay", note: "关闭浮层", badge: "已实现", kind: "additive" },
+            { name: "ui.openModal", note: "以 modal 打开（替换宿主卡片位置）", badge: "已实现", kind: "additive" },
+            { name: "ui.closeModal", note: "关闭 modal", badge: "已实现", kind: "additive" },
+            { name: "ui.toast", note: '{ message, variant: "info" }', badge: "已实现", kind: "additive" },
+          ],
+        },
+        {
+          id: "data",
+          title: "数据声明 · manifest.rendererData",
+          count: 8,
+          hint:
+            "宿主真正注入的 ambient 只有 theme / locale；selection 可声明但不服务（会记 PLUGIN_DATA_UNSERVED）。",
+          gapKey: "data",
+          gap:
+            "本页的 theme / locale 不是 rendererData：面板页从宿主预加载得到的 app.getAppearance + appearance:changed 事件读它们（下面第一排 chip 就是实时的值）。rendererData 只描述 app 窗口里槽位组件能拿到的 props。",
+          items: [
+            { name: "entry", note: "当前消息行（本 manifest 已声明，由槽位契约传递）", badge: "已声明", kind: "additive" },
+            { name: "session", note: "会话信息（本 manifest 已声明）", badge: "已声明", kind: "additive" },
+            { name: "code", note: "代码块上下文（本 manifest 已声明）", badge: "已声明", kind: "additive" },
+            { name: "draft", note: "输入框草稿（本 manifest 已声明，只读）", badge: "已声明", kind: "additive" },
+            { name: "attachments", note: "附件（本 manifest 未声明；composerReference 另有 references props）", badge: "未声明", kind: "unimpl" },
+            { name: "theme", note: "宿主主题 — 宿主真正注入的 ambient", badge: "ambient", kind: "ambient" },
+            { name: "locale", note: "宿主语言 — 宿主真正注入的 ambient", badge: "ambient", kind: "ambient" },
+            { name: "selection", note: "选中文本：本周期不服务", badge: "未服务", kind: "unserved" },
+          ],
+        },
+        {
+          id: "style",
+          title: "样式 · pi.ui.injectStyle()（渲染模块接口）",
+          hint:
+            "宿主把每条选择器前缀到 [data-pi-plugin=\"<id>\"]，:root 改写到容器，@keyframes 改名；html/body/*/@import 整表拒绝。",
+          gapKey: "style",
+          gap:
+            "侧边栏不能调用 pi.ui.injectStyle：那是渲染模块在 app 窗口里的接口，宿主也不给面板页任何样式注入通道 —— 本页的样式就是它自己的 <style>，作用范围是这个独立文档。",
+          items: [
+            { name: "注入完整样式表", note: ":root 主题分支 + @media + @keyframes + --pi-slot-* 令牌（渲染模块加载时执行）", badge: "已实现", kind: "additive" },
+            { name: "移除样式表", note: "句柄 remove()；宿主卸载时也会移除", badge: "已实现", kind: "additive" },
+            { name: "body { color: red }", note: "整表拒绝", badge: "拒绝路径", kind: "unimpl" },
+            { name: ".card { color: var(--ds-text) }", note: "软诊断（不拒载）", badge: "软诊断", kind: "unserved" },
+            { name: "@starting-style { body { } }", note: "未知块级 at-rule 也必须被作用域化", badge: "拒绝路径", kind: "unimpl" },
+          ],
+        },
+        {
+          id: "functions",
+          title: "宿主可调用函数 · pi.functions.register()",
+          hint: "纯同步、一帧预算（16ms）；抛错或超时会被宿主丢弃并上报，连续三次熔断。",
+          gapKey: "functions",
+          gap:
+            "侧边栏不能调用注册函数：调用点只存在于 app 窗口的渲染位置（宿主按需同步调用），插件进程与面板页都没有这个入口。下面的数字是渲染模块自己数出来的（它调用自己的函数），宿主侧的丢弃/熔断计数写进插件行诊断，插件读不到 —— 这一格标为「不可见」，不编一个数。",
+          items: [
+            { name: "entry-facts", note: "纯函数：返回本插件状态，entryExtra 每次渲染调用", badge: "已实现", kind: "additive", live: "entry-facts" },
+            { name: "kv-rows", note: "纯函数：把 fenced 源码解析成行，codeBlock 每次渲染调用", badge: "已实现", kind: "additive", live: "kv-rows" },
+            { name: "宿主丢弃 / 熔断计数", note: "宿主在 app 窗口内记账（16ms 预算、三次熔断 → PLUGIN_FUNCTION_DISABLED）", badge: "不可见", kind: "unserved" },
+          ],
+        },
+        {
+          id: "runtime",
+          title: "运行时槽位（agent 侧，11 个独立授权）",
+          hint: "每个槽位单独授予权限；本 manifest 声明了其中 5 个。回执来源为「运行时」的行是插件进程真实见过的 agent 侧事实，可点 runtime.tool.gate 的「看运行时回执」读回。",
+          gapKey: "runtime",
+          gap:
+            "回执不是计数：下面每一条「运行时」回执都是插件进程真的收到/真的执行过的事实——宿主推来的 session:turnEnded，以及本插件自己 agent 工具的执行（context 里的 session/turn）。扩展侧自己的判定（tool gate 的 block/allow、turn facts 汇总）由 agent sidecar 写出，只走宿主中介的窗口通道：用户看到的是扩展写的 warning toast，模型看到的是被 gate 改写的结果行，插件行诊断也记着它；sidecar 没有到插件进程或本页的通道，所以这里列出真实回执，并明确说 gate 命中数读不到，而不是编一个数。",
+          items: [
+            {
+              name: "runtime.tool.gate",
+              note: "拦截工具调用 / 替换工具结果（判定写在窗口里：warning toast + 被改写的结果行 + 插件行诊断）",
+              badge: "已授予",
+              kind: "additive",
+              drive: "runtime.receipts",
+              label: "看运行时回执",
+            },
+            { name: "runtime.turn.watch", note: "轮次开始/结束/工具调用/供应商响应（best-effort）", badge: "已授予", kind: "additive" },
+            { name: "runtime.turn.facts", note: "本轮结构化事实（工具、token、耗时、文件）", badge: "已授予", kind: "additive" },
+            { name: "runtime.session.lifecycle", note: "创建/切换/删除/fork + 压缩前（informed-only）", badge: "已授予", kind: "additive" },
+            { name: "runtime.turn.abort", note: "请求中止正在跑的轮次", badge: "已授予", kind: "additive" },
+            { name: "runtime.send.before", note: "发送前读/拦/改写用户消息", badge: "未授予", kind: "unimpl" },
+            { name: "runtime.turn.closing", note: "轮次结束前最后一刻", badge: "未授予", kind: "unimpl" },
+            { name: "runtime.turn.recap", note: "把会话压成一段回顾", badge: "未授予", kind: "unimpl" },
+            { name: "runtime.turn.continue", note: "续跑一轮（落库为可见行并标注来源）", badge: "未授予", kind: "unimpl" },
+            { name: "runtime.tool.extend", note: "运行中给 agent 增加工具", badge: "未授予", kind: "unimpl" },
+            { name: "runtime.session.read", note: "读整段会话（含正文）", badge: "未授予", kind: "unimpl" },
+          ],
+        },
+        {
+          id: "process",
+          title: "插件后台进程 · pluginBridge → main.js",
+          hint: "面板页的 pluginBridge.invoke(channel) 把宿主未内置的 channel 交给插件自己的 onPanelInvoke，回执里的代码就是宿主或插件返回的代码。",
+          gapKey: "process",
+          gap:
+            "三处必须说明：pi.log 在插件进程 API 上不存在（plugin-host-process.mjs 的 pi 对象没有 log，日志只来自工具/服务的 ctx.log），所以「写日志」按钮走的是真实可用的 console.log → 宿主记为 plugin.stdio；宿主对显式未知 modelKey 不返回 NO_MODEL，它会回落到可用供应商（下面那条回执就是证据），NO_MODEL 只在省略 modelKey 且就绪模型目录为空时出现；session.read 本 manifest 未授予，读会话的回执是宿主真实的拒绝。",
+          items: [
+            {
+              name: "ai.complete（本插件自己的提示词）",
+              note: "pi.ai.complete({ system, messages }) — 一个显式模型的、插件级的 AI 调用",
+              badge: "已实现",
+              kind: "additive",
+              drive: "ai.own",
+              label: "调用",
+            },
+            {
+              name: "ai.complete（省略 modelKey）",
+              note: "宿主解析默认模型 → 回执里是它实际用的 modelKey",
+              badge: "已实现",
+              kind: "additive",
+              drive: "ai.default",
+              label: "调用",
+            },
+            {
+              name: "ai.complete（不可解析的 modelKey）",
+              note: "宿主真会怎么做：回落，而不是 NO_MODEL——见回执",
+              badge: "拒绝路径",
+              kind: "unimpl",
+              drive: "ai.unknown",
+              label: "调用",
+            },
+            {
+              name: "ai.complete（无就绪模型）",
+              note: "与省略 modelKey 是同一个调用；宿主一份就绪模型都没有时答 NO_MODEL",
+              badge: "拒绝路径",
+              kind: "unimpl",
+              drive: "ai.no-model",
+              label: "调用",
+            },
+            {
+              name: "models.list",
+              note: "宿主把可用模型清单交给插件（无密钥）",
+              badge: "已实现",
+              kind: "additive",
+              drive: "models.list",
+              label: "调用",
+            },
+            {
+              name: "pi.log",
+              note: "插件进程 API 没有 pi.log：按钮走 console.log → 宿主 plugin.stdio 审计行",
+              badge: "未实现",
+              kind: "unimpl",
+              drive: "console.write",
+              label: "写一行",
+            },
+            {
+              name: "pi.session.getLlmContext",
+              note: "需要 session.read（本 manifest 未授予）→ 真实拒绝",
+              badge: "未授予",
+              kind: "unimpl",
+              drive: "session.read",
+              label: "读会话",
+            },
+          ],
+        },
+      ];
+
+      /* ── receipt log ─────────────────────────────────────────────────── */
+      const receipts = [];
+      let receiptSeq = 0;
+
+      function stamp(at) {
+        const date = at ? new Date(at) : new Date();
+        const pad = (value) => String(value).padStart(2, "0");
+        return `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+      }
+
+      function codeClass(code) {
+        if (code === "ok") return "ok";
+        if (/UNROUTED|UNSERVED|PRIVATE|DEGRADED|UNSUPPORTED/.test(code)) return "warn";
+        return "refused";
+      }
+
+      /**
+       * One receipt line. Exposed to the DOM with stable attributes so a human
+       * can read it and the e2e can observe it without parsing prose:
+       * `data-pi-console-receipt`, `-code`, `-surface`, `-action`, `-detail`.
+       */
+      function renderReceipt(entry) {
+        const line = document.createElement("div");
+        line.className = "log-line";
+        line.setAttribute("data-pi-console-receipt", String(entry.id));
+        line.setAttribute("data-pi-console-code", entry.code);
+        line.setAttribute("data-pi-console-surface", entry.surface);
+        line.setAttribute("data-pi-console-action", entry.action);
+        line.setAttribute("data-pi-console-detail", entry.detail);
+        line.setAttribute("data-pi-console-at", entry.at);
+        line.innerHTML =
+          `<span class="t">${stamp(entry.at)}</span> ` +
+          `<span class="surface">[${entry.surface}]</span> ${entry.action} — ${entry.detail} → ` +
+          `<span class="${codeClass(entry.code)}">${entry.code}</span>`;
+        return line;
+      }
+
+      function addReceipt(input) {
+        const entry = {
+          id: input.id ?? `local-${++receiptSeq}`,
+          at: input.at ? new Date(input.at).getTime() : Date.now(),
+          surface: input.surface ?? "侧边栏",
+          action: String(input.action ?? ""),
+          code: String(input.code ?? "UNKNOWN"),
+          detail: String(input.detail ?? ""),
+        };
+        if (receipts.some((existing) => existing.id === entry.id)) return entry;
+        receipts.push(entry);
+        const empty = logEl.querySelector(".log-empty");
+        if (empty) empty.remove();
+        logEl.prepend(renderReceipt(entry));
+        while (logEl.children.length > 200) logEl.lastElementChild.remove();
+        return entry;
+      }
+
+      /** Merge the receipts other surfaces reported through the plugin process. */
+      function mergeReportedReceipts(list) {
+        for (const reported of list ?? []) {
+          if (!reported || typeof reported !== "object") continue;
+          addReceipt({
+            id: reported.id,
+            at: reported.at,
+            surface: reported.surface,
+            action: reported.action,
+            code: reported.code,
+            detail: reported.detail,
+          });
+        }
+      }
+
+      /* ── panel calls ─────────────────────────────────────────────────── */
+      async function callPanel(channel, payload) {
+        if (!bridge || typeof bridge.invoke !== "function") {
+          return {
+            ok: false,
+            code: "PLUGIN_BRIDGE_MISSING",
+            detail: "window.pluginBridge is absent in this document",
+          };
+        }
+        try {
+          const answer = await bridge.invoke(channel, payload ?? {});
+          if (!answer || typeof answer !== "object") {
+            return { ok: false, code: "PANEL_ANSWER_INVALID", detail: String(answer) };
+          }
+          return {
+            ok: answer.ok === true,
+            code: String(answer.code ?? (answer.ok === true ? "ok" : "PANEL_ANSWER_FAILED")),
+            detail: String(answer.detail ?? ""),
+            status: answer.status,
+            data: answer,
+          };
+        } catch (error) {
+          return {
+            ok: false,
+            code: String(error?.code ?? "PANEL_INVOKE_FAILED"),
+            detail: String(error?.message ?? error),
+          };
+        }
+      }
+
+      /* ── appearance (the only live ambient this page really gets) ────── */
+      function applyAppearance(appearance) {
+        const base = appearance?.base;
+        document.documentElement.dataset.base =
+          base === "light" || base === "dark"
+            ? base
+            : window.matchMedia("(prefers-color-scheme: light)").matches
+              ? "light"
+              : "dark";
+        const ambient = document.querySelector('[data-pi-console-live="ambient"]');
+        const locale = typeof appearance?.locale === "string" ? appearance.locale : "unknown";
+        const theme = typeof appearance?.theme === "string" ? appearance.theme : "unknown";
+        ambient.replaceChildren(
+          ...[
+            [`theme=${theme}`, "served"],
+            [`base=${document.documentElement.dataset.base}`, "served"],
+            [`locale=${locale}`, "served"],
+            ["sidebar 不是渲染模块：拿不到 rendererData 的 entry/draft", "unserved"],
+          ].map(([text, kind]) => {
+            const chip = document.createElement("span");
+            chip.className = `chip ${kind}`;
+            chip.textContent = text;
+            return chip;
+          }),
+        );
+      }
+
+      /* ── inventory render ───────────────────────────────────────────── */
+      function renderGroups() {
+        const list = document.querySelector("[data-pi-console-inventory]");
+        for (const group of GROUPS) {
+          const details = document.createElement("details");
+          details.className = "group";
+          details.open = Boolean(group.open);
+          details.setAttribute("data-pi-console-group", group.id);
+          const summary = document.createElement("summary");
+          summary.innerHTML =
+            '<span class="caret">▸</span><span>' +
+            group.title +
+            '</span><span class="count">' +
+            (group.count ?? group.items.length) +
+            " 项</span>";
+          details.append(summary);
+          if (group.hint) {
+            const note = document.createElement("div");
+            note.className = "scope-note";
+            note.textContent = group.hint;
+            details.append(note);
+          }
+          if (group.gap) {
+            const gap = document.createElement("div");
+            gap.className = "gap";
+            gap.setAttribute("data-pi-console-gap", group.gapKey ?? group.id);
+            gap.textContent = group.gap;
+            details.append(gap);
+          }
+          for (const item of group.items) {
+            const row = document.createElement("div");
+            row.className = "item";
+            row.setAttribute("data-pi-console-item", item.name);
+            row.setAttribute("data-pi-console-group-of", group.id);
+            const label = document.createElement("div");
+            label.className = "label";
+            const code = document.createElement("code");
+            code.textContent = item.name;
+            const desc = document.createElement("span");
+            desc.className = "desc";
+            desc.textContent = item.note;
+            label.append(code, desc);
+            const pill = document.createElement("span");
+            pill.className = `pill ${item.kind ?? ""}`;
+            pill.setAttribute("data-pi-console-badge", item.badge);
+            pill.textContent = item.badge;
+            const status = document.createElement("span");
+            status.className = "status";
+            status.setAttribute("data-pi-console-status", item.name);
+            status.textContent = "未跑";
+            row.append(label, pill, status);
+            if (item.drive) {
+              const button = document.createElement("button");
+              button.type = "button";
+              button.className = "primary";
+              button.setAttribute("data-pi-console-action", item.drive);
+              button.setAttribute("data-pi-console-drive", item.name);
+              button.textContent = item.label ?? "调用";
+              row.append(button);
+            }
+            details.append(row);
+          }
+          list.append(details);
+        }
+      }
+
+      function countItems() {
+        const byGroup = (id) =>
+          GROUPS.find((group) => group.id === id)?.count ??
+          GROUPS.find((group) => group.id === id)?.items.length ??
+          0;
+        const inventory = document.querySelector("[data-pi-console-inventory]");
+        inventory.setAttribute("data-pi-console-slots", String(byGroup("slots")));
+        inventory.setAttribute("data-pi-console-actions", String(byGroup("actions")));
+        inventory.setAttribute("data-pi-console-data", String(byGroup("data")));
+        inventory.setAttribute(
+          "data-pi-console-permissions",
+          String(byGroup("runtime")),
+        );
+      }
+
+      /* ── live status ────────────────────────────────────────────────── */
+      function tile(title, value) {
+        const node = document.createElement("div");
+        node.className = "live-tile";
+        const b = document.createElement("b");
+        b.textContent = value;
+        node.append(b, document.createTextNode(title));
+        return node;
+      }
+
+      function setStatusNode(name, text, kind) {
+        const node = document.querySelector(`[data-pi-console-status="${name}"]`);
+        if (!node) return;
+        node.textContent = text;
+        node.className = `status ${kind ?? ""}`;
+      }
+
+      function renderStatus(answer) {
+        const status = answer.status ?? {};
+        const live = document.querySelector('[data-pi-console-live="status"]');
+        const renderer = status.renderer ?? {};
+        const slots = Array.isArray(renderer.slots) ? renderer.slots : [];
+        const served = renderer.functions?.served ?? 0;
+        const overBudget = renderer.functions?.overBudget ?? 0;
+        live.replaceChildren(
+          tile("面板调用 / 被拒", `${status.panelCalls ?? 0} / ${status.panelRefusals ?? 0}`),
+          tile("槽位侧上报", `${renderer.reports ?? 0} 次`),
+          tile("当前槽位", slots.length ? slots.join(", ") : "还没有上报"),
+          tile("函数调用（槽位侧计数）", `served ${served} · 自测超 16ms ${overBudget}`),
+          tile("宿主推送 turn ended", String(status.turnEnded ?? 0)),
+          tile(
+            "运行时回执（插件进程实测 · 宿主推送 / 代理工具）",
+            `${status.runtime?.receipts ?? 0} 条 · ${status.runtime?.turnEnded ?? 0} / ${status.runtime?.toolCalls ?? 0}`,
+          ),
+        );
+        const note = document.querySelector('[data-pi-console-live="note"]');
+        note.textContent =
+          `插件进程：${status.pluginId ?? PLUGIN_ID} v${status.version ?? "?"} · 加载于 ${stamp(status.loadedAt)} · ` +
+          `${status.shape ? SHAPE_LABELS[status.shape] ?? status.shape : "未知位置"} · ` +
+          `渲染模块最近一次上报：${renderer.lastAt ? stamp(renderer.lastAt) : "还没有"}`;
+        const version = document.querySelector("[data-pi-console-version]");
+        version.textContent = `${PLUGIN_ID} v${status.version ?? "?"}`;
+        for (const [name, value] of Object.entries(renderer.functionsBy ?? {})) {
+          setStatusNode(
+            name,
+            `调用 ${value.served ?? 0} 次`,
+            (value.served ?? 0) > 0 ? "ok" : null,
+          );
+        }
+        if (renderer.lastSlotChange) {
+          setStatusNode(
+            renderer.lastSlotChange.name,
+            renderer.lastSlotChange.registered ? "已注册" : "已注销",
+            renderer.lastSlotChange.registered ? "ok" : "warn",
+          );
+        }
+        mergeReportedReceipts(status.receipts);
+      }
+
+      async function refreshStatus(action) {
+        // The page reports which placement it renders in; the plugin process
+        // stores it and shows it back, so nobody has to guess from a screenshot.
+        const answer = await callPanel(CHANNEL.status, {
+          shape: document.documentElement.dataset.piPluginPanelShape ?? "unknown",
+        });
+        addReceipt({
+          action: action ?? "status.refresh",
+          code: answer.code,
+          detail: answer.detail,
+          surface: "侧边栏",
+        });
+        if (answer.ok) renderStatus(answer);
+        return answer;
+      }
+
+      /* ── the buttons this page can really drive ─────────────────────── */
+      const ACTIONS = {
+        "status.refresh": () => refreshStatus("status.refresh"),
+        // The runtime group's one drive button: read back the receipts the
+        // plugin process really holds about the agent half, and print each one
+        // as its own log line (surface 「运行时」) instead of showing a count
+        // this page never saw.
+        "runtime.receipts": async () => {
+          const answer = await callPanel(CHANNEL.runtime, {});
+          addReceipt({
+            action: "runtime.receipts",
+            code: answer.code,
+            detail: answer.detail,
+            surface: "侧边栏",
+          });
+          const receipts = Array.isArray(answer.data?.receipts) ? answer.data.receipts : [];
+          if (answer.ok) mergeReportedReceipts(receipts);
+          setStatusNode(
+            "runtime.tool.gate",
+            receipts.length ? `回执 ${receipts.length} 条` : "还没有回执",
+            receipts.length ? "ok" : "warn",
+          );
+          return answer;
+        },
+        "log.clear": async () => {
+          logEl.replaceChildren();
+          // The list is forgotten, not just hidden: the merge below is
+          // idempotent by id, so a receipt the plugin process still holds comes
+          // back on the next refresh instead of being silently dropped.
+          receipts.length = 0;
+          const empty = document.createElement("div");
+          empty.className = "log-empty";
+          empty.textContent = "回执日志已清空（清空的是这张列表，宿主侧的审计行不受影响）。";
+          logEl.append(empty);
+          return { ok: true, code: "ok", detail: "cleared" };
+        },
+        "ai.own": () => runAi("own", "ai.complete（本插件自己的提示词）"),
+        "ai.default": () => runAi("default", "ai.complete（省略 modelKey）"),
+        "ai.unknown": () => runAi("unknown", "ai.complete（不可解析的 modelKey）"),
+        "ai.no-model": () => runAi("no-model", "ai.complete（无就绪模型）"),
+        "models.list": async () => {
+          const answer = await callPanel(CHANNEL.models, {});
+          addReceipt({
+            action: "models.list",
+            code: answer.code,
+            detail: answer.detail,
+            surface: "侧边栏",
+          });
+          return answer;
+        },
+        "console.write": async () => {
+          const answer = await callPanel(CHANNEL.log, {});
+          addReceipt({
+            action: "pi.log",
+            code: answer.code,
+            detail: answer.detail,
+            surface: "侧边栏",
+          });
+          return answer;
+        },
+        "session.read": async () => {
+          const answer = await callPanel(CHANNEL.session, {});
+          addReceipt({
+            action: "pi.session.getLlmContext",
+            code: answer.code,
+            detail: answer.detail,
+            surface: "侧边栏",
+          });
+          return answer;
+        },
+        "panel.open": async () => {
+          const answer = await callPanel(CHANNEL.panel, { action: "open" });
+          addReceipt({
+            action: "ui.openPanel",
+            code: answer.code,
+            detail: answer.detail,
+            surface: "侧边栏",
+          });
+          return answer;
+        },
+        "panel.close": async () => {
+          const answer = await callPanel(CHANNEL.panel, { action: "close" });
+          addReceipt({
+            action: "ui.closePanel",
+            code: answer.code,
+            detail: answer.detail,
+            surface: "侧边栏",
+          });
+          return answer;
+        },
+      };
+
+      async function runAi(variant, label) {
+        const answer = await callPanel(CHANNEL.ai, { variant });
+        addReceipt({
+          action: label,
+          code: answer.code,
+          detail: answer.detail,
+          surface: "侧边栏",
+        });
+        return answer;
+      }
+
+      document.addEventListener("click", async (event) => {
+        const button = event.target.closest?.("[data-pi-console-action]");
+        if (!button) return;
+        const action = button.getAttribute("data-pi-console-action");
+        const run = ACTIONS[action];
+        if (!run) return;
+        button.disabled = true;
+        try {
+          await run();
+        } catch (error) {
+          addReceipt({
+            action,
+            code: String(error?.code ?? "PANEL_ACTION_FAILED"),
+            detail: String(error?.message ?? error),
+            surface: "侧边栏",
+          });
+        } finally {
+          button.disabled = false;
+        }
+      });
+
+      const filter = document.querySelector("[data-pi-console-filter]");
+      filter.addEventListener("input", () => {
+        const needle = filter.value.trim().toLowerCase();
+        for (const details of document.querySelectorAll("details[data-pi-console-group]")) {
+          let shown = 0;
+          for (const item of details.querySelectorAll(".item")) {
+            const hit = !needle || (item.textContent ?? "").toLowerCase().includes(needle);
+            item.style.display = hit ? "" : "none";
+            if (hit) shown += 1;
+          }
+          details.style.display = shown ? "" : "none";
+          if (needle) details.open = true;
+        }
+      });
+
+      /* ── boot ───────────────────────────────────────────────────────── */
+      renderGroups();
+      countItems();
+      const shape = document.documentElement.dataset.piPluginPanelShape;
+      document.querySelector("[data-pi-console-shape]").textContent =
+        SHAPE_LABELS[shape] ?? "未知位置（宿主未发布 data-pi-plugin-panel-shape）";
+      document.body.dataset.piConsoleBridge =
+        bridge && typeof bridge.invoke === "function" ? "ok" : "missing";
+
+      if (bridge && typeof bridge.on === "function") {
+        bridge.on("appearance:changed", applyAppearance);
+        // The one host-pushed fact this page really receives: a turn reached a
+        // terminal state. Recorded as its own receipt surface, never dressed up
+        // as an agent-extension report.
+        bridge.on("session:turnEnded", (payload) => {
+          if (!payload || typeof payload !== "object") return;
+          addReceipt({
+            surface: "宿主",
+            action: "host push · session:turnEnded",
+            code: "ok",
+            detail:
+              `session ${payload.sessionId ?? "?"} · ${payload.status ?? "?"}` +
+              (payload.turnId ? ` · turn ${payload.turnId}` : ""),
+          });
+          void refreshStatus("host push · status refresh");
+        });
+      }
+      if (bridge && typeof bridge.invoke === "function") {
+        bridge.invoke("app.getAppearance").then(applyAppearance, () => applyAppearance(null));
+      } else {
+        applyAppearance(null);
+      }
+
+      // The first status read is what turns this page from "inventory" into a
+      // live console, and it is a real call: `showcase.console.status` is
+      // answered by main.js, not by this page.
+      const boot = await refreshStatus("status.refresh");
+      document.body.dataset.piConsoleReady = boot.ok ? "1" : "0";
+      if (!boot.ok) {
+        addReceipt({
+          surface: "侧边栏",
+          action: "boot",
+          code: boot.code,
+          detail:
+            `插件进程没有回答状态读取（${boot.detail}）；清单与回执列表仍在，实时状态为空而不是伪造的。`,
+        });
+      }
+    </script>
+  </body>
+</html>

@@ -16,7 +16,14 @@ MVP transport decision (**D001**):
 
 - Process: Electron main spawns Rust host-core sidecar
 - Channel: child process stdin/stdout
-- Framing: one JSON object per line (NDJSON)
+- Framing: one JSON object per LF-delimited line (NDJSON); CRLF is accepted.
+  U+2028 and U+2029 inside JSON strings are payload, never frame delimiters.
+  All Node stdio readers preserve UTF-8 characters across input chunks and
+  release buffered fragments/listeners on transport close. A final unterminated
+  frame is accepted at EOF for compatibility.
+- Invalid JSON frames produce a diagnostic containing only the byte length,
+  never payload text, before being discarded. Later complete frames remain
+  readable. Existing session text is not rewritten or migrated.
 - Encoding: UTF-8
 - Request/response: JSON-RPC 2.0 style
 
@@ -159,13 +166,16 @@ Rules:
    advertises `"a2a"`. A v10 host or client is rejected before the UI becomes
    interactive, so a mixed pair cannot call a missing domain.
 
-Protocol v11 is paired with host-core storage schema v16. Schema v12 had added
+Protocol v11 is paired with host-core storage schema v21. Schema v12 had added
 the A2A tables (`a2a_tasks`, `a2a_messages`, `a2a_artifacts`,
 `a2a_push_configs`) via `migrate_v11_to_v12`; `migrate_v12_to_v13` drops those
 tables, and v14 adds the plugin-session ownership sidecar and soft-delete
-column. Schema v15 adds the Host-owned turn queue, and schema v16 adds the
-session collaboration ledger and its turn-queue binding. A fresh database
-creates neither A2A tables nor unowned plugin-session rows. The schema version is an
+column. Schema v15 adds the Host-owned turn queue, v16 the session collaboration
+ledger and its turn-queue binding, v17 the plugin-owned provider column, v18 the
+turn queue's priority, v19 the per-touch `artifacts` shape, v20 the
+plugin-rewrite audit, and v21 the `audit_log.turn_id` column that `turn.facts`
+reads (04-data-storage §4.15, §4.16). A fresh database creates neither A2A
+tables nor unowned plugin-session rows. The schema version is an
 internal persistence invariant, not an additional JSON-RPC field; the
 checkpoint architecture remains host-owned.
 
@@ -432,6 +442,9 @@ Electron main after plugin permission and manifest-source checks:
 - `plugin.session.rename` — rename an owned active imported session
 - `plugin.session.delete` — `trash` hides and retains the transcript; `purge`
   removes it and permits re-import
+- `plugin.usage.listTurns` — keyset page of completed-turn facts (identifiers
+  and token counters, never a message body) for non-deleted sessions. Gated
+  in Electron main by `usage.read`. Additive; no protocol version bump.
 - Successful plugin session mutations cause Electron main to emit one
   `sessionsChanged` renderer event; the renderer refreshes the session list,
   and plugins do not emit this UI synchronization event.
@@ -553,14 +566,17 @@ resource exhaustion (`EAGAIN` / `WouldBlock`) with bounded backoff, never
 retries a command after it has started, and reaps timed-out children before
 releasing the execution slot.
 
-`session.appendMessage` is idempotent by message id. Electron main may keep
+`session.appendMessage` is idempotent by message id. An id already indexed in
+another session is remapped to `{sessionId}:{id}` before the JSONL write, and
+a later replay of the original id is a no-op (D444). Electron main may keep
 message appends in its application-owned outbox while host-core is restarting;
-the outbox flushes in order after a successful handshake. A missing sessions
-row is restored from the live JSONL (or created as a stub under the same id
-when the file is gone) so a queued outbox can drain (D318). `session.delete`
-drops that session's outbox entries. In-flight checkpoints never go through
-the outbox: a checkpoint is only meaningful against a live host, and replaying
-one after the final row would be wrong.
+the outbox flushes in order after a successful handshake and treats
+`UNIQUE constraint failed: messages.id` as an ack rather than pausing the
+queue. A missing sessions row is restored from the live JSONL (or created as a
+stub under the same id when the file is gone) so a queued outbox can drain
+(D318). `session.delete` drops that session's outbox entries. In-flight
+checkpoints never go through the outbox: a checkpoint is only meaningful
+against a live host, and replaying one after the final row would be wrong.
 
 ### Permissions
 - `permissions.evaluate`
@@ -639,7 +655,7 @@ destination is a no-op.
 `*.active` returns the entries that apply to the given project after
 activation-scope filtering (`CAPABILITY_INVALID` for an unknown scope).
 
-### Search, artifacts, keyboard
+### Search, artifacts, plugin rewrites, turn facts, keyboard
 - `search.query` — legacy indexed-message hits; existing response and limit remain compatible
 - `search.sessions({ query, offset? }) -> { hits, nextOffset }` — global session
   discovery with title/project metadata and indexed user/assistant text. Trimmed
@@ -663,7 +679,51 @@ activation-scope filtering (`CAPABILITY_INVALID` for an unknown scope).
   bodies, thinking, and attachments are omitted. Missing/deleted targets return
   `NOT_FOUND`; invalid directions or identifiers return `INVALID_ARGUMENT`.
   See [ADR session-content-search](../../adr/session-content-search.md).
-- `artifacts.list` — Plan/Goal checkpoint artifacts for a session
+- `artifacts.list` — recorded file touches, filtered to one session or (with
+  `turnId`, which requires `sessionId`) to the single turn that changed them.
+  Each row carries `path`, `op` (`create | write | edit | download | delete`),
+  `turnId`, and `updatedAt`; a path touched in several turns appears once per
+  touch, newest first for a session and in touch order for a turn. A `turnId`
+  without a `sessionId` returns `INVALID_ARGUMENT`. Additive RPC; no protocol
+  version bump (ADR 0295 rule 8).
+- `plugin.rewrites.list({ sessionId, turnId?, kind?, limit? }) -> { rewrites }` —
+  the diff-level audit of what a plugin changed in what the model receives
+  (ADR 0295 rule 5). With `turnId` it returns one turn's records oldest first —
+  the order the rewrites happened, which is what slot #1's rewrite surface reads
+  — and without it the session's records newest first, including any record
+  written outside a turn. `kind` filters to `outgoing_message | system_prompt |
+  message_list | request_payload`. Each record carries `id`, `sessionId`,
+  `turnId` (null outside a turn), `pluginId`, `kind`, `truncated`,
+  `droppedEdits`, `createdAt`, and `diff`, whose per-kind shape, caps, and
+  truncation markers are specified in 04-data-storage §4.15. A missing
+  `sessionId`, an unknown `kind`, or a non-positive `limit` returns
+  `INVALID_PARAMS`; the limit is clamped to 500. Additive RPC; no protocol
+  version bump. Slot #1 (`runtime.send.before`) is the one producer; slot #6
+  (`runtime.request.before`) was withdrawn, so its `system_prompt`,
+  `message_list`, and `request_payload` kinds can never be written.
+- `turn.facts({ sessionId, turnId, limit? }) -> { facts }` — one turn's
+  **authoritative structured numbers**, assembled by the host from its own
+  tables (ADR 0295 rule 8, slot #9 `runtime.turn.facts`). Nothing here is
+  reconstructed from plugin-observed events, and no conversation text is
+  returned. `facts` carries `sessionId`, `turnId`, `status`
+  (`running | completed | aborted | error`), `providerId`, `modelId`,
+  `errorCode` (the turn's own terminal error), `startedAt`, `endedAt` (`null`
+  while running), `durationMs` (`endedAt - startedAt`, `null` while running),
+  `tokens` (`{ input, output, total }` from the promoted `turns` columns),
+  `usage` (the provider record exactly as stored, or `null`),
+  `pluginToolUsage` (that record's plugin-tool spend component, or `null`;
+  never folded into `tokens`), `toolCalls` (`{ total, ok, failed, byTool }`,
+  where `byTool` is one entry per tool ordered by name with
+  `{ toolName, calls, ok, failed, errorCodes }`), `files` (the turn's
+  `artifacts` touches, oldest first, each with `path`, `op`, `turnId`,
+  `updatedAt`), and `filesTruncated`. Both `sessionId` and `turnId` are
+  required, and a blank one, or a non-positive/non-integer `limit`, is
+  `INVALID_PARAMS`; `limit` defaults to 200 and is clamped to 1–499, which
+  keeps the truncation flag exact. A session that does not exist is
+  `SESSION_NOT_FOUND`, and a turn that does not exist in that session —
+  including one that belongs to another session — is `TURN_NOT_FOUND`: a turn
+  the host never recorded is never answered with zeroes. Additive RPC; no
+  protocol version bump. Requires schema v21 (see 04-data-storage §4.16).
 - `keyboard.setGlobalShortcut` — host-owned native fallback for the plugin
   launcher chord where Electron cannot register it
 
@@ -1079,6 +1139,7 @@ numeric slot; the string is the contract, the number is transport detail.
 | 1006 | RATE_LIMITED | a per-caller budget window was exhausted |
 | 1007 | NOT_FOUND | entity missing |
 | 1007 | SESSION_NOT_FOUND | the named session does not exist; tool requests never fall back to the global workspace |
+| 1007 | TURN_NOT_FOUND | the named turn does not exist in that session; `turn.facts` never answers an unknown turn with zeroes |
 | 1008 | CONFLICT | busy/conflict state |
 | 1008 | AGENT_BUSY | the session has a running turn |
 | 1009 | PLUGIN_INVALID | manifest/validation failure |
@@ -1092,6 +1153,12 @@ numeric slot; the string is the contract, the number is transport detail.
 | 1016 | SKILL_INVALID | user skill document failed validation |
 | 1017 | SUBAGENT_INVALID | user subagent document failed validation |
 | 1018 | CAPABILITY_INVALID | agent capability root/scope setting failed validation |
+| 1019 | PLUGIN_CANCELLED | the user cancelled a marketplace install while it was downloading |
+| 1020 | PLUGIN_MARKET_NOT_PUBLISHED | the platform has the version and is not offering it yet |
+| 1021 | PLUGIN_MARKET_ARCHIVED | the plugin was withdrawn from the platform |
+| 1022 | PLUGIN_MARKET_NOT_FOUND | the platform does not have that plugin or version |
+| 1023 | PLUGIN_MARKET_RATE_LIMITED | the download endpoint asked the client to wait |
+| 1024 | PLUGIN_MARKET_NO_SOURCE | no distribution target can serve the package |
 | -32029 | HOST_OVERLOADED | RPC dispatcher capacity exhausted |
 | -32601 | — | unknown method |
 | -32700 | — | unparseable request line |

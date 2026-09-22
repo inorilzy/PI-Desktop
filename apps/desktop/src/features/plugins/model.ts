@@ -1,3 +1,4 @@
+import { PLUGIN_RENDERER_ACTIONS, PLUGIN_RENDERER_DATA } from "@pi-desktop/plugin-sdk";
 import type {
   MarketPluginSummary,
   PluginCapability,
@@ -46,30 +47,63 @@ export const PERMISSION_RISK: Record<string, RiskTier> = {
   "agent.tool.register": "high",
   "agent.complete": "high",
   "agent.extension": "high",
+  // The renderer host draws inside the app's own window, and the runtime hooks
+  // run inside the user's own turn, so a fault there is the user's too.
+  "renderer.extension": "high",
+  // Runtime slots (#561): withdrawn slot 6 (runtime.request.before) is not
+  // registered. Remaining slots: rewrites / gate / continuations / conversation
+  // reads sit at high; structured turn facts (no conversation text) low; live
+  // watch medium. agent.model.complete spends the user's configured models.
+  "agent.model.complete": "high",
+  "runtime.send.before": "high",
+  "runtime.session.lifecycle": "high",
+  "runtime.session.read": "high",
+  "runtime.tool.extend": "high",
+  "runtime.tool.gate": "high",
+  "runtime.turn.abort": "high",
+  "runtime.turn.closing": "high",
+  "runtime.turn.continue": "high",
+  "runtime.turn.facts": "low",
+  "runtime.turn.recap": "high",
+  "runtime.turn.watch": "medium",
   "desktop.control": "high",
   "session.read": "high",
+  "session.delete.own": "high",
   "browser.cdp": "high",
   // Reading is a tier below writing because what makes a read dangerous is
   // where the data can go, and outbound requests are declared separately.
   "fs.read": "medium",
   "fs.read.workspace": "medium",
   "models.list": "medium",
+  "provider.register": "medium",
   "clipboard.read": "medium",
   "clipboard.write": "medium",
   "shell.openExternal": "medium",
+  "project.create": "medium",
+  // Sessions the plugin imported itself sit a tier below `session.read`, which
+  // sees the live conversation.
+  "session.import": "medium",
+  "session.read.own": "medium",
+  "session.update.own": "medium",
   "mcp.server.local": "high",
   "mcp.server.remote": "high",
   "background.service": "high",
+  // Per-turn counters and session titles only, per the usage.read matrix row.
+  "usage.read": "medium",
   // Two capabilities that reach outside PI-Desktop's own window or read its
   // live audio stream sit at the top tier with the other outbound paths.
   "net.websocket": "high",
   "audio.capture.background": "high",
+  "speech.adapter.register": "high",
   "audio.playback.background": "medium",
   "keyboard.globalShortcut": "medium",
   "bus.publish": "medium",
   "bus.subscribe": "medium",
   "ui.panel": "low",
+  "ui.view": "low",
+  "ui.settings": "low",
   "ui.microphone": "medium",
+  "ui.window.appearance": "medium",
   "ui.theme": "low",
   notify: "low",
 };
@@ -130,6 +164,57 @@ export function orderPermissions(permissions: readonly string[] | undefined): st
       RISK_WEIGHT[permissionRisk(a)] - RISK_WEIGHT[permissionRisk(b)] ||
       a.localeCompare(b),
   );
+}
+
+/**
+ * What a manifest declares a plugin's own UI code will read and call.
+ *
+ * Both lists are optional and may arrive empty; both readings mean the same
+ * thing, which is that the plugin declares nothing (issue #528). `null` is how
+ * that travels to the review, so "declared nothing" renders as no block rather
+ * than an empty one.
+ */
+export type RendererDeclaration = {
+  data: string[];
+  actions: string[];
+};
+
+export function rendererDeclaration(
+  plugin?:
+    | { rendererData?: readonly string[]; rendererActions?: readonly string[] }
+    | null,
+): RendererDeclaration | null {
+  const data = [...(plugin?.rendererData ?? [])];
+  const actions = [...(plugin?.rendererActions ?? [])];
+  if (!data.length && !actions.length) return null;
+  return { data, actions };
+}
+
+/** Which of the two declaration lists a value belongs to (issue #528). */
+export type DeclarationKind = "data" | "actions";
+
+/**
+ * The host-owned vocabulary behind each declaration list, straight from the
+ * SDK so the review and the manifest validator cannot drift apart (issue #528).
+ */
+const DECLARED_VALUES: Record<DeclarationKind, readonly string[]> = {
+  data: PLUGIN_RENDERER_DATA,
+  actions: PLUGIN_RENDERER_ACTIONS,
+};
+
+/**
+ * One declared value as the user reads it. A name in the vocabulary gets its
+ * catalog label; a name outside it is not something this host understands, but
+ * it is still what the plugin declared, so it is shown exactly as written —
+ * never dropped, and never left as a raw catalog key.
+ */
+export function declarationLabel(
+  kind: DeclarationKind,
+  value: string,
+  t: (k: string, o?: any) => string,
+): string {
+  if (!DECLARED_VALUES[kind].includes(value)) return value;
+  return t(`plugins.declaration.${kind}.${value}`, { defaultValue: value });
 }
 
 export function formatBytes(size?: number): string {

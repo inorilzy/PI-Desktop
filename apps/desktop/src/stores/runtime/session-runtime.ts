@@ -176,6 +176,10 @@ export function createSessionRuntime({ get, set }: StoreAccess): SessionRuntime 
           contentLimited: options?.contentLimit !== undefined,
         });
       }
+      // The session read carries the session's rewrite records; the transcript
+      // row badge reads them from the store (ADR 0295 rule 5). A paged read has
+      // no `rewrites` member and leaves what is already known alone.
+      get().rememberPluginRewrites(id, (detail as { rewrites?: unknown }).rewrites);
       return detail;
     });
     if (options?.messageBefore === undefined) sessionDetailLoads.set(id, request);

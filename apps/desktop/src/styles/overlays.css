@@ -316,7 +316,9 @@
 }
 
 .release-notes-overlay {
-  z-index: 80;
+  /* z-dialog, like every other overlay: leaf popups (60) and toasts (50) keep
+     painting above it. */
+  z-index: 40;
 }
 
 .release-notes-dialog {
@@ -816,4 +818,25 @@
     opacity: 1;
     transform: translateY(0) scale(1);
   }
+}
+
+/*
+  Plugin layer positions (spec 07-plugins/16 2A.5). Both are children of the
+  viewport-fixed #pi-desktop-overlays host, which is pointer-events: none so an
+  idle layer never covers the app.
+
+  A modal adds the host's own `.overlay` scrim, so it blocks the window exactly
+  like an app dialog. An overlay does not block: it is a transient layer, and
+  only the plugin's own box takes the pointer, which leaves the rest of the
+  window usable underneath it.
+*/
+.pi-plugin-layer.is-overlay {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+}
+
+.pi-plugin-layer.is-overlay > .pi-plugin-slot {
+  position: absolute;
+  pointer-events: auto;
 }

@@ -14,7 +14,11 @@ function tightenCsp(): Plugin {
         .replace(" 'unsafe-eval'", "")
         .replace(
           /connect-src [^;]*;/,
-          "connect-src 'self';",
+          // The renderer host fetches plugin module source over its own scheme,
+          // in a packaged build exactly as in dev. Wide `connect-src` is what
+          // this rewrite is for; the host-owned scheme has to survive it, or
+          // the feature only breaks where it cannot be debugged.
+          "connect-src 'self' plugin-renderer:;",
         );
     },
   };

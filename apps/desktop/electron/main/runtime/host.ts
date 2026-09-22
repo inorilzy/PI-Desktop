@@ -76,6 +76,13 @@ export function createHostRuntime({
     // Notifications from a previous host generation must never reach the
     // current plugin/renderer bridge after a restart.
     if (runtimeState.host !== h) return;
+    // An install reports itself, so the dialog that shows it can follow the
+    // phases, the mirror being tried and the bytes that have arrived. Nothing
+    // here decides anything: the request's own answer is still the outcome.
+    if (method === "plugin.installProgress") {
+      sendToRenderer(IPC.event.pluginInstallProgress, params);
+      return;
+    }
     if (method === "permissions.request") {
       const permission = params as {
         requestId: string;
@@ -248,10 +255,13 @@ export function createHostRuntime({
                 modelKey,
                 thinkingLevel,
               });
+              // Slot 5 (`runtime.tool.extend`): the kernel fields a plugin tool
+              // may attach survive only when the plugin holds the slot; here is
+              // where the plugin's recorded grants are known.
               payload = {
                 executionId: q.executionId,
                 ok: true,
-                content: result ?? null,
+                content: plugins.extendToolResult(tool.pluginId, result ?? null),
               };
             }
           } catch (e) {

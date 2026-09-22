@@ -1,0 +1,81 @@
+{
+  "schemaVersion": 1,
+  "id": "acme.plugin-showcase",
+  "name": "Plugin Showcase",
+  "version": "0.1.0",
+  "description": "PI-Desktop example plugin: both plugin interfaces in one package — renderer components in all ten declared UI slots (plus host-callable functions and one plugin tool whose own card is drawn by the toolCard slot), agent runtime slots (tool gate, turn watch, turn facts, session lifecycle, turn abort), and a self-check console docked as a work-panel view that drives this plugin's own process",
+  "author": "PI-Desktop",
+  "main": "main.js",
+  "renderer": "renderer/index.mjs",
+  "rendererData": ["entry", "session", "code", "draft"],
+  "rendererActions": [
+    "ui.toast",
+    "plugin.call",
+    "composer.readDraft",
+    "composer.replaceDraft",
+    "composer.insertText"
+  ],
+  "ui": {
+    "panel": "views/console.html",
+    "width": 560,
+    "height": 640,
+    "title": {
+      "en": "Showcase Console",
+      "zh-CN": "插件自检控制台"
+    }
+  },
+  "contributes": {
+    "commands": [
+      {
+        "id": "acme.plugin-showcase.about",
+        "title": "Plugin Showcase: What this plugin adds",
+        "keywords": ["showcase", "slots", "runtime", "renderer", "agent", "demo"],
+        "category": "Demo"
+      }
+    ],
+    "views": [
+      {
+        "id": "console",
+        "title": {
+          "en": "Showcase Console",
+          "zh-CN": "插件自检控制台"
+        },
+        "icon": "sparkles",
+        "entry": "views/console.html",
+        "order": 10
+      }
+    ],
+    "agentTools": [
+      {
+        "name": "showcase_note",
+        "description": "Format a short note in the plugin showcase's own tool card",
+        "risk": "low",
+        "schema": {
+          "type": "object",
+          "properties": {
+            "text": { "type": "string", "description": "the note to format" }
+          },
+          "required": ["text"]
+        }
+      }
+    ],
+    "agentExtensions": ["agent/extension.js"]
+  },
+  "permissions": [
+    "renderer.extension",
+    "agent.extension",
+    "agent.tool.register",
+    "agent.model.complete",
+    "ui.view",
+    "ui.panel",
+    "runtime.tool.gate",
+    "runtime.turn.watch",
+    "runtime.turn.facts",
+    "runtime.session.lifecycle",
+    "runtime.turn.abort"
+  ],
+  "engines": {
+    "piDesktop": ">=0.1.0"
+  },
+  "activationEvents": ["onStartup"]
+}

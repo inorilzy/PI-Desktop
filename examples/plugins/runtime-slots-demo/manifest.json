@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "id": "acme.runtime-slots-demo",
+  "name": "Runtime Slots Demo",
+  "version": "0.1.0",
+  "description": "PI-Desktop example plugin: an agent-side runtime slot demonstration (tool gate plus turn abort), one declared permission per slot it uses",
+  "author": "PI-Desktop",
+  "main": "main.js",
+  "contributes": {
+    "commands": [
+      {
+        "id": "acme.runtime-slots-demo.about",
+        "title": "Runtime Slots Demo: What this plugin adds",
+        "keywords": ["runtime", "slots", "tool gate", "abort", "demo"],
+        "category": "Demo"
+      }
+    ],
+    "agentExtensions": ["agent/extension.js"]
+  },
+  "permissions": ["agent.extension", "runtime.tool.gate", "runtime.turn.abort"],
+  "engines": {
+    "piDesktop": ">=0.1.0"
+  },
+  "activationEvents": ["onStartup"]
+}

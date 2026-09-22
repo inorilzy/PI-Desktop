@@ -1,9 +1,10 @@
+import { bridgePlatform } from "../../lib/bridge";
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import type {
   AppSettings,
   GlobalPermissionMode,
-  PluginSettingsDestinationMeta,
+  PluginScenicThemesDestinationMeta,
   ShortcutPlatform,
 } from "@pi-desktop/shared";
 import { useAppStore } from "../../stores/app-store";
@@ -20,6 +21,7 @@ import {
   IconChevronLeft,
   IconDownload,
   IconFileText,
+  IconGlobe,
   IconInfo,
   IconKeyboard,
   IconSearch,
@@ -31,16 +33,17 @@ import { Button, cx } from "../../components/ui";
 import { ModelConfigPage } from "../../components/settings/ModelConfigPage";
 import { KeyboardShortcutsSection } from "../../components/settings/KeyboardShortcutsSection";
 import { FontFamilyRow } from "../../components/settings/FontFamilyRow";
+import { ThinkingDisplayModeRow } from "../../components/settings/ThinkingDisplayModeRow";
 import { FontSizeRow } from "../../components/settings/FontSizeRow";
 import { LanguageRow } from "../../components/settings/LanguageRow";
 import { SettingsMenuSelect } from "../../components/settings/SettingsMenuSelect";
-import { SessionReferenceBudgetRow } from "./SessionReferenceBudgetRow";
 import { ThemeRow } from "../../components/settings/ThemeRow";
 import { NetworkProxySection } from "../../components/settings/NetworkProxySection";
 import { ProjectsPage } from "../../pages/ProjectsPage";
 import { AgentSkillsPage } from "../../components/settings/AgentSkillsPage";
 import { AgentMcpPage } from "../../components/settings/AgentMcpPage";
 import { AgentSubagentsPage } from "../../components/settings/AgentSubagentsPage";
+import { RemoteHostsPage } from "../../components/settings/RemoteHostsPage";
 import {
   CommandShellRow,
   ContextUsageDisplayRow,
@@ -54,8 +57,10 @@ import {
   ImportSection,
   UpdatesRow,
 } from "./agent-sections";
+import { PromptEnhancementCard } from "./prompt-enhancement-card";
+import { VoiceSettingsCard } from "./voice-settings";
 import { CloseBehaviorSection, DeveloperSection } from "./developer-sections";
-import { PluginSettingsDestination } from "../../components/settings/PluginSettingsDestination";
+import { PluginScenicThemesDestination } from "../../components/settings/PluginScenicThemesDestination";
 
 type SettingsTab = ReturnType<typeof useAppStore.getState>["settingsTab"];
 
@@ -79,16 +84,16 @@ export function SettingsPage() {
   const settings = useAppStore((s) => s.settings);
   const version = useAppStore((s) => s.version);
   const refreshProviders = useAppStore((s) => s.refreshProviders);
-  const platform = (window.piDesktop?.platform ?? "darwin") as ShortcutPlatform;
+  const platform = (bridgePlatform()) as ShortcutPlatform;
 
   const [query, setQuery] = useState("");
   const [recoveringSettings, setRecoveringSettings] = useState(!settings);
   const [settingsRecoveryFailed, setSettingsRecoveryFailed] = useState(false);
-  const [extensions, setExtensions] = useState<PluginSettingsDestinationMeta[]>([]);
-  const [activeExtension, setActiveExtension] = useState<PluginSettingsDestinationMeta | null>(null);
+  const [extensions, setExtensions] = useState<PluginScenicThemesDestinationMeta[]>([]);
+  const [activeExtension, setActiveExtension] = useState<PluginScenicThemesDestinationMeta | null>(null);
 
   useEffect(() => {
-    const refresh = () => void api.listPluginSettingsDestinations().then(setExtensions, () => setExtensions([]));
+    const refresh = () => void api.listPluginScenicThemesDestinations().then(setExtensions, () => setExtensions([]));
     refresh();
     return api.onPluginChanged(refresh);
   }, []);
@@ -167,6 +172,10 @@ export function SettingsPage() {
     await refreshProviders();
   };
 
+  const selectPluginTheme = async (theme: string) => {
+    await saveSettings({ theme: theme as AppSettings["theme"] });
+  };
+
   // Nav structure comes from the shared settings index (lib/settings-search)
   // so the global search dialog and this page stay in sync; only the icons
   // are view-level.
@@ -183,6 +192,7 @@ export function SettingsPage() {
       subagents: <IconBot size={14} />,
       import: <IconDownload size={14} />,
       projects: <IconArchive size={14} />,
+      remoteHosts: <IconGlobe size={14} />,
       about: <IconInfo size={14} />,
     };
     return SETTINGS_NAV.map((entry) => ({
@@ -257,7 +267,10 @@ export function SettingsPage() {
                   <button
                     key={item.id}
                     className={cx("settings-nav-item", tab === item.id && "active")}
-                    onClick={() => setSettingsTab(item.id)}
+                    onClick={() => {
+                      setActiveExtension(null);
+                      setSettingsTab(item.id);
+                    }}
                   >
                     <span className="settings-nav-icon">{item.icon}</span>
                     <span className="settings-nav-label">{t(item.labelKey)}</span>
@@ -300,10 +313,11 @@ export function SettingsPage() {
 
       <div className="settings-content">
         <div className="settings-content-inner">
+          <div className="settings-content-enter">
           <h1 className="settings-section-title">{activeExtension?.label ?? t(activeTitleKey)}</h1>
 
           {activeExtension ? (
-            <PluginSettingsDestination pluginId={activeExtension.pluginId} destinationId={activeExtension.destinationId} label={activeExtension.label} />
+            <PluginScenicThemesDestination destination={activeExtension} selectTheme={selectPluginTheme} />
           ) : <>
 
           {tabNeedsSettings && !settings ? (
@@ -367,6 +381,8 @@ export function SettingsPage() {
                 </SettingsRow>
               </SettingsCard>
 
+              <VoiceSettingsCard settings={settings} saveSettings={saveSettings} />
+
               <SettingsCard title={t("settings.defaultsTitle")}>
                 <SettingsRow title={t("settings.mode")} description={t("settings.modeDesc")}>
                   <div
@@ -396,6 +412,7 @@ export function SettingsPage() {
                 </SettingsRow>
                 <CommandShellRow settings={settings} saveSettings={saveSettings} />
                 <LinkOpenTargetRow settings={settings} saveSettings={saveSettings} />
+                <ThinkingDisplayModeRow settings={settings} saveSettings={saveSettings} />
                 <ContextUsageDisplayRow
                   settings={settings}
                   saveSettings={saveSettings}
@@ -417,12 +434,16 @@ export function SettingsPage() {
                     <span className="settings-toggle-thumb" />
                   </button>
                 </SettingsRow>
-                <SessionReferenceBudgetRow />
                 <LargePasteThresholdRow
                   settings={settings}
                   saveSettings={saveSettings}
                 />
               </SettingsCard>
+
+              <PromptEnhancementCard
+                settings={settings}
+                saveSettings={saveSettings}
+              />
             </div>
           )}
 
@@ -449,6 +470,8 @@ export function SettingsPage() {
           {tab === "import" && <ImportSection />}
 
           {tab === "projects" && <ProjectsPage />}
+
+          {tab === "remoteHosts" && <RemoteHostsPage />}
 
           {tab === "about" && (
             <div className="settings-stack">
@@ -489,6 +512,7 @@ export function SettingsPage() {
           )}
           </>}
 
+          </div>
         </div>
       </div>
     </div>

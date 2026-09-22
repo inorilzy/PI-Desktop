@@ -594,14 +594,22 @@ test("the project's other folders are not an escape hatch", async (t) => {
     "PERMISSION_DENIED",
     /never readable by plugins/,
   );
-  // A folder this project did not register is not a group folder.
+  // A folder this project did not register is not a group folder. The refusal
+  // is classified by the platform: POSIX re-roots the absolute path under the
+  // workspace, so the request lands on a missing file (NOT_FOUND), while a
+  // Windows drive-letter path cannot be re-rooted and is rejected as an escape
+  // (INVALID_ARGUMENT). Either way the file stays unreadable.
+  const strangerRefusal =
+    process.platform === "win32"
+      ? { code: "INVALID_ARGUMENT", pattern: /escapes the plugin's root/ }
+      : { code: "NOT_FOUND", pattern: /path not found/ };
   await refused(
     t,
     runtime.invokePanelBridge("fs.folders.guards", "fs.openDefault", {
       path: join(stranger, "notes.txt"),
     }),
-    "NOT_FOUND",
-    /path not found/,
+    strangerRefusal.code,
+    strangerRefusal.pattern,
   );
   assert.ok(
     audits.some((entry) => entry.api === "fs.read" && entry.ok === false),

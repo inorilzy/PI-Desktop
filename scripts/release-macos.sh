@@ -4,10 +4,12 @@
 # Local builds without a certificate remain unsigned. This script injects a
 # real signing identity and requires notarization credentials:
 #
-#   MAC_SIGNING_IDENTITY   e.g. "Developer ID Application: Your Name (TEAMID)"
+#   MAC_SIGNING_IDENTITY   default: "XingYu Liu (DUV63RKYTW)" — bare common
+#                          name; electron-builder rejects the
+#                          "Developer ID Application:" prefix
 #   APPLE_ID               Apple ID email for notarization
 #   APPLE_APP_SPECIFIC_PASSWORD  app-specific password for the Apple ID
-#   APPLE_TEAM_ID          Apple Developer Team ID
+#   APPLE_TEAM_ID          Apple Developer Team ID (must be DUV63RKYTW)
 #   MAC_ARCH               optional `arm64` or `x64`; must match the host
 #
 # See docs/spec/06-delivery/06-release-runbook.md for the full runbook.
@@ -44,14 +46,18 @@ if [[ "$MAC_ARCH" != "$DEFAULT_MAC_ARCH" ]]; then
   exit 1
 fi
 
-if [[ -z "${MAC_SIGNING_IDENTITY:-}" ]]; then
-  echo "error: MAC_SIGNING_IDENTITY is not set." >&2
+MAC_SIGNING_IDENTITY="${MAC_SIGNING_IDENTITY:-XingYu Liu (DUV63RKYTW)}"
+MAC_SIGNING_IDENTITY="${MAC_SIGNING_IDENTITY#Developer ID Application: }"
+APPLE_TEAM_ID="${APPLE_TEAM_ID:-DUV63RKYTW}"
+
+if [[ -z "${APPLE_ID:-}" || -z "${APPLE_APP_SPECIFIC_PASSWORD:-}" ]]; then
+  echo "error: notarization credentials are required (APPLE_ID / APPLE_APP_SPECIFIC_PASSWORD)." >&2
   echo "For an unsigned local build use: pnpm --filter @pi-desktop/desktop dist" >&2
   exit 1
 fi
 
-if [[ -z "${APPLE_ID:-}" || -z "${APPLE_APP_SPECIFIC_PASSWORD:-}" || -z "${APPLE_TEAM_ID:-}" ]]; then
-  echo "error: notarization credentials are required (APPLE_ID / APPLE_APP_SPECIFIC_PASSWORD / APPLE_TEAM_ID)." >&2
+if [[ "$APPLE_TEAM_ID" != "DUV63RKYTW" ]]; then
+  echo "error: APPLE_TEAM_ID must be DUV63RKYTW (got: $APPLE_TEAM_ID)." >&2
   exit 1
 fi
 
@@ -65,8 +71,8 @@ echo "==> Building + packaging desktop (signed, $MAC_ARCH)"
 pnpm --filter @pi-desktop/desktop exec electron-vite build
 pnpm --filter @pi-desktop/desktop exec electron-builder --mac "--${MAC_ARCH}" \
   -c.mac.identity="${MAC_SIGNING_IDENTITY}" \
-  -c.mac.forceCodeSigning=true \
-  -c.mac.notarize=true
+scripts/notarize-and-staple-macos-release-dmg.sh apps/desktop/release
+scripts/verify-macos-release.sh apps/desktop/release
 
 scripts/staple-macos-release-dmg.sh apps/desktop/release
 scripts/verify-macos-release.sh apps/desktop/release

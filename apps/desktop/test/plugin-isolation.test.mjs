@@ -235,6 +235,77 @@ test("plugin host process routes panel calls and workspace removal", async (t) =
   assert.equal(host.calls().some((message) => message.api === "fs.remove"), true);
 });
 
+test("plugin host process routes forwarded renderer calls to onRendererCall", async (t) => {
+  const { dir, manifest } = writePlugin(`
+    async function onRendererCall(method, args) {
+      return { method, args, id: pi.plugin.getId() };
+    }
+    module.exports = { onRendererCall };
+  `);
+  const host = startHostProcess(dir, manifest, {});
+  t.after(() => host.stop());
+
+  await host.init();
+  const result = await host.call("renderer.call", {
+    method: "slots.echo",
+    args: { text: "hi" },
+  });
+  assert.deepEqual(result, {
+    method: "slots.echo",
+    args: { text: "hi" },
+    id: "test.isolation",
+  });
+});
+
+test("a plugin without onRendererCall answers with a coded no-handler refusal", async (t) => {
+  const { dir, manifest } = writePlugin(`
+    async function onLoad() {}
+    module.exports = { onLoad };
+  `);
+  const host = startHostProcess(dir, manifest, {});
+  t.after(() => host.stop());
+
+  await host.init();
+  // A refusal, never `undefined`: the caller has to be able to tell a plugin
+  // that hosts no renderer methods from one whose method returned nothing.
+  await assert.rejects(
+    () => host.call("renderer.call", { method: "slots.echo", args: null }),
+    (error) => {
+      assert.equal(error.code, "PLUGIN_CALL_NO_HANDLER");
+      assert.match(error.message, /slots\.echo/);
+      return true;
+    },
+  );
+});
+
+test("a renderer call answer that cannot be transported is refused with a code", async (t) => {
+  const { dir, manifest } = writePlugin(`
+    async function onRendererCall(method) {
+      if (method === "slots.nothing") return undefined;
+      return { handler: () => "not transportable" };
+    }
+    module.exports = { onRendererCall };
+  `);
+  const host = startHostProcess(dir, manifest, {});
+  t.after(() => host.stop());
+
+  await host.init();
+  // No answer is an answer: `undefined` has to arrive as `null` rather than as
+  // a gap the caller cannot distinguish from a broken channel.
+  assert.equal(await host.call("renderer.call", { method: "slots.nothing", args: null }), null);
+  // A value the transport cannot carry is refused by code: posted, it would
+  // fail inside `postMessage` with an exception that names neither plugin nor
+  // method, and the renderer would see a generic failure instead of this one.
+  await assert.rejects(
+    () => host.call("renderer.call", { method: "slots.function", args: null }),
+    (error) => {
+      assert.equal(error.code, "PLUGIN_CALL_UNSERIALIZABLE");
+      assert.match(error.message, /slots\.function/);
+      return true;
+    },
+  );
+});
+
 test("plugin host process round-trips native notification permission APIs", async (t) => {
   const { dir, manifest } = writePlugin(`
     async function onLoad() {

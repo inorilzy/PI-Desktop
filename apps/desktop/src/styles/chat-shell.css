@@ -163,19 +163,26 @@
 }
 
 .route-surface,
-.settings-content-inner {
-  animation: route-surface-in var(--motion-duration-normal) var(--motion-ease-out)
-    both;
+.settings-content-enter {
+  /* No `forwards`/`both` fill: this entrance ends on the element's own state,
+     so a fill would only keep the animation "in effect" — and with it the
+     stacking context that left route-level overlays (the plugin modals, the
+     plugin detail sheet) underneath the opaque titlebar band. */
+  animation: route-surface-in var(--motion-duration-normal) var(--motion-ease-out);
 }
 
+/*
+  Do not animate `.settings-content-inner`. An animated ancestor is a stacking
+  context, and it can become a containing block for `position: fixed`, which is
+  what made settings dialogs cover only the content pane. Keep the keyframes
+  opacity-only and keep the fill off.
+*/
 @keyframes route-surface-in {
   from {
     opacity: 0;
-    transform: translateY(5px);
   }
   to {
     opacity: 1;
-    transform: translateY(0);
   }
 }
 

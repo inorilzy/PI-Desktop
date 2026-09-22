@@ -266,7 +266,7 @@ impl PlanManager {
                 &tx,
                 session_id,
                 &artifact.relative_path,
-                "write",
+                artifacts::ArtifactOp::Create,
                 Some(turn_id),
             )?;
             audit::append_tx(

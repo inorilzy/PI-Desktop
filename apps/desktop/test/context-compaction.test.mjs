@@ -182,7 +182,9 @@ test("compaction runs inline at the hard boundary, never ahead of it", () => {
   // fall through to the retained-tail recovery path.
   assert.match(
     runtime,
-    /private async buildCheckpoint\(\s*signal: AbortSignal,\s*retentionMode: CompactionRetentionMode,?\s*\)/,
+    // The slot-11 hook runs inside the build, because that is where the segment
+    // about to be replaced exists; the build/install split itself is unchanged.
+    /private async buildCheckpoint\(\s*signal: AbortSignal,\s*reason: ContextCompactionReason,\s*retentionMode: CompactionRetentionMode,?\s*\)/,
   );
   assert.match(runtime, /private async installCheckpoint\(/);
 });
@@ -291,6 +293,10 @@ test("the transcript shows one row per compaction, the inspector the newest", ()
   assert.match(transcript, /chat\.compactionRow/);
   assert.match(transcript, /mark\.summarized/);
   assert.match(transcript, /chat\.compactionRowNoSummary/);
+  // A retained-tail recovery is labelled as a failed summary, never as a
+  // summary of N tokens (#543).
+  assert.match(transcript, /mark\.fallback/);
+  assert.match(transcript, /chat\.compactionRowSummaryFailed/);
   assert.match(styles, /\.transcript-compaction-row \{/);
   // The inspector keeps its own line, now fed by the newest row.
   assert.match(

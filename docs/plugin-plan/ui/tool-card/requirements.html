@@ -1,0 +1,258 @@
+<!-- status: draft · issue #545 · branch feat/528-plugin-slots -->
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>工具调用卡 · 需求</title>
+<style>
+  :root{
+    --bg:#0e0e0e; --surface:#161616; --line:#2a2a2a; --line-2:#353535;
+    --text:#ededed; --text-2:#b0b0b0; --muted:#7d7d7d; --faint:#5c5c5c;
+    --ok:#40c977; --ok-bg:rgba(64,201,119,.10);
+    --warn:#ff8549; --warn-bg:rgba(255,133,73,.10);
+    --ui:#c27aff; --ui-bg:rgba(194,122,255,.10);
+    --red:#ff6764; --red-bg:rgba(255,103,100,.10);
+    --font:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;
+    --mono:ui-monospace,"SF Mono","Cascadia Code",Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0}
+  body{background:var(--bg);color:var(--text);font-family:var(--font);font-size:14px;line-height:1.65;-webkit-font-smoothing:antialiased}
+  .top{border-bottom:1px solid var(--line);padding:24px 28px 20px;background:linear-gradient(180deg,#141414,#0e0e0e)}
+  .top .crumb{font-family:var(--mono);font-size:11.5px;color:var(--faint);letter-spacing:.06em}
+  .top h1{margin:6px 0 6px;font-size:21px;letter-spacing:-.01em}
+  .top p{margin:0;color:var(--text-2);max-width:80ch}
+  .top .meta{margin-top:8px;color:var(--faint);font-size:12.5px}
+  code{font-family:var(--mono);font-size:12.5px;color:var(--text-2)}
+  main{max-width:920px;margin:0 auto;padding:24px 28px 80px}
+  section{margin:0 0 40px}
+  section > h2{display:flex;align-items:baseline;gap:8px;margin:0 0 10px;font-size:17px;border-top:1px solid var(--line);padding-top:14px}
+  section > h2 .tag{font-family:var(--mono);font-size:11px;padding:1px 6px;border-radius:4px}
+  .tag.decided{color:var(--ok);background:var(--ok-bg)}
+  .tag.proposal{color:var(--warn);background:var(--warn-bg)}
+  .tag.open{color:var(--ui);background:var(--ui-bg)}
+  h3{margin:22px 0 6px;font-size:14.5px;color:var(--text)}
+  p{margin:0 0 10px}
+  ul{margin:0 0 12px;padding-left:1.2em}
+  li{margin:3px 0}
+  table{width:100%;border-collapse:collapse;font-size:13.5px;margin:0 0 14px}
+  th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{color:var(--muted);font-weight:500;font-size:12px;letter-spacing:.03em;text-transform:uppercase}
+  td.id{font-family:var(--mono);font-size:12.5px;color:var(--text-2);white-space:nowrap}
+  .callout{margin:0 0 14px;padding:11px 13px;border-radius:9px;background:var(--surface);color:var(--text-2);font-size:13px}
+  .callout.decided{border-left:2px solid var(--ok)}
+  .callout.warn{border-left:2px solid var(--warn)}
+  .callout.open{border-left:2px solid var(--ui)}
+  .callout b{color:var(--text);font-weight:560}
+  .ba{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin:0 0 14px}
+  .ba > div{padding:11px 13px;border-radius:9px;background:var(--surface);font-size:13px}
+  .ba .was{border-left:2px solid var(--faint)}
+  .ba .now{border-left:2px solid var(--ok)}
+  .ba h4{margin:0 0 6px;font-size:11.5px;font-family:var(--mono);color:var(--muted);letter-spacing:.06em;text-transform:uppercase;font-weight:500}
+  /* 顶部导航：目录内各页互相跳转 */
+  .plan-nav{display:flex;flex-wrap:wrap;align-items:center;gap:4px;padding:10px 28px;background:#0c0c0c;border-bottom:1px solid var(--line);font-size:13px}
+  .plan-nav a{color:var(--text-2);text-decoration:none;padding:3px 8px;border-radius:6px}
+  .plan-nav a:hover{background:var(--surface);color:var(--text)}
+  .plan-nav a[aria-current="page"]{background:var(--surface);color:var(--text);box-shadow:inset 0 0 0 1px var(--line-2)}
+  .plan-nav .sep{color:var(--faint);padding:0 2px}
+  .plan-nav .spacer{flex:1}
+  @media (max-width:720px){.ba{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+
+<nav class="plan-nav">
+  <a href="../../index.html">插件插槽目录</a>
+  <span class="sep">/</span>
+  <a href="index.html">工具调用卡</a>
+  <span class="spacer"></span>
+  <a href="index.html">目录</a>
+  <a href="requirements.html" aria-current="page">需求</a>
+  <a href="demo.html">演示</a>
+  <a href="data-flow.html">数据流</a>
+</nav>
+
+<header class="top">
+  <div class="crumb">docs/plugin-plan · ui/tool-card</div>
+  <h1>工具调用卡 · 需求</h1>
+  <p>对话里每一次工具调用显示的那张卡。一个槽 <code>tool-card</code>：插件按工具名认领，拿到固定格式的数据 + 宿主默认卡组件。本期只做展示。</p>
+  <div class="meta">status: draft · issue #545 · 对照 demo.html / data-flow.html</div>
+</header>
+
+<main>
+<section>
+  <h2>范围 <span class="tag decided">已定</span></h2>
+  <ul>
+    <li>只谈对话流里<b>工具调用卡</b>的显示：宿主内置工具、插件工具、MCP 工具，都指这一张卡。</li>
+    <li>本期<b>只做展示相关</b>：卡的职责是把这次调用的入参和结果显示好。</li>
+    <li>不谈：工具执行本身（改参数、拦截、放行是另一个槽）、Composer 里的确认卡和计划审批栏、助手正文气泡。</li>
+  </ul>
+</section>
+
+<section>
+  <h2>槽有几个 <span class="tag decided">已定</span></h2>
+  <table>
+    <thead><tr><th>槽</th><th>位置</th><th>插件能做什么</th></tr></thead>
+    <tbody>
+      <tr><td class="id">tool-card</td><td>这一次工具调用的卡整体</td><td>可以整块自己画；也可以原样复用宿主默认卡，在它外面或下面再包一层</td></tr>
+    </tbody>
+  </table>
+  <p>槽只有这一个，但插件可以按工具名认领多次——同一个插件能给不同的工具画不同的卡。</p>
+  <div class="callout decided"><b>按工具名认领。</b>插件在清单里声明自己要接哪些工具；没被认领的工具永远走宿主默认卡。宿主不认领，默认卡就是兜底。</div>
+</section>
+
+<section>
+  <h2>能认领哪些工具 <span class="tag decided">已定</span></h2>
+  <p>认领键是工具<b>全名</b>。内置工具的完整名单如下；动态来源按各自的命名规则拼出来。</p>
+  <table>
+    <thead><tr><th>工具全名</th><th>干什么</th><th>来源</th></tr></thead>
+    <tbody>
+      <tr><td class="id">Read</td><td>读文件</td><td>宿主内置</td></tr>
+      <tr><td class="id">Glob</td><td>按模式列文件</td><td>宿主内置</td></tr>
+      <tr><td class="id">Grep</td><td>按内容搜索</td><td>宿主内置</td></tr>
+      <tr><td class="id">Write</td><td>写文件</td><td>宿主内置</td></tr>
+      <tr><td class="id">Edit</td><td>编辑文件</td><td>宿主内置</td></tr>
+      <tr><td class="id">Bash</td><td>跑命令</td><td>宿主内置</td></tr>
+      <tr><td class="id">asktool</td><td>向用户提问</td><td>运行时</td></tr>
+      <tr><td class="id">ToolSearch</td><td>搜索并按需激活工具</td><td>运行时</td></tr>
+      <tr><td class="id">EnterPlanMode / EnterGoalMode</td><td>进入计划 / 目标模式</td><td>运行时</td></tr>
+      <tr><td class="id">SubmitPlan / SubmitGoal</td><td>提交计划 / 目标</td><td>运行时</td></tr>
+      <tr><td class="id">Skill</td><td>装载技能</td><td>运行时</td></tr>
+      <tr><td class="id">new_context</td><td>开启新上下文窗口</td><td>运行时</td></tr>
+      <tr><td class="id">BrowserPreview</td><td>打开页面预览</td><td>桌面侧</td></tr>
+      <tr><td class="id">PluginScaffold / PluginCheck / PluginPack</td><td>插件脚手架 / 检查 / 打包</td><td>桌面侧</td></tr>
+      <tr><td class="id">ScheduledTaskList / ScheduledTaskCreate / ScheduledTaskUpdate / ScheduledTaskDelete</td><td>定时任务的增删改查</td><td>宿主内置</td></tr>
+      <tr><td class="id">plugin_&lt;插件id&gt;_&lt;工具名&gt;</td><td>插件自己声明的工具</td><td>动态</td></tr>
+      <tr><td class="id">mcp_&lt;服务名&gt;_&lt;工具名&gt;</td><td>用户接的 MCP 服务器工具</td><td>动态</td></tr>
+      <tr><td class="id">plugin_&lt;插件id&gt;_&lt;服务名&gt;_&lt;工具名&gt;</td><td>插件自带的 MCP 服务器工具</td><td>动态</td></tr>
+      <tr><td class="id">（受信扩展的任意名）</td><td>扩展运行时注册的工具，名字不固定</td><td>动态</td></tr>
+      <tr><td class="id">Task / TaskWait / TaskList / TaskStop</td><td>子代理委派与生命周期</td><td><b>本轮不开放认领</b></td></tr>
+    </tbody>
+  </table>
+  <div class="callout decided"><b>子代理这组本轮不开放认领。</b>Task 的展开体是拓扑画布、节点还会打开工作面板侧栏，是独立的一层；本轮插件认领 <code>Task</code> 无效，卡保持宿主形态。将来要开放时另开决定。</div>
+</section>
+
+<section>
+  <h2>槽必须提供三件套 <span class="tag decided">已定</span></h2>
+  <table>
+    <thead><tr><th>件</th><th>含义</th></tr></thead>
+    <tbody>
+      <tr><td class="id">完整数据（固定格式）</td><td>工具很多、返回各异，宿主先归一成<b>一份固定格式的数据</b>再交给插件：这是哪个工具、入参是什么、跑到哪一步、结果是什么。原始返回块原样附在数据里，不丢信息。</td></tr>
+      <tr><td class="id">现成组件（默认卡）</td><td>宿主把默认卡整体做成现成组件交给插件：想「跟 UI 一样」就原样渲染它，在外面加东西；想重绘就不用它。</td></tr>
+      <tr><td class="id">能调用的操作</td><td>展示类的宿主功能：打开文件 / 网址预览、复制文本。都是直接可调的函数，不是名字。</td></tr>
+    </tbody>
+  </table>
+  <p>目的：插件把卡画坏了，最多是这一次调用不好看；调用怎么存、会话怎么继续，还是宿主说了算。</p>
+</section>
+
+<section>
+  <h2>默认卡长什么样 <span class="tag decided">已定</span></h2>
+  <p>按宿主现在的实际形态（demo 场景 1），<b>无底色的扁平行</b>，不是一张盒子卡：</p>
+  <h3>头部（一直显示，一行）</h3>
+  <ul>
+    <li>图标 + 动作词（如 <code>读取 src/lib/retry.ts</code>），词随状态变化（读取 / 正在读取）</li>
+    <li>摘要参数（等宽字），结果小芯片（行段 / 条数 / 退出码 / 体积 / 已截断，方角）</li>
+    <li>状态：运行中是转圈，失败是红色「失败」，<b>成功不显示任何状态</b>；运行类（Bash）额外给命令复制按钮和「点 + 已完成 / 失败」</li>
+    <li>行尾旋转箭头（可展开才有），展开时转 90°</li>
+  </ul>
+  <h3>展开体（行下，分块）</h3>
+  <ul>
+    <li>每块一个小标题（文件内容 / 匹配 / 详情…）+ 复制按钮，块体是 tile 底圆角容器</li>
+    <li>按工具类型分块：代码、文件列表、命中列表、字段表、提示条；对不上的形状落回「字段表」兜底</li>
+    <li>运行类的输出<b>不带框</b>，像终端原文，错误输出红色</li>
+  </ul>
+  <h3>子代理（Task）是另一张卡</h3>
+  <ul>
+    <li>tile 底聚合卡：「Subagent 已完成 · 1 个 Subagent · 已完成 1/1 · 24s」，展开是节点列表（头像 + 名字 + 模型 + 结果）</li>
+  </ul>
+  <p>demo 场景 1 就是它们，包括没被任何插件认领的 MCP 工具的字段表兜底形态。</p>
+</section>
+
+<section>
+  <h2>插件场景 <span class="tag decided">已定</span></h2>
+  <p>这一轮留下的七件事，各自挂在 demo 的哪个场景。</p>
+  <table>
+    <thead><tr><th>#</th><th>场景</th><th>demo</th></tr></thead>
+    <tbody>
+      <tr><td>1</td><td>插件工具的结果画成自己的卡（数据库查询 → SQL + 表格）</td><td>场景 2</td></tr>
+      <tr><td>2</td><td>默认卡原样保留，插件在外面追加一段自己的内容</td><td>场景 3</td></tr>
+      <tr><td>3</td><td>结构化结果画成图（统计 → 条形图）</td><td>场景 4</td></tr>
+      <tr><td>4</td><td>MCP 工具的返回画成结构卡（现在是一坨 JSON）</td><td>场景 5</td></tr>
+      <tr><td>5</td><td>图片结果画成缩略图（现在图片块被直接丢掉）</td><td>场景 6</td></tr>
+      <tr><td>6</td><td>运行中的卡：流式输出递给插件重画</td><td>场景 7</td></tr>
+      <tr><td>7</td><td>失败态：错误信息交给插件展示</td><td>场景 7</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<section>
+  <h2>本轮拍板 <span class="tag decided">已定</span></h2>
+  <table>
+    <thead><tr><th>问题</th><th>结论</th></tr></thead>
+    <tbody>
+      <tr><td>只做展示</td><td>是。凡是<b>等待性质</b>的——下一步、审批、确认、重试再跑——本期一律不做</td></tr>
+      <tr><td>谁可以认领</td><td>任何插件都能认领；对<b>所有</b>工具调用生效，不看这条消息是谁产生的</td></tr>
+      <tr><td>没认领的工具</td><td>保持宿主默认卡，一个字都不变</td></tr>
+      <tr><td>数据格式</td><td>所有工具共用<b>一份固定格式</b>；插件按这份格式取数，不为每个工具写一套解析</td></tr>
+      <tr><td>运行中 / 失败态</td><td>也走槽：状态和节流后的新数据一并递给插件，插件决定怎么画</td></tr>
+      <tr><td>认领键支持到什么程度</td><td>只支持<b>工具全名</b>，不做前缀 / 按动作通配</td></tr>
+      <tr><td>两个插件认领同一个工具</td><td><b>安装的时候提示冲突</b>，让用户当场决定</td></tr>
+      <tr><td>Write / Edit 旁边的改动审阅卡</td><td>从工具卡旁边<b>移走</b>，固定显示在<b>输入框上方</b>；它不再属于工具卡区域</td></tr>
+      <tr><td>大结果给插件给多少</td><td><b>全量给，不设上限、不截断</b>；显示什么、怎么省是插件自己的事。数据里的「已截断」只反映工具自己截了（如 Bash 超长输出），宿主不额外截</td></tr>
+      <tr><td>折叠展开状态谁管</td><td><b>插件管</b>：插件认领的卡自己记展开态；宿主只在插件让位（报错 / 关闭）切回默认卡时用默认的展开规则</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<section>
+  <h2>和 #545 原文的关系 <span class="tag decided">边界改口</span></h2>
+  <p>#545 原文仅供参考，边界以本页为准。这是产品决定，不是实现漏项。</p>
+  <div class="ba">
+    <div class="was">
+      <h4>#545 原文的想象</h4>
+      <ul>
+        <li>工具卡上可以有插件放的<b>交互按钮</b>、走向下一步</li>
+        <li>插件深度参与工具执行的来来回回</li>
+      </ul>
+    </div>
+    <div class="now">
+      <h4>本轮决定</h4>
+      <ul>
+        <li>卡只负责<b>展示</b>；等待 / 审批性质的东西一律不做</li>
+        <li>执行拦截、参数改写是另外的槽，不在 <code>tool-card</code> 里</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<section>
+  <h2>接口长什么样（建议，还没定） <span class="tag proposal">建议</span></h2>
+  <div class="callout warn">下面是支撑上面拍板的东西，<b>不是用户原话</b>；字段名开工时再定。完整版见 <a href="data-flow.html" style="color:var(--text-2)">data-flow.html</a> 的第一节。</div>
+  <ul>
+    <li>认领声明：清单里 <code>toolCards: [{ tool: "mcp_github_get-issue" }]</code>，只按工具<b>全名</b>；两个插件认领同一个名字时在安装时提示冲突。</li>
+    <li>固定数据：<code>tool</code>（名字 / 来源）+ <code>call</code>（入参 / 状态 / 耗时）+ <code>result</code>（拼好的文本 / 结构化对象 / 原始块）+ <code>error</code>。</li>
+    <li>现成组件：<code>ToolCard</code>（整张默认卡）、<code>CodeBlock</code> / <code>FileList</code> / <code>MatchList</code> / <code>FieldsTable</code> 这几块展开体，想用就用。</li>
+    <li>能调用的操作：<code>openPreview</code> / <code>copy</code>。</li>
+  </ul>
+</section>
+
+<section>
+  <h2>还没定的事 <span class="tag decided">本轮收口</span></h2>
+  <p>本轮的问题都已拍板。子代理的拓扑画布和工作面板侧栏本轮不开放认领；将来要放开时另开一轮。</p>
+</section>
+
+<section>
+  <h2>明确不做 <span class="tag decided">已定</span></h2>
+  <ul>
+    <li><b>等待 / 审批性质的卡</b>：下一步、审批、确认、重试再跑——本期一律不做；需要等用户点头的流程不在这个槽里。</li>
+    <li>不让插件改工具的入参、拦截或放行执行——那是工具执行槽的事。</li>
+    <li>不让插件调用工具本身、发起新的工具调用。</li>
+    <li>不给整段对话、旁边的卡、别的会话——槽只拿到这一次调用的数据。</li>
+    <li>不做多张卡合并成一个视图；一张卡对应一次调用。</li>
+  </ul>
+</section>
+
+</main>
+</body>
+</html>

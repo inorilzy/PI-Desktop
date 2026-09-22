@@ -575,7 +575,8 @@ type AgentEvent =
      willRetry: boolean; fallback?: "retained_tail";
      mark?: { id: string; throughMessageId: string;
               generation: number; summaryTokens: number;
-              summarized: boolean };
+              summarized: boolean;
+              fallback?: "retained_tail" };
      error?: { code: string; message: string } }
  | { type: "error"; error: AppError }
  | { type: "status"; status: AgentStatus };
@@ -606,7 +607,8 @@ type AgentEvent =
 转录本行位于 `generation` 之后（此会话有多少个检查点
 已安装）、`summaryTokens`（摘要的估计上下文成本）以及
 `summarized`（当窗口滚动且未向模型询问时，`false`
-总结）。记录本身不被携带——它的摘要和保留尾部被携带
+总结）以及 `fallback`（摘要生成失败、检查点只带恢复说明和保留尾部时为
+`"retained_tail"`；转录行将其标为摘要生成失败，而不是 N tokens 的摘要）。记录本身不被携带——它的摘要和保留尾部被携带
 远远大于事件应有的大小——而是从
 `SessionDetail.compactions` 会话打开或分叉。
 
@@ -715,7 +717,7 @@ Electron 拥有本机表面，而渲染器则派生本地化表面
 `activated` 之前恢复/显示并聚焦窗口。交互询问不会创建持久任务收件箱行；
 计划提醒和插件本机通知仍是独立合约。本机交付是尽力而为；耐用的
 收件箱仍是操作系统抑制横幅时的权威来源。在 Windows 上，
-Electron 主将 `com.pi-desktop.app` 注册为进程 AppUserModelID
+Electron 主将 `net.aiuo.pi-desktop` 注册为进程 AppUserModelID
 在准备就绪之前和创建任何窗口之前。 ID 与 NSIS 匹配
 包标识所以通知属性、通知设置、任务栏
 分组，安装的快捷方式解析为 `PI-Desktop`，而不是库存
@@ -1226,6 +1228,36 @@ ASCII slug：frontmatter `name` 能 slugify 时用它，否则 `SKILL.md` 用技
 
 - `pi-desktop/mcp/market/search` — `{ query?, sources[], more? }` →
   `{ entries, failedSources, exhausted }`。Main 校验源 URL，固定每个解析出的公网地址，只跟随有界的 HTTPS 重定向，并为 browse 与服务端搜索保留 cursor 状态。单个源失败不会丢弃成功源；响应和缓存均有界。
+
+### MCP OAuth（ADR 0283）
+
+HTTP MCP 服务的基于浏览器的 OAuth 2.1 认证在 Electron 主进程中通过非阻塞 IPC 与事件流处理：
+
+- `pi-desktop/mcp/oauth/start({ id, level?, projectPath? }) -> { ok: true, loginId }`
+  启动 OAuth 元数据发现与 PKCE 授权码流程。立即返回，用户的浏览器交互与回调交换在后台异步执行。
+- `pi-desktop/mcp/oauth/cancel({ loginId?, id? }) -> { ok: boolean }`
+  中止正在进行的授权尝试，关闭本地回环 HTTP 服务并清理定时器。
+- `pi-desktop/mcp/oauth/event` 向渲染层推送 `McpOAuthLoginEvent`：
+
+```ts
+type McpOAuthLoginEvent = {
+  loginId: string;
+  serverId: string;
+} & (
+  | { kind: "authUrl"; url: string; instructions?: string; opened: boolean }
+  | { kind: "progress"; message: string }
+  | { kind: "done"; status: McpServerStatus }
+  | { kind: "error"; message: string }
+  | { kind: "cancelled" }
+);
+```
+
+#### 状态与凭证存储
+- `McpServerStatus` 包含：
+  - `hasOauth: boolean` — 服务是否在 host-core 加密凭据库存储有 OAuth 凭据（`secret:mcp:<serverId>:oauth`）。
+  - `authRequired: boolean` — 连接握手或 `tools/call` 是否收到 HTTP 401 Unauthorized，提示用户需要认证/重新授权。
+- OAuth 令牌（`accessToken`, `refreshToken`, `expiresAt`, `resource`, `clientId`, `redirectUris`）仅持久化在 host-core 的加密 secret 中（`secret:mcp:<serverId>:oauth`），绝不向渲染层暴露。授权服务器端点必须是 HTTPS（仅回环 HTTP 例外）。token 端点错误响应体只记入主进程日志，不进入渲染层事件。
+
 ## 12c. 子代理 API (D202)
 
 用户拥有的子代理仅是全局 Markdown 文档：`~/.agents/subagents/<id>.md`。
@@ -1608,6 +1640,15 @@ prompt/enhance({
 这是一次独立的一次性补全，没有会话历史、工具或附件。Electron main 负责解析
 提供商/模型和凭据，因此渲染器永远拿不到密钥。空草稿、斜杠命令草稿、缺失模型
 以及提供商失败都返回通用的 `Result` 错误包络。
+
+### speech/getStatus、speech/transcribe、speech/synthesize
+```ts
+speech/getStatus() -> SpeechStatus
+speech/transcribe({ sessionId?, path, mimeType?, language? }) -> { text }
+speech/synthesize({ sessionId?, text, voice?, format? }) -> { path, mimeType, dataUrl? }
+```
+
+宿主语音独立于聊天。绑定在 `AppSettings.speech`。音频字节不进入渲染器。见 `20-speech.md`。
 
 ### app/openFeedback（D313）
 

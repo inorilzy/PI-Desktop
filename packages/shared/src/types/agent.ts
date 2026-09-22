@@ -6,6 +6,7 @@ import type { AgentStatus } from "./sessions.js";
 import type { MessageUsage, ToolTokenUsage, UiMessage } from "./messages.js";
 import type { PermissionDecision, Risk } from "./permissions.js";
 import type { ThinkingLevel } from "./models.js";
+import type { RacpPermissionMode } from "../racp.js";
 
 export type AgentPromptRequest = {
   sessionId: string;
@@ -44,6 +45,17 @@ export type AgentPromptRequest = {
    * suppression; missing, null, or mismatched values fail safe.
    */
   viewingSessionId?: string | null;
+  /**
+   * Per-turn permission ceiling override (spec §7.3): the effective mode the
+   * remote layer computed for this specific turn, which the runtime must apply
+   * for tool decisions instead of the session's stored mode. Absent means the
+   * session's stored mode is used. Accepted only when the requested mode is
+   * narrower than or equal to the session's mode; a wider request is refused
+   * before the turn starts. The bridge forwards this end-to-end so the
+   * host-core scoping (still pending, R1 leftover) can enforce it turn-locally
+   * once it lands.
+   */
+  permissionMode?: RacpPermissionMode;
 };
 
 export type AgentPromptAttachment = {
@@ -210,7 +222,13 @@ export type AgentEvent =
   | { type: "agent_start" }
   | { type: "agent_end"; messageIds: string[] }
   | { type: "turn_start" }
-  | { type: "turn_end"; subagentUsage?: MessageUsage }
+  /**
+   * `pluginToolUsage` is spend plugin tools reported for this turn through
+   * their result's `usage` (ADR 0295 slot 5). It is recorded as a component of
+   * the turn's usage, never merged into the model's own token counts, so a
+   * cost surface can show it as its own line.
+   */
+  | { type: "turn_end"; subagentUsage?: MessageUsage; pluginToolUsage?: MessageUsage }
   | { type: "message_start"; message: UiMessage }
   | {
       type: "message_update";

@@ -593,6 +593,84 @@ pub(crate) fn validate_contributions(root: &Path, manifest: &PluginManifest) -> 
     Ok(())
 }
 
+/// The `manifest.rendererData` keys the host renderer can supply (ADR 0294 §2).
+///
+/// Mirrors `PLUGIN_RENDERER_DATA` in the plugin SDK
+/// (`packages/plugin-sdk/src/renderer.ts`), the list the manifest linter, the
+/// host renderer and this validator all read. Declaring a key grants nothing.
+pub(crate) const PLUGIN_RENDERER_DATA: [&str; 8] = [
+    "entry",
+    "session",
+    "code",
+    "theme",
+    "selection",
+    "draft",
+    "attachments",
+    "locale",
+];
+
+/// The `manifest.rendererActions` names a renderer module may dispatch
+/// (ADR 0294 §2): `plugin.call` is forwarded to the plugin's own entry, the
+/// rest are performed by the host renderer. Declaring one grants nothing.
+///
+/// Mirrors `PLUGIN_RENDERER_ACTIONS` in `packages/plugin-sdk/src/renderer.ts`.
+pub(crate) const PLUGIN_RENDERER_ACTIONS: [&str; 10] = [
+    "plugin.call",
+    "composer.replaceDraft",
+    "composer.readDraft",
+    "composer.insertText",
+    "composer.attachPath",
+    "ui.openOverlay",
+    "ui.closeOverlay",
+    "ui.openModal",
+    "ui.closeModal",
+    "ui.toast",
+];
+
+/// `rendererData` / `rendererActions` pick from a vocabulary the host owns, so
+/// a plugin cannot invent a key or an action (ADR 0294 §2).
+///
+/// The two lists are declarations and never permissions: they are not in the
+/// permission enum, they change no grant, and a manifest may declare them with
+/// no `renderer` entry at all. Their only jobs are the install review, the
+/// center's mechanical comparison, and the host knowing what to hand a slot.
+///
+/// A non-array value or a non-string member never reaches this function: the
+/// typed fields on [`PluginManifest`] reject those shapes while the manifest is
+/// deserialized, as `PLUGIN_INVALID`.
+pub(crate) fn validate_renderer_declarations(manifest: &PluginManifest) -> Result<()> {
+    for (field, declared, known) in [
+        (
+            "rendererData",
+            manifest.renderer_data.as_slice(),
+            PLUGIN_RENDERER_DATA.as_slice(),
+        ),
+        (
+            "rendererActions",
+            manifest.renderer_actions.as_slice(),
+            PLUGIN_RENDERER_ACTIONS.as_slice(),
+        ),
+    ] {
+        if declared.len() > known.len() {
+            bail!(
+                "PLUGIN_INVALID: {field} allows at most {} entries",
+                known.len()
+            );
+        }
+        let mut seen: Vec<&str> = Vec::new();
+        for value in declared {
+            if !known.contains(&value.as_str()) {
+                bail!("PLUGIN_INVALID: {field} has unknown member {value}");
+            }
+            if seen.contains(&value.as_str()) {
+                bail!("PLUGIN_INVALID: duplicate {field} member {value}");
+            }
+            seen.push(value);
+        }
+    }
+    Ok(())
+}
+
 fn is_setting_key(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= 64

@@ -1,3 +1,4 @@
+import { bridgePlatform } from "../lib/bridge";
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { api } from "../lib/api";
@@ -19,7 +20,7 @@ export function WindowControls({
   contained?: boolean;
 } = {}) {
   const { t } = useTranslation();
-  const platform = window.piDesktop?.platform ?? "darwin";
+  const platform = bridgePlatform();
   const [maximized, setMaximized] = useState(false);
 
   useEffect(() => {

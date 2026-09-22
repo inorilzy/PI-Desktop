@@ -1,0 +1,87 @@
+<!-- status: draft · issue #545 · branch feat/528-plugin-slots -->
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>块渲染器 · 目录</title>
+<style>
+  :root{
+    --bg:#0e0e0e; --surface:#161616; --line:#2a2a2a; --line-2:#353535;
+    --text:#ededed; --text-2:#b0b0b0; --muted:#7d7d7d; --faint:#5c5c5c;
+    --ok:#40c977; --ok-bg:rgba(64,201,119,.10);
+    --ui:#c27aff; --ui-bg:rgba(194,122,255,.10);
+    --font:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;
+    --mono:ui-monospace,"SF Mono","Cascadia Code",Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0}
+  body{background:var(--bg);color:var(--text);font-family:var(--font);font-size:14px;line-height:1.65;-webkit-font-smoothing:antialiased}
+  .top{border-bottom:1px solid var(--line);padding:24px 28px 20px;background:linear-gradient(180deg,#141414,#0e0e0e)}
+  .top .crumb{font-family:var(--mono);font-size:11.5px;color:var(--faint);letter-spacing:.06em}
+  .top h1{margin:6px 0 6px;font-size:21px;letter-spacing:-.01em}
+  .top p{margin:0;color:var(--text-2);max-width:80ch}
+  .top .meta{margin-top:8px;color:var(--faint);font-size:12.5px}
+  code{font-family:var(--mono);font-size:12.5px;color:var(--text-2)}
+  main{max-width:920px;margin:0 auto;padding:24px 28px 80px}
+  table{width:100%;border-collapse:collapse;font-size:13.5px;margin:0 0 14px}
+  th,td{text-align:left;padding:9px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{color:var(--muted);font-weight:500;font-size:12px;letter-spacing:.03em;text-transform:uppercase}
+  td.page{font-family:var(--mono);font-size:12.5px;white-space:nowrap}
+  td.page a{color:var(--text);text-decoration:none;border-bottom:1px solid var(--line-2)}
+  td.page a:hover{border-bottom-color:var(--ui)}
+  .pill{display:inline-block;padding:1px 7px;border-radius:99px;font-size:11px;font-family:var(--mono);white-space:nowrap}
+  .pill.draft{color:var(--ok);background:var(--ok-bg)}
+  .pill.none{color:var(--faint);background:rgba(255,255,255,.04)}
+  /* 顶部导航：目录内各页互相跳转 */
+  .plan-nav{display:flex;flex-wrap:wrap;align-items:center;gap:4px;padding:10px 28px;background:#0c0c0c;border-bottom:1px solid var(--line);font-size:13px}
+  .plan-nav a{color:var(--text-2);text-decoration:none;padding:3px 8px;border-radius:6px}
+  .plan-nav a:hover{background:var(--surface);color:var(--text)}
+  .plan-nav a[aria-current="page"]{background:var(--surface);color:var(--text);box-shadow:inset 0 0 0 1px var(--line-2)}
+  .plan-nav .sep{color:var(--faint);padding:0 2px}
+  .plan-nav .spacer{flex:1}
+</style>
+</head>
+<body>
+
+<nav class="plan-nav">
+  <a href="../../index.html">插件插槽目录</a>
+  <span class="sep">/</span>
+  <a href="index.html" aria-current="page">块渲染器</a>
+  <span class="spacer"></span>
+  <a href="index.html" aria-current="page">目录</a>
+  <a href="requirements.html">需求</a>
+  <a href="demo.html">演示</a>
+</nav>
+
+<header class="top">
+  <div class="crumb">docs/plugin-plan · ui/block-renderer</div>
+  <h1>块渲染器</h1>
+  <p>AI 回复正文里的 fenced code block。插件按<b>语言标签</b>认领，整块接管渲染；宿主只交出标签和原文，复制、源码、错误提示都是渲染器自己的事。属于 issue #545 的内容区。</p>
+  <div class="meta">status: <b>draft</b> · issue #545 · 演示已确认 2026-09-21</div>
+</header>
+
+<main>
+  <table>
+    <thead><tr><th>页</th><th>回答什么</th><th>状态</th></tr></thead>
+    <tbody>
+      <tr>
+        <td class="page"><a href="requirements.html">requirements.html</a></td>
+        <td>范围、认领规则、宿主交出什么、回退时机、注册建议、明确不做</td>
+        <td><span class="pill draft">draft</span></td>
+      </tr>
+      <tr>
+        <td class="page"><a href="demo.html">demo.html</a></td>
+        <td>默认代码块基线 · chart / csv / svg / diff 四种渲染器 · 流式 / 失败 / 停用三个边界</td>
+        <td><span class="pill draft">已确认</span></td>
+      </tr>
+      <tr>
+        <td class="page">data-flow.html</td>
+        <td><b>不设。</b>宿主只在渲染时交一次「标签 + 原文」，没有别的数据往来（需求页「本轮拍板」）</td>
+        <td><span class="pill none">不设</span></td>
+      </tr>
+    </tbody>
+  </table>
+</main>
+</body>
+</html>

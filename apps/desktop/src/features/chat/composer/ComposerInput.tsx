@@ -8,6 +8,8 @@ import type {
 } from "react";
 import type { useComposerAutocomplete } from "../../../hooks/use-composer-autocomplete";
 import { editorSelectionRange, readEditorValue } from "./editor";
+import { ComposerReferenceSlot } from "./ComposerReferenceSlot";
+import type { ComposerFileReference } from "./model";
 
 type AutocompleteController = ReturnType<typeof useComposerAutocomplete>;
 
@@ -15,6 +17,8 @@ export type ComposerInputProps = {
   inputRef: RefObject<HTMLDivElement | null>;
   value: string;
   placeholderText: string;
+  /** The draft's live reference chips, in host order. */
+  fileReferences: readonly ComposerFileReference[];
   placeholderKey: string;
   inputBlocked: boolean;
   pasting: boolean;
@@ -36,6 +40,7 @@ export type ComposerInputProps = {
 export function ComposerInput({
   inputRef,
   value,
+  fileReferences,
   placeholderText,
   placeholderKey,
   inputBlocked,
@@ -144,6 +149,11 @@ export function ComposerInput({
             {placeholderText}
           </span>
         ) : null}
+        {/* The `composerReference` position. The editor above owns the host's
+          * own chips and paints them itself, so the plugin chip surface sits
+          * directly after it: every host chip is ahead of every plugin chip,
+          * and nothing registered renders nothing at all. */}
+        <ComposerReferenceSlot fileReferences={fileReferences} draft={value} />
       </div>
     </div>
   );

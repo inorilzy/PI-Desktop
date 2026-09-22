@@ -119,7 +119,15 @@ CREATE TABLE turn_queue (
   permission_mode  TEXT NOT NULL,
   position         INTEGER NOT NULL,
   priority         INTEGER,
-  created_at       INTEGER NOT NULL
+  created_at       INTEGER NOT NULL,
+  -- Provenance of a continuation a plugin asked for (schema v22, ADR 0295
+  -- rule 9 / slot #10 `runtime.turn.continue`): the plugin id plus the display
+  -- name as of the request, snapshotted for the same reason a transcript row
+  -- snapshots it — the queue entry stays readable after the plugin is
+  -- uninstalled. NULL is a queue entry the user (or the Host) made: a row
+  -- without provenance keeps behaving exactly as before.
+  plugin_id        TEXT,
+  plugin_label     TEXT
 );
 CREATE INDEX idx_turn_queue_session ON turn_queue(session_id, position);
 CREATE UNIQUE INDEX idx_turn_queue_idempotency
@@ -151,8 +159,18 @@ CREATE TABLE messages (
   is_error     INTEGER NOT NULL DEFAULT 0,
   text         TEXT,
   created_at   INTEGER NOT NULL,
+  -- Per-row plugin provenance (schema v22, ADR 0293/0295 rule 9): the plugin
+  -- id and display name a continuation row was written with, snapshotted at
+  -- append time. NULL is an ordinary row the user typed, which is why the
+  -- transcript draws a badge only for rows that carry it. Appended last so a
+  -- migrated file and a fresh one hold the same column order.
+  plugin_id    TEXT,
+  plugin_label TEXT,
   UNIQUE (session_id, seq)
 );
+-- The per-turn message read (`turn.messages`, ADR 0295 slot #8) orders one
+-- turn's rows through this partial index instead of scanning the session.
+CREATE INDEX idx_messages_turn ON messages(turn_id, seq) WHERE turn_id IS NOT NULL;
 
 CREATE VIRTUAL TABLE messages_fts USING fts5(
   text,
@@ -172,15 +190,23 @@ CREATE TRIGGER messages_au AFTER UPDATE OF text ON messages
       SELECT new.mid, new.text WHERE new.text IS NOT NULL;
   END;
 
+-- One row per recorded touch, not one row per file (schema v19, ADR 0295
+-- rule 8): a file changed in three turns must stay attributable to all three,
+-- so `turn_id` is part of the exposed shape and `op` names the effect that
+-- turn had (`create | write | edit | download | delete`; the vocabulary is
+-- enforced by the typed write path in `artifacts.rs`, so no stored row needs
+-- rewriting when it grows).
 CREATE TABLE artifacts (
+  id         INTEGER PRIMARY KEY,
   session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
   path       TEXT NOT NULL,
   op         TEXT NOT NULL,
   turn_id    TEXT,
-  updated_at INTEGER NOT NULL,
-  PRIMARY KEY (session_id, path)
-) WITHOUT ROWID;
+  updated_at INTEGER NOT NULL
+);
 CREATE INDEX idx_artifacts_time ON artifacts(updated_at DESC);
+CREATE INDEX idx_artifacts_session_turn
+  ON artifacts(session_id, turn_id, updated_at);
 
 CREATE TABLE message_revisions (
   id              TEXT PRIMARY KEY,
@@ -233,10 +259,18 @@ CREATE TABLE audit_log (
   ts           INTEGER NOT NULL,
   kind         TEXT NOT NULL,
   session_id   TEXT,
-  payload_json TEXT NOT NULL DEFAULT '{}'
+  payload_json TEXT NOT NULL DEFAULT '{}',
+  -- The turn this record belongs to (schema v21, ADR 0295 rule 8, slot #9
+  -- `runtime.turn.facts`): one turn's records are an indexed read instead of
+  -- a scan of redacted payloads. NULL when the record is not about a turn —
+  -- including every row written before v21 — so a per-turn read sees only
+  -- rows the host actually attributed. Appended last because `ALTER TABLE`
+  -- appends: a migrated file and a fresh one then hold the same column order.
+  turn_id      TEXT
 );
 CREATE INDEX idx_audit_ts ON audit_log(ts);
 CREATE INDEX idx_audit_session ON audit_log(session_id, ts) WHERE session_id IS NOT NULL;
+CREATE INDEX idx_audit_turn ON audit_log(turn_id, ts) WHERE turn_id IS NOT NULL;
 
 "#;
 

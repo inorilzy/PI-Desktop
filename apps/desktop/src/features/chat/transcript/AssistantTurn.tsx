@@ -18,12 +18,14 @@ import {
   reuseReadonlyMap,
   subagentRunsEqual,
   type AssistantTurnEntry,
+  type AssistantTurnPart,
   type TranscriptEntry,
 } from "../../../lib/assistant-turns";
 import {
   collectDelegationStatuses,
   collectDelegationTimings,
 } from "../../../lib/subagent-topology";
+import { projectTurnProcess } from "../../../lib/turn-process";
 import { useAppStore } from "../../../stores/app-store";
 import { Markdown } from "../../../components/Markdown";
 import { IconBranch, IconReview } from "../../../components/icons";
@@ -35,6 +37,7 @@ import {
 } from "./shared";
 import { activityItemsEqual, ActivityGroup } from "./ActivityGroup";
 import { MessageRow } from "./MessageRow";
+import { TurnProcess } from "./TurnProcess";
 
 type AssistantTurnProps = {
   entry: AssistantTurnEntry;
@@ -82,7 +85,8 @@ export function compactionMarksEqual(
     previous.throughMessageId === next.throughMessageId &&
     previous.generation === next.generation &&
     previous.summaryTokens === next.summaryTokens &&
-    previous.summarized === next.summarized
+    previous.summarized === next.summarized &&
+    previous.fallback === next.fallback
   );
 }
 
@@ -271,6 +275,41 @@ export const AssistantTurn = memo(function AssistantTurn({
   );
   statusesRef.current = turnDelegationStatuses;
   timingsRef.current = turnDelegationTimings;
+  const { process, responses } = projectTurnProcess(entry);
+  const activePart = isActive ? entry.parts.at(-1) : undefined;
+
+  const renderPart = (part: AssistantTurnPart) =>
+    part.kind === "activity" ? (
+      <ActivityGroup
+        embedded
+        key={`activity-${part.items[0].message.id}`}
+        items={part.items}
+        endedAt={part.endedAt}
+        isActive={part === activePart}
+        runtimeActivity={part === activePart ? runtimeActivity : undefined}
+        turnDelegationStatuses={turnDelegationStatuses}
+        turnDelegationTimings={turnDelegationTimings}
+      />
+    ) : (
+      <div
+        className={`message-bubble assistant-turn-fragment${
+          isActive && part.message.status === "streaming"
+            ? " streaming"
+            : ""
+        }`}
+        data-message-id={part.message.id}
+        key={part.message.id}
+      >
+        {part.message.content ? (
+          <div className="prose-chat">
+            <Markdown source={part.message.content} />
+          </div>
+        ) : null}
+        {part.message.error ? (
+          <AssistantErrorMessage message={part.message} />
+        ) : null}
+      </div>
+    );
 
   return (
     <div
@@ -281,42 +320,10 @@ export const AssistantTurn = memo(function AssistantTurn({
       aria-label={t("chat.assistantMessage")}
     >
       <div className="message-col">
-        {entry.parts.map((part, index) =>
-          part.kind === "activity" ? (
-            <ActivityGroup
-              key={`activity-${part.items[0].message.id}`}
-              items={part.items}
-              endedAt={part.endedAt}
-              isActive={isActive && index === entry.parts.length - 1}
-              runtimeActivity={
-                isActive && index === entry.parts.length - 1
-                  ? runtimeActivity
-                  : undefined
-              }
-              turnDelegationStatuses={turnDelegationStatuses}
-              turnDelegationTimings={turnDelegationTimings}
-            />
-          ) : (
-            <div
-              className={`message-bubble assistant-turn-fragment${
-                isActive && part.message.status === "streaming"
-                  ? " streaming"
-                  : ""
-              }`}
-              data-message-id={part.message.id}
-              key={part.message.id}
-            >
-              {part.message.content ? (
-                <div className="prose-chat">
-                  <Markdown source={part.message.content} />
-                </div>
-              ) : null}
-              {part.message.error ? (
-                <AssistantErrorMessage message={part.message} />
-              ) : null}
-            </div>
-          ),
-        )}
+        <TurnProcess processParts={process} turnParts={entry.parts} isActive={isActive}>
+          {process.map(renderPart)}
+        </TurnProcess>
+        {responses.map(renderPart)}
         {!isActive && metaMessage ? (
           <MessageMeta
             modelId={modelId}
@@ -370,11 +377,13 @@ export function CompactionRow({ mark }: { mark: ContextCompactionMark }) {
         {t("chat.compactionRow", { times: mark.generation })}
       </span>
       <span className="transcript-compaction-detail">
-        {mark.summarized
-          ? t("chat.compactionRowSummary", {
-              tokens: formatCompactTokenCount(mark.summaryTokens),
-            })
-          : t("chat.compactionRowNoSummary")}
+        {mark.fallback
+          ? t("chat.compactionRowSummaryFailed")
+          : mark.summarized
+            ? t("chat.compactionRowSummary", {
+                tokens: formatCompactTokenCount(mark.summaryTokens),
+              })
+            : t("chat.compactionRowNoSummary")}
       </span>
     </div>
   );

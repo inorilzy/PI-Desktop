@@ -1,3 +1,4 @@
+import { bridgeLocale } from "./bridge";
 import i18n from "i18next";
 import {
   isAppLocale,
@@ -18,7 +19,7 @@ export type AppLanguageSetting = NonNullable<AppSettings["language"]>;
  */
 export function resolveOsLocale(): string {
   return (
-    window.piDesktop?.locale ||
+    bridgeLocale() ||
     navigator.language ||
     (navigator as { userLanguage?: string }).userLanguage ||
     "en-US"

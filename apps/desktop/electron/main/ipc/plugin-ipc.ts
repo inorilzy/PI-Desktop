@@ -1,6 +1,7 @@
 import { dialog } from "electron";
 import { IPC, type ActivationScope } from "@pi-desktop/shared";
 import { isTemplateName, scaffold } from "@pi-desktop/plugin-devkit";
+import { manifestEntries } from "@pi-desktop/plugin-sdk";
 import type { AgentExtensionBridge } from "../agent-extensions";
 import type { BrowserHost } from "../browser-host";
 import type { HostProcess } from "../host-process";
@@ -21,7 +22,6 @@ export type PluginIpcDependencies = {
   agentExtensions: AgentExtensionBridge;
   browserHost: BrowserHost;
   pluginViews: PluginViewHost;
-  pluginSettingsViews: PluginViewHost;
   pluginScopes: Map<string, ActivationScope>;
   rememberPluginScopes: (list: any[]) => void;
   sendToRenderer: (channel: string, payload?: unknown) => void;
@@ -36,7 +36,6 @@ export function registerPluginIpc({
   agentExtensions,
   browserHost,
   pluginViews,
-  pluginSettingsViews,
   pluginScopes,
   rememberPluginScopes,
   sendToRenderer,
@@ -92,6 +91,12 @@ export function registerPluginIpc({
       version: declared.manifest.version,
       permissions: declared.permissions,
       addedPermissions,
+      entries: manifestEntries(declared.manifest),
+      // Carried as written, not derived: this is what the plugin's own UI code
+      // says it reads and calls, and the review shows it back unchanged. The
+      // manifest validator already refused anything outside the vocabulary.
+      rendererData: declared.manifest.rendererData ?? [],
+      rendererActions: declared.manifest.rendererActions ?? [],
     };
   };
 
@@ -139,6 +144,34 @@ export function registerPluginIpc({
     return { ...result, plugins: pluginsWithSettings };
   });
 
+
+  /**
+   * The renderer entry a loaded plugin may run, or null. The renderer process
+   * never reads a manifest, so this is how it learns the one path it may fetch
+   * (ADR 0291); the same gate decides whether the scheme answers at all.
+   */
+  handle(IPC.invoke.pluginRendererEntry, async (id: string) => ({
+    entry: plugins.rendererEntry(String(id ?? "")),
+  }));
+
+  /**
+   * One forwarded renderer action: `dispatch("plugin.call", { method, args })`
+   * (ADR 0294 decision 4). The id is the calling plugin's own — the main window
+   * is one sender for every plugin in it, so the id has to be an argument — and
+   * nothing the renderer claims about it is trusted: the runtime looks the
+   * plugin up in the registry this process loaded and re-checks the declaration
+   * in that manifest before forwarding. Every refusal is a coded error, which is
+   * also what the caller records as a diagnostic on the plugin's row.
+   */
+  handle(
+    IPC.invoke.pluginRendererCall,
+    async (input: { pluginId?: unknown; method?: unknown; args?: unknown } = {}) =>
+      plugins.invokeRendererCall(
+        typeof input?.pluginId === "string" ? input.pluginId : "",
+        typeof input?.method === "string" ? input.method : "",
+        input?.args ?? null,
+      ),
+  );
   handle(IPC.invoke.pluginSettingsGet, async (id: string) => {
     const settings = await plugins.getPluginSettings(String(id ?? ""));
     return { settings };
@@ -342,7 +375,6 @@ export function registerPluginIpc({
   handle(IPC.invoke.pluginDisable, async (id: string) => {
     if (!host) throw new Error("host unavailable");
     pluginViews.closePlugin(id);
-    pluginSettingsViews.closePlugin(id);
     if (id === BROWSER_PLUGIN_ID) browserHost.disposeGuest();
     await plugins.unload(id);
     logger.app("plugin", "info", "plugin disabled", { pluginId: id });
@@ -354,7 +386,6 @@ export function registerPluginIpc({
   handle(IPC.invoke.pluginUninstall, async (id: string) => {
     if (!host) throw new Error("host unavailable");
     pluginViews.closePlugin(id);
-    pluginSettingsViews.closePlugin(id);
     await plugins.unload(id);
     logger.app("plugin", "info", "plugin uninstalled", { pluginId: id });
     const res = await host.call("plugins.uninstall", { id });

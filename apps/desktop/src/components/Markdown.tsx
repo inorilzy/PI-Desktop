@@ -39,6 +39,7 @@ import {
 import { TooltipButton } from "./ui";
 import { createPortal } from "react-dom";
 import { api } from "../lib/api";
+import { openHttpUrl } from "../lib/open-http-url";
 import {
   rehypeSourcePositions,
   sourcePositionProps,
@@ -50,7 +51,7 @@ import {
 } from "../lib/latex-math";
 import { useAppStore } from "../stores/app-store";
 import { useReferencedImageDataUrl } from "../lib/use-referenced-image-data-url";
-import { useOpenChatFileRef, useOpenPreviewTarget } from "../hooks/use-preview-target";
+import { useOpenChatFileRef } from "../hooks/use-preview-target";
 import {
   remarkChatFileLinks,
   resolvePreviewTarget,
@@ -73,6 +74,12 @@ import {
   type LineCache,
   type ThemeMode,
 } from "../lib/shiki";
+import { PluginSlot, useSlotRegistrations } from "../plugins/renderer-slots/SlotOutlet";
+import { rendererCandidates } from "../plugins/renderer-slots/candidates";
+import {
+  codeBlockComponentFor,
+  codeBlockSourceTooLarge,
+} from "../plugins/renderer-slots/code-blocks";
 
 /*
  * Streaming-optimized chat markdown renderer.
@@ -123,7 +130,9 @@ function getThemeSnapshot(): ThemeMode {
 }
 
 function useThemeMode(): ThemeMode {
-  return useSyncExternalStore(subscribeTheme, getThemeSnapshot);
+  // The snapshot doubles as the server snapshot so a server render (tests,
+  // previews) does not throw; it reads the same source as the client value.
+  return useSyncExternalStore(subscribeTheme, getThemeSnapshot, getThemeSnapshot);
 }
 
 /* ---------- syntax highlighting ---------- */
@@ -158,7 +167,9 @@ function useHighlightedTokens(
 ): ThemedToken[][] | null {
   const resolved = resolveLang(lang);
   const mode = useThemeMode();
-  const version = useSyncExternalStore(subscribeHighlighter, getHighlightVersion);
+  // The readiness counter doubles as the server snapshot: a server render has
+  // no highlighter yet, which is exactly what the client's first snapshot says.
+  const version = useSyncExternalStore(subscribeHighlighter, getHighlightVersion, getHighlightVersion);
   useEffect(() => {
     if (resolved) ensureLang(resolved);
   }, [resolved]);
@@ -423,6 +434,15 @@ function PreBlock({
   ...rest
 }: ComponentProps<"pre"> & SourcePositionProps & { node?: unknown }) {
   const { closedFence, renderDiagrams } = useContext(MarkdownBlockContext);
+  // The registry is an external store: a plugin that registers after the first
+  // paint still has to reach the blocks whose language it owns.
+  const codeBlockSlots = useSlotRegistrations("codeBlock");
+  // The mount also carries the plugin rows, so the outlet loads a renderer entry
+  // and records what that plugin declared from a code block too — not only from
+  // a slot that happens to render elsewhere on screen.
+  const plugins = useAppStore((s) => s.plugins);
+  const pluginCandidates = useMemo(() => rendererCandidates(plugins), [plugins]);
+  const theme = useThemeMode();
   const info = extractCode(children);
   if (!info) return <pre {...rest}>{children}</pre>;
   if (
@@ -432,7 +452,28 @@ function PreBlock({
   ) {
     return <MermaidBlock code={info.code} {...sourcePositionProps(rest)} />;
   }
-  return <CodeBlock code={info.code} lang={info.lang} {...sourcePositionProps(rest)} />;
+  const code = (
+    <CodeBlock code={info.code} lang={info.lang} {...sourcePositionProps(rest)} />
+  );
+  // A plugin draws a closed, in-limit block only: an open fence never reaches a
+  // component, and an oversized block degrades to the host's own source
+  // rendering before the outlet is involved. A language has exactly one renderer
+  // (D13), so the mount hands the outlet exactly that registration — an empty
+  // list when nothing claims the language, which renders the host's own block
+  // and is also the boundary's fallback.
+  if (!closedFence || codeBlockSourceTooLarge(info.code)) return code;
+  const claimed = codeBlockComponentFor(info.lang, codeBlockSlots);
+  return (
+    <PluginSlot
+      slot="codeBlock"
+      registrations={claimed ? [claimed] : []}
+      candidates={pluginCandidates}
+      slotProps={{ language: info.lang, code: info.code, isIncomplete: false, theme }}
+      containerProps={sourcePositionProps(rest)}
+    >
+      {code}
+    </PluginSlot>
+  );
 }
 
 /** Preview-in-panel tooltip for file and URL chat references. */
@@ -455,7 +496,6 @@ function InlineCode({
   const root = useAppStore((s) => s.workspace?.path);
   const baseDir = useContext(MarkdownBaseDirContext);
   const openFileRef = useOpenChatFileRef();
-  const openTarget = useOpenPreviewTarget();
   const text = typeof children === "string" ? children : null;
   const target =
     text && !className && !text.includes("\n")
@@ -474,17 +514,11 @@ function InlineCode({
     <button
       type="button"
       className="chat-code-link"
-      title={
-        target.kind === "file"
-          ? fileTitle
-          : target.kind === "session"
-            ? target.sessionId
-            : urlTitle
-      }
+      title={target.kind === "file" ? fileTitle : urlTitle}
       onClick={() =>
         target.kind === "file"
           ? openFileRef(text ?? target.path, baseDir)
-          : openTarget(target)
+          : openHttpUrl(target.url)
       }
     >
       <code className={className} {...rest}>
@@ -506,7 +540,6 @@ function Anchor({
   const openFileRef = useOpenChatFileRef();
   const openUrl = useAppStore((s) => s.openUrlInWorkPanel);
   const showToast = useAppStore((s) => s.showToast);
-  const linkOpenTarget = useAppStore((s) => s.settings?.linkOpenTarget ?? "workpanel");
 
   const [menuPosition, setMenuPosition] = useState<{ top: number; left: number } | null>(null);
   const menuRef = useRef<HTMLDivElement | null>(null);
@@ -586,18 +619,15 @@ function Anchor({
     }
   };
 
-  // Plain click previews in the work panel (or external browser based on setting).
-  // Modified clicks fall through to _blank, which main routes to shell.openExternal.
+  // Plain click follows Link open destination. Modifier clicks fall through
+  // to _blank, which main routes to shell.openExternal.
+
   const onClick = (e: React.MouseEvent<HTMLAnchorElement>) => {
     if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
     if (!href) return;
     if (/^https?:\/\//i.test(href)) {
       e.preventDefault();
-      if (linkOpenTarget === "external") {
-        void api.browserOpenExternal(href);
-      } else {
-        openUrl(href);
-      }
+      openHttpUrl(href);
       return;
     }
     const rel = toWorkspaceRel(safeDecodeUri(href), root, baseDir);
@@ -684,7 +714,6 @@ function MarkdownImage({
   const root = useAppStore((s) => s.workspace?.path);
   const baseDir = useContext(MarkdownBaseDirContext);
   const openFileRef = useOpenChatFileRef();
-  const openUrl = useAppStore((s) => s.openUrlInWorkPanel);
   const fileTitle = usePreviewTitle("file");
   const urlTitle = usePreviewTitle("url");
   const source = typeof src === "string" ? src : "";
@@ -707,7 +736,7 @@ function MarkdownImage({
         alt={alt ?? ""}
         className="chat-image-remote"
         title={urlTitle}
-        onClick={() => openUrl(source)}
+        onClick={() => openHttpUrl(source)}
       />
     );
   }
@@ -875,12 +904,14 @@ function useBlocks(source: string): string[] {
 
 const Block = memo(function MarkdownBlock({
   raw,
+  originalRaw,
   sourceOffset,
   renderDiagrams,
   workspaceRoot,
   baseDir,
 }: {
   raw: string;
+  originalRaw: string;
   sourceOffset: number;
   renderDiagrams: boolean;
   workspaceRoot?: string | null;
@@ -893,14 +924,16 @@ const Block = memo(function MarkdownBlock({
     }),
     [raw, renderDiagrams],
   );
-  const normalized = useMemo(() => normalizeLatexMathDelimiters(raw), [raw]);
   const remarkPlugins = useMemo(
     () => [
       ...staticRemarkPlugins,
-      remarkLatexBracketDisplay(raw),
+      // `originalRaw` still carries the TeX `\[ … \]` delimiters so the
+      // bracket-display plugin can promote them to display math after
+      // remark-math parses the pre-normalized `$$ … $$` form.
+      remarkLatexBracketDisplay(originalRaw),
       remarkChatFileLinks(workspaceRoot, baseDir),
     ],
-    [raw, workspaceRoot, baseDir],
+    [originalRaw, workspaceRoot, baseDir],
   );
   const positionedRehypePlugins = useMemo(
     () => [...rehypePlugins!, [rehypeSourcePositions, { offset: sourceOffset }]] as Options["rehypePlugins"],
@@ -913,7 +946,7 @@ const Block = memo(function MarkdownBlock({
         rehypePlugins={positionedRehypePlugins}
         components={markdownComponents}
       >
-        {normalized}
+        {raw}
       </ReactMarkdown>
     </MarkdownBlockContext.Provider>
   );
@@ -930,17 +963,32 @@ export const Markdown = memo(function Markdown({
   baseDir?: string;
 }) {
   const workspaceRoot = useAppStore((s) => s.workspace?.path);
-  const blocks = useBlocks(source);
+  // Normalize once at the source level: marked's block lexer runs on the raw
+  // text and would otherwise split `\[ … \]` display math whose body puts a
+  // lone `=`/`-` (setext underline) or `+`/`*` (list marker) on its own line,
+  // stranding `\[` and `\]` in different blocks so the delimiters escape as
+  // literal `[`/`]`. The normalizer both rewrites the delimiters to `$$` and
+  // flattens newlines inside every paired region, keeping the whole formula
+  // inside a single markdown block. The rewrite is length-preserving, so we
+  // can still slice the original text at the same offsets for downstream
+  // plugins that need the pre-normalized delimiters.
+  const normalizedSource = useMemo(
+    () => normalizeLatexMathDelimiters(source),
+    [source],
+  );
+  const blocks = useBlocks(normalizedSource);
   let sourceOffset = 0;
   return (
     <MarkdownBaseDirContext.Provider value={baseDir ?? ""}>
       {blocks.map((raw, i) => {
         const start = sourceOffset;
         sourceOffset = start + raw.length;
+        const originalRaw = source.slice(start, start + raw.length);
         return (
           <Block
             key={i}
             raw={raw}
+            originalRaw={originalRaw}
             sourceOffset={start}
             renderDiagrams={renderDiagrams}
             workspaceRoot={workspaceRoot}

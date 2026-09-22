@@ -15,7 +15,10 @@ use crate::audit;
 use crate::notifications;
 use crate::permissions::{PermissionDecision, PermissionEvaluationParams, PermissionManager};
 use crate::plans;
+use crate::plugin_provenance;
+use crate::plugin_rewrites::{self, RewriteDiff, RewriteKind};
 use crate::plugin_sessions;
+use crate::plugin_usage;
 use crate::providers::{self, DiscoveredModelInput, ProviderCreateInput, ProviderUpdateInput};
 use crate::review;
 use crate::scheduled;
@@ -24,6 +27,8 @@ use crate::sessions::{self, UiMessage};
 use crate::state::{AppState, HOST_VERSION, PROTOCOL_VERSION};
 use crate::tools::{self, ToolsExecuteParams};
 use crate::transcripts::CompactionRecord;
+use crate::turn_facts;
+use crate::turn_messages;
 use crate::turn_queue;
 use crate::workspace;
 
@@ -476,6 +481,104 @@ fn provider_rpc_err(error: impl ToString) -> JsonRpcError {
     rpc_err(1000, message, "INTERNAL")
 }
 
+/// A required, non-empty string argument; a missing, non-string, or blank
+/// value is an `INVALID_PARAMS` naming the field.
+fn required_string_param<'a>(params: &'a Value, name: &str) -> Result<&'a str, JsonRpcError> {
+    params
+        .get(name)
+        .and_then(|value| value.as_str())
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| {
+            rpc_err(
+                1002,
+                format!("{name} must be a non-empty string"),
+                "INVALID_PARAMS",
+            )
+        })
+}
+
+/// A string argument that must be present and a string, but may be empty: an
+/// edited message can legitimately rewrite a span into nothing.
+fn string_param<'a>(params: &'a Value, name: &str) -> Result<&'a str, JsonRpcError> {
+    params
+        .get(name)
+        .and_then(|value| value.as_str())
+        .ok_or_else(|| rpc_err(1002, format!("{name} must be a string"), "INVALID_PARAMS"))
+}
+
+/// Most characters accepted for a plugin id or display name on one row.
+///
+/// The same 256-byte ceiling `plugin_rewrites::record` enforces: a longer
+/// identifier is a caller error (`INVALID_PARAMS`), never a silently stored
+/// value nobody can attribute.
+const MAX_ORIGIN_FIELD_CHARS: usize = 256;
+
+/// The plugin provenance an `appendMessage` request carries (ADR 0293 / ADR
+/// 0295 rule 9, slot #10): `pluginId` names the plugin that asked for the row,
+/// `pluginLabel` is the display name snapshotted with it.
+///
+/// Both absent is the ordinary user row — not an error, but the case the
+/// transcript has always drawn, and the row stays byte-for-byte what this host
+/// wrote before schema v22. A label without an id cannot be attributed and is
+/// refused rather than stored as an anonymous claim; an empty label falls back
+/// to the id, exactly as the rewrite writer does, so a badge always has a name.
+fn plugin_origin_from_params(
+    params: &Value,
+) -> Result<Option<plugin_provenance::PluginAttribution>, JsonRpcError> {
+    let plugin_id = match params.get("pluginId") {
+        None | Some(Value::Null) => {
+            if params
+                .get("pluginLabel")
+                .is_some_and(|value| !value.is_null())
+            {
+                return Err(rpc_err(
+                    1002,
+                    "pluginLabel requires pluginId",
+                    "INVALID_PARAMS",
+                ));
+            }
+            return Ok(None);
+        }
+        Some(value) => value
+            .as_str()
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+            .ok_or_else(|| {
+                rpc_err(
+                    1002,
+                    "pluginId must be a non-empty string",
+                    "INVALID_PARAMS",
+                )
+            })?,
+    };
+    if plugin_id.chars().count() > MAX_ORIGIN_FIELD_CHARS {
+        return Err(rpc_err(
+            1002,
+            format!("pluginId must be at most {MAX_ORIGIN_FIELD_CHARS} characters"),
+            "INVALID_PARAMS",
+        ));
+    }
+    let label = match params.get("pluginLabel") {
+        None | Some(Value::Null) => String::new(),
+        Some(value) => value
+            .as_str()
+            .ok_or_else(|| rpc_err(1002, "pluginLabel must be a string", "INVALID_PARAMS"))?
+            .trim()
+            .to_string(),
+    };
+    if label.chars().count() > MAX_ORIGIN_FIELD_CHARS {
+        return Err(rpc_err(
+            1002,
+            format!("pluginLabel must be at most {MAX_ORIGIN_FIELD_CHARS} characters"),
+            "INVALID_PARAMS",
+        ));
+    }
+    Ok(Some(plugin_provenance::PluginAttribution::new(
+        plugin_id,
+        if label.is_empty() { plugin_id } else { &label },
+    )))
+}
+
 fn session_collaboration_rpc_err(error: impl ToString) -> JsonRpcError {
     let message = error.to_string();
     let code = message.split(':').next().unwrap_or("INTERNAL").trim();
@@ -575,6 +678,36 @@ fn drop_session_side_data(st: &AppState, id: &str) {
 const DEFAULT_LARGE_PASTE_THRESHOLD: i64 = 600;
 const MIN_LARGE_PASTE_THRESHOLD: i64 = 1;
 const MAX_LARGE_PASTE_THRESHOLD: i64 = 1_000_000;
+/// Upper bound for one stored prompt-enhancement template, in characters.
+/// Mirrored by `PROMPT_ENHANCEMENT_TEMPLATE_MAX_LENGTH` in
+/// `packages/shared/src/prompt-enhancement.ts`; keep the two in step.
+const MAX_PROMPT_ENHANCEMENT_TEMPLATE_CHARS: usize = 8000;
+/// The placeholder a usable user template must carry.
+const PROMPT_ENHANCEMENT_DRAFT_VARIABLE: &str = "{{draft}}";
+
+/// A template override is either absent, blank (meaning "use the default"), or
+/// a non-blank string within the length bound; a user template must also carry
+/// the draft variable, or the draft never reaches the model.
+fn prompt_enhancement_template_error(field: &str, value: &Value) -> Option<String> {
+    let Some(text) = value.as_str() else {
+        return Some(format!("{field} must be a string"));
+    };
+    if text.trim().is_empty() {
+        return None;
+    }
+    if text.chars().count() > MAX_PROMPT_ENHANCEMENT_TEMPLATE_CHARS {
+        return Some(format!(
+            "{field} must not exceed {MAX_PROMPT_ENHANCEMENT_TEMPLATE_CHARS} characters"
+        ));
+    }
+    if field == "promptEnhancementUserTemplate" && !text.contains(PROMPT_ENHANCEMENT_DRAFT_VARIABLE)
+    {
+        return Some(format!(
+            "promptEnhancementUserTemplate must contain {PROMPT_ENHANCEMENT_DRAFT_VARIABLE}"
+        ));
+    }
+    None
+}
 
 fn normalize_settings_value(mut value: Value) -> Value {
     if let Some(object) = value.as_object_mut() {
@@ -603,6 +736,25 @@ fn normalize_settings_value(mut value: Value) -> Value {
                 "largePasteThreshold".into(),
                 Value::Number(DEFAULT_LARGE_PASTE_THRESHOLD.into()),
             );
+        }
+        // A blank override means "use the built-in default", and an unusable
+        // one (wrong type, oversized, or a user template without the draft
+        // variable) falls back to the default too, rather than leaving a
+        // prompt that would silently drop the user's draft.
+        // The system prompt is part of the feature contract, not a preference:
+        // an override written by an older build is dropped so the store cannot
+        // hold a value that would never be read.
+        object.remove("promptEnhancementSystemPrompt");
+        let template_field = "promptEnhancementUserTemplate";
+        let unusable_template = match object.get(template_field) {
+            None => false,
+            Some(value) => match prompt_enhancement_template_error(template_field, value) {
+                Some(_) => true,
+                None => value.as_str().is_some_and(|text| text.trim().is_empty()),
+            },
+        };
+        if unusable_template {
+            object.remove(template_field);
         }
     }
     value
@@ -633,6 +785,13 @@ fn validate_settings_value(value: &Value) -> Result<(), JsonRpcError> {
     let Some(object) = value.as_object() else {
         return Ok(());
     };
+    if let Some(template_value) = object.get("promptEnhancementUserTemplate") {
+        if let Some(message) =
+            prompt_enhancement_template_error("promptEnhancementUserTemplate", template_value)
+        {
+            return Err(rpc_err(1002, message, "INVALID_PARAMS"));
+        }
+    }
     if let Some(threshold_value) = object.get("largePasteThreshold") {
         let Some(threshold) = threshold_value.as_i64() else {
             return Err(rpc_err(
@@ -927,7 +1086,8 @@ fn resolve_plan_workspace_if_available(
     Ok(resolve_persisted_project_workspace(state, session_id)?.map(PathBuf::from))
 }
 
-async fn emit_notification(tx: &mpsc::UnboundedSender<String>, method: &str, params: Value) {
+/// Push one notification line to the caller's stream.
+fn send_notification(tx: &mpsc::UnboundedSender<String>, method: &str, params: Value) {
     let note = JsonRpcNotification {
         jsonrpc: "2.0",
         method: method.to_string(),
@@ -935,6 +1095,71 @@ async fn emit_notification(tx: &mpsc::UnboundedSender<String>, method: &str, par
     };
     if let Ok(raw) = serde_json::to_string(&note) {
         let _ = tx.send(format!("{raw}\n"));
+    }
+}
+
+async fn emit_notification(tx: &mpsc::UnboundedSender<String>, method: &str, params: Value) {
+    send_notification(tx, method, params);
+}
+
+/// Reports install progress to the renderer, and reads the cancel flag.
+///
+/// Throttled on purpose: an install reports every chunk of bytes it sees, and
+/// an interface needs a few of those per second rather than thousands. A phase
+/// change and the terminal report always go through, so a dialog never misses
+/// the transition it is displaying.
+struct RpcInstallObserver {
+    tx: mpsc::UnboundedSender<String>,
+    cancel: crate::plugins::CancelToken,
+    last: Option<std::time::Instant>,
+    last_phase: Option<crate::plugins::InstallPhase>,
+}
+
+impl crate::plugins::InstallObserver for RpcInstallObserver {
+    fn progress(&mut self, event: crate::plugins::InstallProgress) {
+        const MIN_INTERVAL: std::time::Duration = std::time::Duration::from_millis(200);
+        let phase_changed = self.last_phase != Some(event.phase);
+        let terminal = event.error.is_some();
+        let due = self
+            .last
+            .map(|at| at.elapsed() >= MIN_INTERVAL)
+            .unwrap_or(true);
+        if !phase_changed && !terminal && !due {
+            return;
+        }
+        self.last = Some(std::time::Instant::now());
+        self.last_phase = Some(event.phase);
+        let tried: Vec<Value> = event
+            .tried
+            .iter()
+            .map(|mirror| {
+                json!({
+                    "source": mirror.source,
+                    "url": mirror.url,
+                    "error": mirror.error,
+                })
+            })
+            .collect();
+        send_notification(
+            &self.tx,
+            "plugin.installProgress",
+            json!({
+                "pluginId": event.plugin_id,
+                "version": event.version,
+                "phase": event.phase.as_str(),
+                "source": event.source,
+                "attempt": event.attempt,
+                "attempts": event.attempts,
+                "receivedBytes": event.received_bytes,
+                "totalBytes": event.total_bytes,
+                "tried": tried,
+                "error": event.error,
+            }),
+        );
+    }
+
+    fn cancelled(&self) -> bool {
+        self.cancel.is_cancelled()
     }
 }
 
@@ -1066,6 +1291,22 @@ fn plugin_err(err: impl ToString) -> JsonRpcError {
         rpc_err(1013, msg, "PLUGIN_PERMISSION_DENIED")
     } else if msg.contains("PLUGIN_NOT_FOUND") {
         rpc_err(1003, msg, "NOT_FOUND")
+    } else if msg.contains("PLUGIN_CANCELLED") {
+        // The user's own action rather than a failure: the surface closes the
+        // dialog quietly instead of reporting an error.
+        rpc_err(1019, msg, "PLUGIN_CANCELLED")
+    } else if msg.contains("PLUGIN_MARKET_NOT_PUBLISHED") {
+        // The platform has the version and is not offering it yet: a state to
+        // report, not a bug to sweep into INTERNAL.
+        rpc_err(1020, msg, "PLUGIN_MARKET_NOT_PUBLISHED")
+    } else if msg.contains("PLUGIN_MARKET_ARCHIVED") {
+        rpc_err(1021, msg, "PLUGIN_MARKET_ARCHIVED")
+    } else if msg.contains("PLUGIN_MARKET_NOT_FOUND") {
+        rpc_err(1022, msg, "PLUGIN_MARKET_NOT_FOUND")
+    } else if msg.contains("PLUGIN_MARKET_RATE_LIMITED") {
+        rpc_err(1023, msg, "PLUGIN_MARKET_RATE_LIMITED")
+    } else if msg.contains("PLUGIN_MARKET_NO_SOURCE") {
+        rpc_err(1024, msg, "PLUGIN_MARKET_NO_SOURCE")
     } else if msg.contains("PLUGIN_NETWORK") {
         rpc_err(1014, msg, "PLUGIN_NETWORK")
     } else {
@@ -1472,16 +1713,26 @@ async fn handle_request(
             let path = crate::db::canonical_project_path(path)
                 .ok_or_else(|| rpc_err(1002, "path required", "INVALID_PARAMS"))?;
             let st = state.lock().await;
-            if st
+            // A path that belongs to a multi-folder project group must stay put:
+            // deleting one root would orphan the rest of the group, so callers
+            // remove the folder from the group first. A single-folder stored
+            // group is just a wrapper around one project, so removing that
+            // project also removes the now-empty group record.
+            if let Some(group) = st
                 .db
-                .path_is_in_stored_project_group(&path)
+                .stored_project_group_for_path(&path)
                 .map_err(|e| rpc_err(1000, e.to_string(), "INTERNAL"))?
             {
-                return Err(rpc_err(
-                    1002,
-                    "project belongs to a multi-folder project group; remove the folder from the group first",
-                    "INVALID_PARAMS",
-                ));
+                if group.roots.len() > 1 {
+                    return Err(rpc_err(
+                        1002,
+                        "project belongs to a multi-folder project group; remove the folder from the group first",
+                        "INVALID_PARAMS",
+                    ));
+                }
+                st.db
+                    .delete_project_group_record(&group.id)
+                    .map_err(|e| rpc_err(1000, e.to_string(), "INTERNAL"))?;
             }
             let session_ids = st
                 .db
@@ -1654,11 +1905,12 @@ async fn handle_request(
             st.db
                 .set_setting("app", &settings)
                 .map_err(|e| rpc_err(1000, e.to_string(), "INTERNAL"))?;
-            // Re-pin the marketplace source in memory. Fetching here would hold
+            // Re-pin the marketplace channel in memory. Fetching here would hold
             // the state lock behind a remote timeout, so the renderer triggers
-            // `market.refresh` after switching sources.
-            let market_source = crate::plugins::market_source_from_settings(Some(&settings));
-            st.plugins.set_market_source(market_source);
+            // `market.refresh` after switching channels.
+            let (channel, custom_url) =
+                crate::plugins::market_channel_from_settings(Some(&settings));
+            st.plugins.set_market_channel(channel, custom_url);
             // A concrete app language pins the plugin display locale here, so a
             // shell that only writes settings still gets localized plugin rows.
             // `auto` is resolved by the shell and pushed through
@@ -1976,7 +2228,28 @@ async fn handle_request(
                 },
             )
             .map_err(|e| rpc_err(1000, e.to_string(), "INTERNAL"))?;
-            Ok(json!({ "session": session }))
+            // Rows a plugin asked for (ADR 0293 / ADR 0295 rule 9) ride the
+            // read the transcript already comes from: the badge needs no second
+            // round trip, and a row without provenance is simply absent from
+            // the list, so it keeps looking exactly as it always did.
+            let message_ids: Vec<String> = session
+                .as_ref()
+                .map(|detail| {
+                    detail
+                        .messages
+                        .iter()
+                        .map(|message| message.id.clone())
+                        .collect()
+                })
+                .unwrap_or_default();
+            let continuations = plugin_provenance::for_messages(&st.db, id, &message_ids)
+                .map_err(|e| rpc_err(1000, e.to_string(), "INTERNAL"))?;
+            let mut response = json!({ "session": session });
+            if !continuations.is_empty() {
+                response["pluginContinuations"] = serde_json::to_value(&continuations)
+                    .map_err(|e| rpc_err(1000, e.to_string(), "INTERNAL"))?;
+            }
+            Ok(response)
         }
         "session.configure" => {
             let id = params
@@ -2054,9 +2327,20 @@ async fn handle_request(
                 .get("turnId")
                 .and_then(|v| v.as_str())
                 .map(str::to_string);
+            // Slot #10 provenance (ADR 0293 / ADR 0295 rule 9): who asked for
+            // this row. Absent is the ordinary user row and stores exactly what
+            // this host stored before schema v22; a supplied id has to be a
+            // usable identifier, and a missing label falls back to the id.
+            let origin = plugin_origin_from_params(&params)?;
             let st = state.lock().await;
-            sessions::append_message(&st.db, session_id, &message, turn_id.as_deref())
-                .map_err(|e| rpc_err(1000, e.to_string(), "INTERNAL"))?;
+            sessions::append_message_with_origin(
+                &st.db,
+                session_id,
+                &message,
+                turn_id.as_deref(),
+                origin.as_ref(),
+            )
+            .map_err(|e| rpc_err(1000, e.to_string(), "INTERNAL"))?;
             Ok(json!({ "ok": true }))
         }
         "session.saveInflightMessage" => {
@@ -2351,6 +2635,28 @@ async fn handle_request(
             plugin_sessions::delete(&st.db, plugin_id, &params).map_err(plugin_session_rpc_err)
         }
 
+        // Plugin usage is a read-only facts domain: a keyset page of completed
+        // turns from non-deleted sessions, served to plugins that hold
+        // `usage.read` (checked in Electron main before dispatch). The payload
+        // carries counters and titles — never a message body — and Electron
+        // main remains the only caller that can supply pluginId.
+        "plugin.usage.listTurns" => {
+            let plugin_id = params
+                .get("pluginId")
+                .and_then(Value::as_str)
+                .ok_or_else(|| rpc_err(1002, "pluginId required", "INVALID_PARAMS"))?;
+            let st = state.lock().await;
+            let page =
+                plugin_usage::list_turns_page(&st.db, &params).map_err(plugin_session_rpc_err)?;
+            tracing::debug!(
+                method = "plugin.usage.listTurns",
+                plugin_id,
+                count = page["turns"].as_array().map(Vec::len).unwrap_or(0),
+                "plugin usage rpc served"
+            );
+            Ok(page)
+        }
+
         "session.beginTurn" => {
             let session_id = params
                 .get("sessionId")
@@ -2602,11 +2908,215 @@ async fn handle_request(
 
         "artifacts.list" => {
             let session_id = params.get("sessionId").and_then(|v| v.as_str());
+            // `turnId` narrows the list to one turn: the host-owned answer to
+            // "which files did this turn change?" (ADR 0295 rule 8).
+            let turn_id = params.get("turnId").and_then(|v| v.as_str());
             let limit = params.get("limit").and_then(|v| v.as_i64()).unwrap_or(200);
             let st = state.lock().await;
-            let artifacts = artifacts::list(&st.db, session_id, limit)
-                .map_err(|e| rpc_err(1000, e.to_string(), "INTERNAL"))?;
+            let artifacts = match turn_id {
+                Some(turn_id) => {
+                    let Some(session_id) = session_id else {
+                        return Err(rpc_err(
+                            1001,
+                            "sessionId is required with turnId",
+                            "INVALID_ARGUMENT",
+                        ));
+                    };
+                    artifacts::list_for_turn(&st.db, session_id, turn_id, limit)
+                }
+                None => artifacts::list(&st.db, session_id, limit),
+            }
+            .map_err(|e| rpc_err(1000, e.to_string(), "INTERNAL"))?;
             Ok(json!({ "artifacts": artifacts }))
+        }
+
+        "plugin.rewrites.list" => {
+            // The diff-level audit of what a plugin changed in what the model
+            // receives (ADR 0295 rule 5). Per turn is the shape slot #1's
+            // rewrite surface reads, so a `turnId` needs its `sessionId`.
+            let session_id = params
+                .get("sessionId")
+                .and_then(|v| v.as_str())
+                .filter(|id| !id.trim().is_empty())
+                .ok_or_else(|| rpc_err(1002, "sessionId required", "INVALID_PARAMS"))?;
+            let turn_id = params
+                .get("turnId")
+                .and_then(|v| v.as_str())
+                .filter(|id| !id.trim().is_empty());
+            let kind = match params.get("kind") {
+                None | Some(Value::Null) => None,
+                Some(Value::String(kind)) => Some(RewriteKind::parse(kind).ok_or_else(|| {
+                    rpc_err(
+                        1002,
+                        "kind must be 'outgoing_message', 'system_prompt', 'message_list' or \
+                         'request_payload'",
+                        "INVALID_PARAMS",
+                    )
+                })?),
+                Some(_) => {
+                    return Err(rpc_err(1002, "kind must be a string", "INVALID_PARAMS"));
+                }
+            };
+            let limit = match params.get("limit") {
+                None | Some(Value::Null) => 200,
+                Some(value) => value.as_i64().filter(|limit| *limit > 0).ok_or_else(|| {
+                    rpc_err(1002, "limit must be a positive integer", "INVALID_PARAMS")
+                })?,
+            };
+            let st = state.lock().await;
+            let rewrites = match turn_id {
+                Some(turn_id) => {
+                    plugin_rewrites::list_for_turn(&st.db, session_id, turn_id, kind, limit)
+                }
+                None => plugin_rewrites::list_for_session(&st.db, session_id, kind, limit),
+            }
+            .map_err(|e| rpc_err(1000, e.to_string(), "INTERNAL"))?;
+            Ok(json!({ "rewrites": rewrites }))
+        }
+
+        "plugin.rewrites.record" => {
+            // The writer behind slot #1 (`runtime.send.before`, ADR 0295 rule 5).
+            // The runtime's send hook hands over the text as the user sent it
+            // and the text the model received; the character diff is computed
+            // here, in the module that owns `plugin_rewrites`, and stored
+            // through the caps in `plugin_rewrites::record`. The payload is
+            // exactly the shape `extensions.rewrites.record` carries, so the
+            // Electron handler forwards it without reinterpreting anything.
+            let session_id = required_string_param(&params, "sessionId")?;
+            let plugin_id = required_string_param(&params, "pluginId")?;
+            let target_message_id = required_string_param(&params, "targetMessageId")?;
+            let kind = required_string_param(&params, "kind")?;
+            // The one kind slot #1 produces. A wider vocabulary belongs to a
+            // build that also writes it, and a record stored under the wrong
+            // kind would read back as a rewrite that never happened.
+            if kind != "outgoing_message" {
+                return Err(rpc_err(
+                    1002,
+                    "kind must be 'outgoing_message'",
+                    "INVALID_PARAMS",
+                ));
+            }
+            let before = string_param(&params, "before")?;
+            let after = string_param(&params, "after")?;
+            let turn_id = match params.get("turnId") {
+                None | Some(Value::Null) => None,
+                Some(_) => Some(required_string_param(&params, "turnId")?),
+            };
+            let st = state.lock().await;
+            let id = plugin_rewrites::record(
+                &st.db,
+                session_id,
+                turn_id,
+                plugin_id,
+                RewriteDiff::outgoing_message(target_message_id, before, after),
+            )
+            .map_err(|error| {
+                // An identifier past the cap is the caller's fault, not an
+                // internal failure; every other store error stays an INTERNAL
+                // so a broken database is not reported as a bad request.
+                let message = error.to_string();
+                if message.starts_with("LIMIT_EXCEEDED") {
+                    rpc_err(1002, message, "LIMIT_EXCEEDED")
+                } else {
+                    rpc_err(1000, message, "INTERNAL")
+                }
+            })?;
+            Ok(json!({ "id": id }))
+        }
+
+        "turn.facts" => {
+            // Slot #9 (`runtime.turn.facts`, ADR 0295 rule 8): one turn's
+            // authoritative numbers, assembled by the host from its own tables
+            // — tool calls and outcomes, model tokens, plugin-tool spend,
+            // duration, and the files the turn touched. `sessionId` is required
+            // with `turnId` because the turn must be attributed to that session
+            // rather than to whichever session happens to own the id.
+            let session_id = params
+                .get("sessionId")
+                .and_then(|value| value.as_str())
+                .filter(|id| !id.trim().is_empty())
+                .ok_or_else(|| rpc_err(1002, "sessionId required", "INVALID_PARAMS"))?;
+            let turn_id = params
+                .get("turnId")
+                .and_then(|value| value.as_str())
+                .filter(|id| !id.trim().is_empty())
+                .ok_or_else(|| rpc_err(1002, "turnId required", "INVALID_PARAMS"))?;
+            let limit = match params.get("limit") {
+                None | Some(Value::Null) => 200,
+                Some(value) => value.as_i64().filter(|limit| *limit > 0).ok_or_else(|| {
+                    rpc_err(1002, "limit must be a positive integer", "INVALID_PARAMS")
+                })?,
+            };
+            let st = state.lock().await;
+            let session_exists = sessions::session_mode(&st.db, session_id)
+                .map_err(|e| rpc_err(1000, e.to_string(), "INTERNAL"))?
+                .is_some();
+            if !session_exists {
+                return Err(rpc_err(1007, "session not found", "SESSION_NOT_FOUND"));
+            }
+            // A turn that does not exist is an error, not zeroes: an empty
+            // answer would claim a turn did nothing when it was never recorded.
+            let facts = turn_facts::for_turn(&st.db, session_id, turn_id, limit)
+                .map_err(|e| rpc_err(1000, e.to_string(), "INTERNAL"))?
+                .ok_or_else(|| rpc_err(1007, "turn not found", "TURN_NOT_FOUND"))?;
+            serde_json::to_value(facts)
+                .map(|facts| json!({ "facts": facts }))
+                .map_err(|e| rpc_err(1000, e.to_string(), "INTERNAL"))
+        }
+
+        "turn.messages" => {
+            // Slot #8's per-turn read (`runtime.turn.recap`, ADR 0295 rule 8 /
+            // rule 7): the conversation one turn owned, oldest first, from the
+            // indexed `messages.turn_id` rows and the transcript bodies.
+            // `sessionId` is required with `turnId` for the same reason
+            // `turn.facts` requires it: the turn must be attributed to that
+            // session rather than to whichever session happens to own the id.
+            let session_id = params
+                .get("sessionId")
+                .and_then(|value| value.as_str())
+                .filter(|id| !id.trim().is_empty())
+                .ok_or_else(|| rpc_err(1002, "sessionId required", "INVALID_PARAMS"))?;
+            let turn_id = params
+                .get("turnId")
+                .and_then(|value| value.as_str())
+                .filter(|id| !id.trim().is_empty())
+                .ok_or_else(|| rpc_err(1002, "turnId required", "INVALID_PARAMS"))?;
+            let limit = match params.get("limit") {
+                None | Some(Value::Null) => turn_messages::DEFAULT_MESSAGE_LIMIT,
+                Some(value) => value.as_i64().filter(|limit| *limit > 0).ok_or_else(|| {
+                    rpc_err(1002, "limit must be a positive integer", "INVALID_PARAMS")
+                })?,
+            };
+            let content_limit = params
+                .get("contentLimit")
+                .and_then(|v| v.as_u64())
+                .map(|limit| limit.min(256 * 1024) as usize);
+            if params
+                .get("contentLimit")
+                .and_then(|value| value.as_u64())
+                .is_some_and(|value| value == 0)
+            {
+                return Err(rpc_err(
+                    1002,
+                    "turn contentLimit must be positive",
+                    "INVALID_PARAMS",
+                ));
+            }
+            let st = state.lock().await;
+            let session_exists = sessions::session_mode(&st.db, session_id)
+                .map_err(|e| rpc_err(1000, e.to_string(), "INTERNAL"))?
+                .is_some();
+            if !session_exists {
+                return Err(rpc_err(1007, "session not found", "SESSION_NOT_FOUND"));
+            }
+            // An unknown turn is an error, not an empty conversation: an empty
+            // answer would claim the turn said nothing.
+            let read = turn_messages::for_turn(&st.db, session_id, turn_id, limit, content_limit)
+                .map_err(|e| rpc_err(1000, e.to_string(), "INTERNAL"))?
+                .ok_or_else(|| rpc_err(1007, "turn not found", "TURN_NOT_FOUND"))?;
+            serde_json::to_value(read)
+                .map(|read| json!({ "turn": read }))
+                .map_err(|e| rpc_err(1000, e.to_string(), "INTERNAL"))
         }
 
         "plans.pending" => {
@@ -3365,7 +3875,7 @@ async fn handle_request(
                     if let Some(shell_id) = permission_shell_id.as_deref() {
                         denied_audit["commandShellId"] = json!(shell_id);
                     }
-                    let _ = audit::append(
+                    let _ = audit::append_turn(
                         &st.db,
                         if cancelled {
                             "tool_aborted"
@@ -3373,6 +3883,7 @@ async fn handle_request(
                             "tool_denied"
                         },
                         Some(&p.session_id),
+                        p.turn_id.as_deref(),
                         denied_audit,
                     );
                     let error_code = if cancelled {
@@ -3477,6 +3988,12 @@ async fn handle_request(
                     );
                     None
                 });
+                // The pre-tool snapshot is the only place that knows whether a
+                // Write created the file or replaced it; carry the fact forward
+                // before the snapshot itself is consumed (ADR 0295 rule 8).
+                let artifact_path_existed = pending_review
+                    .as_ref()
+                    .map(|pending| pending.before_exists());
                 let mut bash_options = None;
                 if p.tool_name == "Bash" {
                     let (shell_id, cancellation) = {
@@ -3601,10 +4118,18 @@ async fn handle_request(
                             Some(root) => root.join(rel).to_string_lossy().to_string(),
                             None => rel.to_string(),
                         };
-                        let op = if p.tool_name == "Write" {
-                            "write"
-                        } else {
-                            "edit"
+                        // The op is a fact, not a guess (ADR 0295 rule 8): the
+                        // pre-tool snapshot decided `create`, and the Edit
+                        // result names its own deletion.
+                        let deleted =
+                            result.content.get("deleted").and_then(Value::as_bool) == Some(true);
+                        let op = match (p.tool_name.as_str(), deleted) {
+                            ("Edit", true) => artifacts::ArtifactOp::Delete,
+                            ("Edit", false) => artifacts::ArtifactOp::Edit,
+                            (_, _) if artifact_path_existed == Some(false) => {
+                                artifacts::ArtifactOp::Create
+                            }
+                            (_, _) => artifacts::ArtifactOp::Write,
                         };
                         let _ = artifacts::record(
                             &st.db,
@@ -3637,7 +4162,13 @@ async fn handle_request(
                 if let Some(shell_id) = result.command_shell_id.as_deref() {
                     execute_audit["commandShellId"] = json!(shell_id);
                 }
-                let _ = audit::append(&st.db, "tool_execute", Some(&p.session_id), execute_audit);
+                let _ = audit::append_turn(
+                    &st.db,
+                    "tool_execute",
+                    Some(&p.session_id),
+                    p.turn_id.as_deref(),
+                    execute_audit,
+                );
 
                 serde_json::to_value(result).map_err(|e| rpc_err(1000, e.to_string(), "INTERNAL"))
             }
@@ -4348,12 +4879,47 @@ async fn handle_request(
                 .get("grantedPermissions")
                 .cloned()
                 .and_then(|v| serde_json::from_value::<Vec<String>>(v).ok());
+            // An install outlives one request from the interface's point of
+            // view: it resolves where the package is, downloads it from one
+            // mirror after another, verifies it and registers it. Every one of
+            // those steps is worth showing, which is what the observer does,
+            // and the token is what the cancel channel flips.
+            let cancel = crate::plugins::CancelToken::default();
+            // Armed outside AppState: cancelInstall must flip this flag while
+            // install still holds the state lock for the download.
+            crate::plugins::progress::arm_active_cancel(&cancel);
+            let mut observer = RpcInstallObserver {
+                tx: tx.clone(),
+                cancel: cancel.clone(),
+                last: None,
+                last_phase: None,
+            };
             let mut st = state.lock().await;
-            let result = st
-                .plugins
-                .install_from_market(id, version, enable, auto_update, granted)
-                .map_err(plugin_err)?;
+            st.plugins.set_install_cancel(Some(cancel));
+            let outcome = st.plugins.install_from_market_observed(
+                id,
+                version,
+                enable,
+                auto_update,
+                granted,
+                &mut observer,
+            );
+            // Whatever happened, nothing is cancellable any more: a token left
+            // in place would answer the next cancel for an install that is
+            // already over.
+            st.plugins.set_install_cancel(None);
+            let result = outcome.map_err(plugin_err)?;
             Ok(json!({ "result": result }))
+        }
+        "market.cancelInstall" => {
+            let id = params
+                .get("id")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| rpc_err(1002, "id required", "INVALID_PARAMS"))?;
+            // Do not take AppState: the install holds that lock while bytes
+            // arrive, and waiting on it would make cancel a no-op.
+            let cancelled = crate::plugins::progress::cancel_active_install();
+            Ok(json!({ "cancelled": cancelled, "id": id }))
         }
         "market.checkUpdates" => {
             let refresh_remote = params
@@ -5012,6 +5578,51 @@ mod tests {
             .any(|project| project["path"].as_str() == Some(canonical.as_str())));
     }
 
+    /// A single-folder stored project group is just a wrapper around one
+    /// project. Removing that project must succeed and delete the now-empty
+    /// group record instead of locking the project in place (issue #572).
+    #[tokio::test]
+    async fn projects_remove_deletes_single_folder_stored_group() {
+        let data_dir = tempfile::tempdir().unwrap();
+        let solo_dir = data_dir.path().join("solo");
+        fs::create_dir_all(&solo_dir).unwrap();
+        let mut app_state = AppState::open(data_dir.path()).unwrap();
+        app_state.handshook = true;
+        let solo_path = solo_dir.to_string_lossy().to_string();
+        let group = app_state
+            .db
+            .create_project_group("Solo", std::slice::from_ref(&solo_path))
+            .unwrap();
+        assert!(!group.legacy);
+        assert_eq!(group.roots.len(), 1);
+        let state = Arc::new(Mutex::new(app_state));
+
+        let result = handle_request(
+            state.clone(),
+            "projects.remove",
+            json!({ "path": solo_path }),
+            mpsc::unbounded_channel().0,
+        )
+        .await
+        .expect("a single-folder stored group must be removable");
+        assert_eq!(result["removed"], json!(true));
+
+        let canonical =
+            crate::db::canonical_project_path(&solo_path).expect("canonical project path");
+        let st = state.lock().await;
+        assert!(st
+            .db
+            .stored_project_group_for_path(&canonical)
+            .unwrap()
+            .is_none());
+        assert!(st
+            .db
+            .list_projects()
+            .unwrap()
+            .iter()
+            .all(|project| project.path != canonical));
+    }
+
     /// A running turn owns its session's tools, working directory, and
     /// transcript writes, so the bulk delete waits until the project is idle.
     #[tokio::test]
@@ -5300,6 +5911,235 @@ mod tests {
         )
         .await
         .unwrap();
+    }
+
+    #[tokio::test]
+    async fn plugin_usage_rpc_serves_read_only_fact_rows() {
+        let data_dir = tempfile::tempdir().unwrap();
+        let mut app_state = AppState::open(data_dir.path()).unwrap();
+        app_state.handshook = true;
+        let state = Arc::new(Mutex::new(app_state));
+        let (tx, _rx) = mpsc::unbounded_channel();
+
+        // Three completed turns across two sessions: t2 carries all three
+        // usage_json token kinds, t1 carries none (zeros), and t4 belongs to a
+        // soft-deleted session so it must never appear. Different ended_at
+        // values make the ASC ordering and the cursor page observable.
+        let now = chrono::Utc::now().timestamp_millis();
+        {
+            let st = state.lock().await;
+            let conn = st.db.conn();
+            for (project_id, path, name) in [(1, "/tmp/p1", "P1"), (2, "/tmp/p2", "P2")] {
+                conn.execute(
+                    "INSERT INTO projects (id, path, name, created_at, last_opened_at) VALUES (?1, ?2, ?3, ?4, ?4)",
+                    rusqlite::params![project_id, path, name, now],
+                )
+                .unwrap();
+            }
+            for (id, title, project) in [("s1", "", 1), ("s2", "Big", 2), ("s3", "Trashed", 1)] {
+                conn.execute(
+                    "INSERT INTO sessions (id, title, project_id, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?4)",
+                    rusqlite::params![id, title, project, now],
+                )
+                .unwrap();
+            }
+            conn.execute(
+                "UPDATE sessions SET deleted_at = ?1 WHERE id = 's3'",
+                rusqlite::params![now],
+            )
+            .unwrap();
+            // (id, session, ended, input, output, usage_json)
+            let turn = |id: &str, session: &str, ended: i64, usage: Option<&str>| {
+                conn.execute(
+                    "INSERT INTO turns (id, session_id, status, provider_id, model_id, input_tokens, output_tokens, usage_json, started_at, ended_at)
+                     VALUES (?1, ?2, 'completed', 'prov', 'model-a', ?3, ?4, ?5, ?6, ?7)",
+                    rusqlite::params![id, session, 100, 200, usage, ended - 1_000, ended],
+                )
+                .unwrap();
+            };
+            turn("t1", "s1", now - 3_000, None);
+            turn(
+                "t2",
+                "s2",
+                now - 2_000,
+                Some(
+                    serde_json::json!({
+                        "cacheReadTokens": 300,
+                        "cacheWriteTokens": 400,
+                        "reasoningTokens": 500
+                    })
+                    .to_string(),
+                )
+                .as_deref(),
+            );
+            turn(
+                "t3",
+                "s2",
+                now - 1_000,
+                Some(r#"{"cacheReadTokens":"bad"}"#),
+            );
+            turn("t4", "s3", now - 500, None);
+        }
+
+        const METHOD: &str = "plugin.usage.listTurns";
+
+        // Missing pluginId is a client error, same as the session domain.
+        let missing = handle_request(state.clone(), METHOD, json!({}), tx.clone())
+            .await
+            .unwrap_err();
+        assert_eq!(missing.code, 1002);
+        assert_eq!(missing.data.unwrap()["errorCode"], "INVALID_PARAMS");
+
+        // Default window covers every turn; ordering is ended_at ASC and the
+        // soft-deleted session's turn is absent.
+        let page = handle_request(
+            state.clone(),
+            METHOD,
+            json!({ "pluginId": "plugin.one" }),
+            tx.clone(),
+        )
+        .await
+        .unwrap();
+        let turns = page["turns"].as_array().unwrap();
+        assert_eq!(turns.len(), 3, "t4 belongs to a trashed session");
+        assert_eq!(turns[0]["turnId"], "t1");
+        assert_eq!(turns[1]["turnId"], "t2");
+        assert_eq!(turns[2]["turnId"], "t3");
+        assert!(page["nextCursor"].is_null(), "no more rows, no cursor");
+        // Row shape: counters and titles only, camelCase, no message fields.
+        assert!(
+            turns[0]["sessionTitle"].is_null(),
+            "empty title maps to null"
+        );
+        assert_eq!(turns[1]["sessionTitle"], "Big");
+        assert_eq!(turns[1]["sessionId"], "s2");
+        assert_eq!(turns[1]["projectId"], 2);
+        assert_eq!(turns[1]["providerId"], "prov");
+        assert_eq!(turns[1]["modelId"], "model-a");
+        assert_eq!(turns[1]["inputTokens"], 100);
+        assert_eq!(turns[1]["outputTokens"], 200);
+        assert_eq!(turns[1]["cacheReadTokens"], 300);
+        assert_eq!(turns[1]["cacheWriteTokens"], 400);
+        assert_eq!(turns[1]["reasoningTokens"], 500);
+        // Missing usage_json yields zeros; a malformed one also yields zeros.
+        assert_eq!(turns[0]["cacheReadTokens"], 0);
+        assert_eq!(turns[0]["reasoningTokens"], 0);
+        assert_eq!(turns[2]["cacheReadTokens"], 0);
+        assert!(turns[0].get("content").is_none());
+        assert!(turns[0].get("messages").is_none());
+
+        // limit truncates and the returned cursor fetches exactly the rest.
+        let page1 = handle_request(
+            state.clone(),
+            METHOD,
+            json!({ "pluginId": "plugin.one", "limit": 2 }),
+            tx.clone(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(page1["turns"].as_array().unwrap().len(), 2);
+        let cursor1 = page1["nextCursor"].as_str().unwrap();
+        let page2 = handle_request(
+            state.clone(),
+            METHOD,
+            json!({ "pluginId": "plugin.one", "limit": 2, "cursor": cursor1 }),
+            tx.clone(),
+        )
+        .await
+        .unwrap();
+        let rest = page2["turns"].as_array().unwrap();
+        assert_eq!(rest.len(), 1, "exactly the remaining row");
+        assert_eq!(rest[0]["turnId"], "t3");
+        assert!(page2["nextCursor"].is_null());
+
+        // Filtering: sessionId and projectId narrow the facts.
+        let only_s2 = handle_request(
+            state.clone(),
+            METHOD,
+            json!({ "pluginId": "plugin.one", "sessionId": "s2" }),
+            tx.clone(),
+        )
+        .await
+        .unwrap();
+        let s2_turns = only_s2["turns"].as_array().unwrap();
+        assert_eq!(s2_turns.len(), 2);
+        assert!(s2_turns.iter().all(|t| t["sessionId"] == "s2"));
+
+        let only_p1 = handle_request(
+            state.clone(),
+            METHOD,
+            json!({ "pluginId": "plugin.one", "projectId": 1 }),
+            tx.clone(),
+        )
+        .await
+        .unwrap();
+        let p1_turns = only_p1["turns"].as_array().unwrap();
+        assert_eq!(p1_turns.len(), 1);
+        assert_eq!(p1_turns[0]["sessionId"], "s1");
+
+        // Explicit bounds exclude out-of-window turns.
+        let windowed = handle_request(
+            state.clone(),
+            METHOD,
+            json!({ "pluginId": "plugin.one", "fromMs": now - 1_500, "toMs": now }),
+            tx.clone(),
+        )
+        .await
+        .unwrap();
+        let w = windowed["turns"].as_array().unwrap();
+        assert_eq!(w.len(), 1, "only t3 ended inside the window");
+        assert_eq!(w[0]["turnId"], "t3");
+
+        // Client errors the host must reject: bad cursor, bad limit, bad
+        // window, wrong types.
+        for bad in [
+            json!({ "pluginId": "p", "cursor": "not-a-cursor" }),
+            json!({ "pluginId": "p", "limit": 0 }),
+            json!({ "pluginId": "p", "limit": 501 }),
+            json!({ "pluginId": "p", "limit": "ten" }),
+            json!({ "pluginId": "p", "fromMs": -1 }),
+            json!({ "pluginId": "p", "toMs": "now" }),
+            json!({ "pluginId": "p", "fromMs": now, "toMs": now - 1_000 }),
+            json!({
+                "pluginId": "p",
+                "fromMs": now - 366 * 24 * 3600 * 1000,
+                "toMs": now
+            }),
+            json!({ "pluginId": "p", "fromMs": 0 }),
+            json!({ "pluginId": "p", "sessionId": 7 }),
+            json!({ "pluginId": "p", "sessionId": "" }),
+            json!({ "pluginId": "p", "projectId": "seven" }),
+        ] {
+            let error = handle_request(state.clone(), METHOD, bad.clone(), tx.clone())
+                .await
+                .unwrap_err();
+            assert_eq!(error.code, 1002, "{bad}");
+            assert_eq!(error.data.unwrap()["errorCode"], "INVALID_PARAMS", "{bad}");
+        }
+
+        // Null bounds match omitted bounds; the 365-day window edge is accepted.
+        let null_bounds = handle_request(
+            state.clone(),
+            METHOD,
+            json!({ "pluginId": "plugin.one", "fromMs": null, "toMs": null }),
+            tx.clone(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(null_bounds["turns"].as_array().unwrap().len(), 3);
+        let edge = handle_request(
+            state.clone(),
+            METHOD,
+            json!({
+                "pluginId": "plugin.one",
+                "fromMs": now - 365 * 24 * 3600 * 1000,
+                "toMs": now
+            }),
+            tx.clone(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(edge["turns"].as_array().unwrap().len(), 3);
     }
 
     fn available_test_shell_id() -> Option<String> {
@@ -5683,6 +6523,108 @@ mod tests {
         );
         assert!(catalog["choices"].is_array());
         assert!(catalog["effective"].is_object() || catalog["effective"].is_null());
+    }
+
+    #[tokio::test]
+    async fn prompt_enhancement_templates_round_trip_and_validate() {
+        let data_dir = tempfile::tempdir().unwrap();
+        let mut app_state = AppState::open(data_dir.path()).unwrap();
+        app_state.handshook = true;
+        let state = Arc::new(Mutex::new(app_state));
+        let (tx, _rx) = mpsc::unbounded_channel();
+
+        // Nothing stored yet: the field is absent, so the renderer falls back
+        // to the built-in default.
+        let settings = handle_request(state.clone(), "settings.get", json!({}), tx.clone())
+            .await
+            .unwrap();
+        assert!(settings.get("promptEnhancementUserTemplate").is_none());
+
+        // A custom template and its switch persist unchanged.
+        handle_request(
+            state.clone(),
+            "settings.set",
+            json!({
+                "promptEnhancementCustomTemplate": true,
+                "promptEnhancementUserTemplate": "before {{draft}} after",
+            }),
+            tx.clone(),
+        )
+        .await
+        .unwrap();
+        let stored = handle_request(state.clone(), "settings.get", json!({}), tx.clone())
+            .await
+            .unwrap();
+        assert_eq!(
+            stored["promptEnhancementUserTemplate"],
+            "before {{draft}} after"
+        );
+        assert_eq!(stored["promptEnhancementCustomTemplate"], true);
+
+        // A user template without the draft variable would silently drop the
+        // draft, so the write is rejected rather than normalized.
+        let missing_variable = handle_request(
+            state.clone(),
+            "settings.set",
+            json!({ "promptEnhancementUserTemplate": "no placeholder" }),
+            tx.clone(),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(
+            missing_variable.data.unwrap()["errorCode"],
+            "INVALID_PARAMS"
+        );
+
+        // An oversized template is rejected too.
+        let oversized = handle_request(
+            state.clone(),
+            "settings.set",
+            json!({ "promptEnhancementUserTemplate": "x".repeat(8001) }),
+            tx.clone(),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(oversized.data.unwrap()["errorCode"], "INVALID_PARAMS");
+
+        // The system prompt is not overridable: a write carrying one is dropped
+        // by normalization, so the store cannot hold a value that would never
+        // be read.
+        handle_request(
+            state.clone(),
+            "settings.set",
+            json!({ "promptEnhancementSystemPrompt": "custom system" }),
+            tx.clone(),
+        )
+        .await
+        .unwrap();
+        assert!(
+            handle_request(state.clone(), "settings.get", json!({}), tx.clone())
+                .await
+                .unwrap()
+                .get("promptEnhancementSystemPrompt")
+                .is_none()
+        );
+
+        // Writing a blank value means "restore the default": the override is
+        // dropped rather than persisted as an empty string.
+        handle_request(
+            state.clone(),
+            "settings.set",
+            json!({ "promptEnhancementUserTemplate": "   " }),
+            tx,
+        )
+        .await
+        .unwrap();
+        let cleared = handle_request(
+            state,
+            "settings.get",
+            json!({}),
+            mpsc::unbounded_channel().0,
+        )
+        .await
+        .unwrap();
+        assert!(cleared.get("promptEnhancementUserTemplate").is_none());
     }
 
     #[tokio::test]
@@ -8076,5 +9018,756 @@ mod tests {
         }
         let st = state.lock().await;
         assert_eq!(st.plugins.locale(), "en-US");
+    }
+
+    /// `plugin.rewrites.list` reads the diff-level audit the rewrite slots
+    /// write: one turn's records oldest first, a session's newest first with
+    /// its turn-less records kept, and filters that fail loudly instead of
+    /// silently matching nothing (ADR 0295 rule 5).
+    #[tokio::test]
+    async fn plugin_rewrites_list_reads_a_turn_and_rejects_bad_filters() {
+        use crate::plugin_rewrites::{self, RewriteDiff};
+
+        let data_dir = tempfile::tempdir().unwrap();
+        let mut app_state = AppState::open(data_dir.path()).unwrap();
+        app_state.handshook = true;
+        let session =
+            sessions::create_session(&app_state.db, None, None, None, None, None).unwrap();
+        plugin_rewrites::record(
+            &app_state.db,
+            &session.id,
+            Some("turn-1"),
+            "acme.sender",
+            RewriteDiff::outgoing_message("m-1", "hello world", "hello brave world"),
+        )
+        .unwrap();
+        plugin_rewrites::record(
+            &app_state.db,
+            &session.id,
+            Some("turn-1"),
+            "acme.prompt",
+            RewriteDiff::system_prompt("You are help", "Be terse"),
+        )
+        .unwrap();
+        // A rewrite outside any turn belongs to the session read only.
+        plugin_rewrites::record(
+            &app_state.db,
+            &session.id,
+            None,
+            "acme.nightly",
+            RewriteDiff::system_prompt("You are help", "Be brief"),
+        )
+        .unwrap();
+        let state = Arc::new(Mutex::new(app_state));
+        let (tx, _rx) = mpsc::unbounded_channel();
+
+        let listed = handle_request(
+            state.clone(),
+            "plugin.rewrites.list",
+            json!({ "sessionId": session.id, "turnId": "turn-1" }),
+            tx.clone(),
+        )
+        .await
+        .unwrap();
+        let rewrites = listed["rewrites"].as_array().unwrap();
+        assert_eq!(rewrites.len(), 2);
+        assert_eq!(rewrites[0]["pluginId"], json!("acme.sender"));
+        assert_eq!(rewrites[0]["kind"], json!("outgoing_message"));
+        assert_eq!(rewrites[0]["turnId"], json!("turn-1"));
+        assert_eq!(rewrites[0]["truncated"], json!(false));
+        assert_eq!(rewrites[0]["droppedEdits"], json!(0));
+        assert_eq!(
+            rewrites[0]["diff"]["characterEdits"][0]["after"],
+            json!("brave ")
+        );
+        assert!(rewrites[0]["createdAt"].as_str().unwrap().ends_with('Z'));
+        assert_eq!(rewrites[1]["kind"], json!("system_prompt"));
+
+        // The kind filter is applied by the query, not by the caller.
+        let filtered = handle_request(
+            state.clone(),
+            "plugin.rewrites.list",
+            json!({ "sessionId": session.id, "turnId": "turn-1", "kind": "system_prompt" }),
+            tx.clone(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(filtered["rewrites"].as_array().unwrap().len(), 1);
+
+        // The session read is newest first and keeps the turn-less record.
+        let session_read = handle_request(
+            state.clone(),
+            "plugin.rewrites.list",
+            json!({ "sessionId": session.id, "limit": 10 }),
+            tx.clone(),
+        )
+        .await
+        .unwrap();
+        let all = session_read["rewrites"].as_array().unwrap();
+        assert_eq!(all.len(), 3);
+        assert_eq!(all[0]["pluginId"], json!("acme.nightly"));
+        assert_eq!(all[0]["turnId"], Value::Null);
+
+        let missing_session = handle_request(
+            state.clone(),
+            "plugin.rewrites.list",
+            json!({ "turnId": "turn-1" }),
+            tx.clone(),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(missing_session.code, 1002);
+        assert_eq!(
+            missing_session.data.unwrap()["errorCode"],
+            json!("INVALID_PARAMS")
+        );
+
+        for params in [
+            json!({ "sessionId": session.id, "kind": "telepathy" }),
+            json!({ "sessionId": session.id, "kind": 7 }),
+            json!({ "sessionId": session.id, "limit": 0 }),
+            json!({ "sessionId": session.id, "limit": "twenty" }),
+            json!({ "sessionId": "  " }),
+        ] {
+            let error = handle_request(state.clone(), "plugin.rewrites.list", params, tx.clone())
+                .await
+                .unwrap_err();
+            assert_eq!(error.code, 1002);
+            assert_eq!(error.data.unwrap()["errorCode"], json!("INVALID_PARAMS"));
+        }
+    }
+
+    /// The writer behind slot #1: the runtime's `extensions.rewrites.record`
+    /// payload is accepted, stored through the caps in `plugin_rewrites::record`,
+    /// and readable through the existing reader; a malformed payload is refused
+    /// with a coded error and never silently dropped (ADR 0295 rule 5).
+    #[tokio::test]
+    async fn plugin_rewrites_record_round_trips_through_the_reader() {
+        let data_dir = tempfile::tempdir().unwrap();
+        let mut app_state = AppState::open(data_dir.path()).unwrap();
+        app_state.handshook = true;
+        let session =
+            sessions::create_session(&app_state.db, None, None, None, None, None).unwrap();
+        let state = Arc::new(Mutex::new(app_state));
+        let (tx, _rx) = mpsc::unbounded_channel();
+
+        let written = handle_request(
+            state.clone(),
+            "plugin.rewrites.record",
+            json!({
+                "sessionId": session.id,
+                "turnId": "turn-1",
+                "pluginId": "acme.sender",
+                "pluginLabel": "Acme Sender",
+                "kind": "outgoing_message",
+                "targetMessageId": "m-7",
+                "before": "hello world",
+                "after": "hello brave world"
+            }),
+            tx.clone(),
+        )
+        .await
+        .unwrap();
+        let first_id = written["id"].as_i64().unwrap();
+        assert!(first_id > 0);
+
+        // The record is stored exactly at diff level: the reader returns the
+        // changed span the writer derived from the two texts the runtime sent.
+        let listed = handle_request(
+            state.clone(),
+            "plugin.rewrites.list",
+            json!({ "sessionId": session.id, "kind": "outgoing_message" }),
+            tx.clone(),
+        )
+        .await
+        .unwrap();
+        let rewrites = listed["rewrites"].as_array().unwrap();
+        assert_eq!(rewrites.len(), 1);
+        assert_eq!(rewrites[0]["id"], json!(first_id));
+        assert_eq!(rewrites[0]["pluginId"], json!("acme.sender"));
+        assert_eq!(rewrites[0]["kind"], json!("outgoing_message"));
+        assert_eq!(rewrites[0]["truncated"], json!(false));
+        assert_eq!(rewrites[0]["turnId"], json!("turn-1"));
+        assert_eq!(rewrites[0]["diff"]["targetMessageId"], json!("m-7"));
+        assert_eq!(
+            rewrites[0]["diff"]["characterEdits"][0]["after"],
+            json!("brave ")
+        );
+
+        // A record outside any turn stays honest: slot #1 runs after send but
+        // before queueing, so the turn row may not exist yet.
+        let turnless = handle_request(
+            state.clone(),
+            "plugin.rewrites.record",
+            json!({
+                "sessionId": session.id,
+                "pluginId": "acme.sender",
+                "kind": "outgoing_message",
+                "targetMessageId": "m-8",
+                "before": "ship it",
+                "after": "ship it tomorrow"
+            }),
+            tx.clone(),
+        )
+        .await
+        .unwrap();
+        assert!(turnless["id"].as_i64().unwrap() > first_id);
+
+        // Malformed payloads are refused with a code that names the fault, so a
+        // producer that mis-reads the contract sees the failure instead of an
+        // un-audited rewrite.
+        let oversized = "p".repeat(257);
+        for (params, error_code) in [
+            (
+                json!({
+                    "pluginId": "acme.sender",
+                    "kind": "outgoing_message",
+                    "targetMessageId": "m-7",
+                    "before": "a",
+                    "after": "b"
+                }),
+                "INVALID_PARAMS",
+            ),
+            (
+                json!({
+                    "sessionId": session.id,
+                    "kind": "outgoing_message",
+                    "targetMessageId": "m-7",
+                    "before": "a",
+                    "after": "b"
+                }),
+                "INVALID_PARAMS",
+            ),
+            (
+                json!({
+                    "sessionId": session.id,
+                    "pluginId": "acme.sender",
+                    "kind": "outgoing_message",
+                    "before": "a",
+                    "after": "b"
+                }),
+                "INVALID_PARAMS",
+            ),
+            (
+                json!({
+                    "sessionId": session.id,
+                    "pluginId": "acme.sender",
+                    "kind": "outgoing_message",
+                    "targetMessageId": "m-7",
+                    "before": "a",
+                    "after": 7
+                }),
+                "INVALID_PARAMS",
+            ),
+            (
+                json!({
+                    "sessionId": "   ",
+                    "pluginId": "acme.sender",
+                    "kind": "outgoing_message",
+                    "targetMessageId": "m-7",
+                    "before": "a",
+                    "after": "b"
+                }),
+                "INVALID_PARAMS",
+            ),
+            // A kind this writer does not produce must not be stored under a
+            // diff shape it does not describe.
+            (
+                json!({
+                    "sessionId": session.id,
+                    "pluginId": "acme.sender",
+                    "kind": "system_prompt",
+                    "targetMessageId": "m-7",
+                    "before": "a",
+                    "after": "b"
+                }),
+                "INVALID_PARAMS",
+            ),
+            // A turn id that is not a string is a broken record, not a reason
+            // to store it without one.
+            (
+                json!({
+                    "sessionId": session.id,
+                    "turnId": 12,
+                    "pluginId": "acme.sender",
+                    "kind": "outgoing_message",
+                    "targetMessageId": "m-7",
+                    "before": "a",
+                    "after": "b"
+                }),
+                "INVALID_PARAMS",
+            ),
+            // An identifier past the cap is refused by the write boundary, not
+            // clipped into an unattributable row.
+            (
+                json!({
+                    "sessionId": session.id,
+                    "pluginId": oversized,
+                    "kind": "outgoing_message",
+                    "targetMessageId": "m-7",
+                    "before": "a",
+                    "after": "b"
+                }),
+                "LIMIT_EXCEEDED",
+            ),
+        ] {
+            let error = handle_request(state.clone(), "plugin.rewrites.record", params, tx.clone())
+                .await
+                .unwrap_err();
+            assert_eq!(error.code, 1002, "{error:?}");
+            assert_eq!(error.data.unwrap()["errorCode"], json!(error_code));
+        }
+
+        // None of the refused payloads left a row behind.
+        let after = handle_request(
+            state.clone(),
+            "plugin.rewrites.list",
+            json!({ "sessionId": session.id, "limit": 50 }),
+            tx.clone(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(after["rewrites"].as_array().unwrap().len(), 2);
+    }
+
+    /// `turn.facts` is the host's own answer for one turn — the numbers come
+    /// from host tables, never from a plugin counting events — and a turn that
+    /// does not exist is an error rather than zeroes (ADR 0295 rule 8, slot #9).
+    #[tokio::test]
+    async fn turn_facts_reads_the_turn_and_rejects_unknown_input() {
+        use crate::artifacts::{self, ArtifactOp};
+        use crate::audit;
+
+        let data_dir = tempfile::tempdir().unwrap();
+        let mut app_state = AppState::open(data_dir.path()).unwrap();
+        app_state.handshook = true;
+        let session =
+            sessions::create_session(&app_state.db, None, None, None, None, None).unwrap();
+        let turn = sessions::begin_turn(&app_state.db, &session.id, None, None).unwrap();
+        audit::append_turn(
+            &app_state.db,
+            "tool_execute",
+            Some(&session.id),
+            Some(&turn),
+            json!({ "toolName": "Read", "ok": true }),
+        )
+        .unwrap();
+        audit::append_turn(
+            &app_state.db,
+            "tool_execute",
+            Some(&session.id),
+            Some(&turn),
+            json!({ "toolName": "Bash", "ok": false, "errorCode": "TOOL_TIMEOUT" }),
+        )
+        .unwrap();
+        // Another turn's call must never be counted here.
+        audit::append_turn(
+            &app_state.db,
+            "tool_execute",
+            Some(&session.id),
+            Some("turn-elsewhere"),
+            json!({ "toolName": "Grep", "ok": true }),
+        )
+        .unwrap();
+        artifacts::record(
+            &app_state.db,
+            &session.id,
+            "/w/notes.txt",
+            ArtifactOp::Write,
+            Some(&turn),
+        )
+        .unwrap();
+        artifacts::record(
+            &app_state.db,
+            &session.id,
+            "/w/extra.txt",
+            ArtifactOp::Edit,
+            Some(&turn),
+        )
+        .unwrap();
+        let usage = json!({
+            "inputTokens": 120,
+            "outputTokens": 30,
+            "totalTokens": 150,
+            "pluginToolUsage": { "inputTokens": 5, "outputTokens": 7, "totalTokens": 12 }
+        });
+        sessions::end_turn(&app_state.db, &turn, "completed", None, Some(&usage), false).unwrap();
+        let state = Arc::new(Mutex::new(app_state));
+        let (tx, _rx) = mpsc::unbounded_channel();
+
+        let response = handle_request(
+            state.clone(),
+            "turn.facts",
+            json!({ "sessionId": session.id, "turnId": turn }),
+            tx.clone(),
+        )
+        .await
+        .unwrap();
+        let facts = &response["facts"];
+        assert_eq!(facts["sessionId"], json!(session.id));
+        assert_eq!(facts["turnId"], json!(turn));
+        assert_eq!(facts["status"], json!("completed"));
+        assert_eq!(
+            facts["tokens"],
+            json!({ "input": 120, "output": 30, "total": 150 })
+        );
+        assert_eq!(facts["usage"], usage);
+        assert_eq!(facts["pluginToolUsage"]["totalTokens"], json!(12));
+        assert_eq!(facts["toolCalls"]["total"], json!(2));
+        assert_eq!(facts["toolCalls"]["ok"], json!(1));
+        assert_eq!(facts["toolCalls"]["failed"], json!(1));
+        assert_eq!(facts["toolCalls"]["byTool"][0]["toolName"], json!("Bash"));
+        assert_eq!(
+            facts["toolCalls"]["byTool"][0]["errorCodes"],
+            json!(["TOOL_TIMEOUT"])
+        );
+        assert_eq!(facts["toolCalls"]["byTool"][1]["toolName"], json!("Read"));
+        assert_eq!(facts["files"][0]["path"], json!("/w/notes.txt"));
+        assert_eq!(facts["files"][0]["op"], json!("write"));
+        assert_eq!(facts["files"][1]["op"], json!("edit"));
+        assert_eq!(facts["filesTruncated"], json!(false));
+        assert!(facts["durationMs"].as_i64().unwrap() >= 0);
+        assert!(facts["endedAt"].as_str().unwrap().ends_with('Z'));
+
+        // The file list honours the caller's limit and says when it capped.
+        let capped = handle_request(
+            state.clone(),
+            "turn.facts",
+            json!({ "sessionId": session.id, "turnId": turn, "limit": 1 }),
+            tx.clone(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(capped["facts"]["files"].as_array().unwrap().len(), 1);
+        assert_eq!(capped["facts"]["filesTruncated"], json!(true));
+
+        for params in [
+            json!({ "turnId": turn }),
+            json!({ "sessionId": session.id }),
+            json!({ "sessionId": "  ", "turnId": turn }),
+            json!({ "sessionId": session.id, "turnId": "" }),
+            json!({ "sessionId": session.id, "turnId": turn, "limit": 0 }),
+            json!({ "sessionId": session.id, "turnId": turn, "limit": "twenty" }),
+        ] {
+            let error = handle_request(state.clone(), "turn.facts", params, tx.clone())
+                .await
+                .unwrap_err();
+            assert_eq!(error.code, 1002);
+            assert_eq!(error.data.unwrap()["errorCode"], json!("INVALID_PARAMS"));
+        }
+
+        let unknown_turn = handle_request(
+            state.clone(),
+            "turn.facts",
+            json!({ "sessionId": session.id, "turnId": "turn-that-never-was" }),
+            tx.clone(),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(unknown_turn.code, 1007);
+        assert_eq!(
+            unknown_turn.data.unwrap()["errorCode"],
+            json!("TURN_NOT_FOUND")
+        );
+
+        let unknown_session = handle_request(
+            state,
+            "turn.facts",
+            json!({ "sessionId": "session-that-never-was", "turnId": turn }),
+            tx,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(unknown_session.code, 1007);
+        assert_eq!(
+            unknown_session.data.unwrap()["errorCode"],
+            json!("SESSION_NOT_FOUND")
+        );
+    }
+
+    /// The write side of the facts read: a real `tools.execute` stamps its
+    /// audit row with the turn it ran in, so the counts are the host's own.
+    #[tokio::test]
+    async fn turn_facts_counts_the_tool_calls_a_real_execution_audits() {
+        let data_dir = tempfile::tempdir().unwrap();
+        let project = data_dir.path().join("project");
+        fs::create_dir_all(&project).unwrap();
+        fs::write(project.join("note.txt"), "hello").unwrap();
+        let mut app_state = AppState::open(data_dir.path()).unwrap();
+        app_state.handshook = true;
+        let session = sessions::create_session(
+            &app_state.db,
+            Some("Facts".into()),
+            Some("agent".into()),
+            None,
+            None,
+            Some(project.to_string_lossy().into_owned()),
+        )
+        .unwrap();
+        let turn = sessions::begin_turn(&app_state.db, &session.id, None, None).unwrap();
+        let state = Arc::new(Mutex::new(app_state));
+        let (tx, _rx) = mpsc::unbounded_channel();
+
+        let result = handle_request(
+            state.clone(),
+            "tools.execute",
+            json!({
+                "sessionId": session.id,
+                "turnId": turn,
+                "toolCallId": "tc-1",
+                "toolName": "Read",
+                "args": { "path": "note.txt" },
+                "mode": "agent"
+            }),
+            tx.clone(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(result["ok"], json!(true), "read succeeded: {result}");
+
+        let response = handle_request(
+            state,
+            "turn.facts",
+            json!({ "sessionId": session.id, "turnId": turn }),
+            tx,
+        )
+        .await
+        .unwrap();
+        let facts = &response["facts"];
+        assert_eq!(facts["toolCalls"]["total"], json!(1));
+        assert_eq!(facts["toolCalls"]["ok"], json!(1));
+        assert_eq!(facts["toolCalls"]["failed"], json!(0));
+        assert_eq!(
+            facts["toolCalls"]["byTool"][0],
+            json!({ "toolName": "Read", "calls": 1, "ok": 1, "failed": 0, "errorCodes": [] })
+        );
+    }
+
+    /// `session.appendMessage` stores the plugin that asked for a row, and
+    /// `session.get` answers it back for exactly the rows it returned (ADR
+    /// 0293 / ADR 0295 rule 9, slot #10); a row without provenance is absent
+    /// from the answer instead of being marked as "no plugin".
+    #[tokio::test]
+    async fn append_message_keeps_and_reports_the_plugin_that_asked_for_the_row() {
+        let data_dir = tempfile::tempdir().unwrap();
+        let mut app_state = AppState::open(data_dir.path()).unwrap();
+        app_state.handshook = true;
+        let session =
+            sessions::create_session(&app_state.db, None, None, None, None, None).unwrap();
+        let turn = sessions::begin_turn(&app_state.db, &session.id, None, None).unwrap();
+        let state = Arc::new(Mutex::new(app_state));
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let message = |id: &str| {
+            json!({
+                "id": id,
+                "role": "user",
+                "content": "carry on",
+                "createdAt": crate::db::ms_to_ts(crate::db::now_ms())
+            })
+        };
+
+        for params in [
+            json!({
+                "sessionId": session.id,
+                "turnId": turn,
+                "message": message("row-from-plugin"),
+                "pluginId": "acme.sender",
+                "pluginLabel": "Acme Sender"
+            }),
+            // A label that is missing or empty falls back to the id, exactly as
+            // the rewrite writer does: a badge always has a name to show.
+            json!({
+                "sessionId": session.id,
+                "turnId": turn,
+                "message": message("row-without-label"),
+                "pluginId": "acme.sender"
+            }),
+            json!({
+                "sessionId": session.id,
+                "turnId": turn,
+                "message": message("row-typed-by-the-user")
+            }),
+        ] {
+            handle_request(state.clone(), "session.appendMessage", params, tx.clone())
+                .await
+                .unwrap();
+        }
+
+        let read = handle_request(
+            state.clone(),
+            "session.get",
+            json!({ "id": session.id, "messageLimit": 10 }),
+            tx.clone(),
+        )
+        .await
+        .unwrap();
+        let continuations = read["pluginContinuations"].as_array().unwrap();
+        assert_eq!(continuations.len(), 2);
+        assert_eq!(continuations[0]["messageId"], json!("row-from-plugin"));
+        assert_eq!(continuations[0]["pluginId"], json!("acme.sender"));
+        assert_eq!(continuations[0]["pluginLabel"], json!("Acme Sender"));
+        assert_eq!(continuations[0]["turnId"], json!(turn));
+        assert_eq!(continuations[1]["messageId"], json!("row-without-label"));
+        assert_eq!(continuations[1]["pluginLabel"], json!("acme.sender"));
+        // The transcript itself is untouched by the attribution.
+        assert_eq!(read["session"]["messages"].as_array().unwrap().len(), 3);
+
+        // A label without an id cannot be attributed, and a broken identifier
+        // is refused instead of stored: neither is a silent drop.
+        for params in [
+            json!({
+                "sessionId": session.id,
+                "message": message("row-anonymous"),
+                "pluginLabel": "Acme Sender"
+            }),
+            json!({
+                "sessionId": session.id,
+                "message": message("row-empty-id"),
+                "pluginId": "   "
+            }),
+            json!({
+                "sessionId": session.id,
+                "message": message("row-long-id"),
+                "pluginId": "x".repeat(300)
+            }),
+        ] {
+            let error = handle_request(state.clone(), "session.appendMessage", params, tx.clone())
+                .await
+                .unwrap_err();
+            assert_eq!(error.code, 1002, "{error:?}");
+            assert_eq!(error.data.unwrap()["errorCode"], json!("INVALID_PARAMS"));
+        }
+
+        // None of the refused appends left a row behind, and a session where
+        // nobody asked for anything carries no member at all.
+        let plain =
+            sessions::create_session(&state.lock().await.db, None, None, None, None, None).unwrap();
+        let read = handle_request(
+            state.clone(),
+            "session.get",
+            json!({ "id": plain.id }),
+            tx.clone(),
+        )
+        .await
+        .unwrap();
+        assert!(read.get("pluginContinuations").is_none());
+        let read = handle_request(
+            state,
+            "session.get",
+            json!({ "id": session.id, "messageLimit": 10 }),
+            tx,
+        )
+        .await
+        .unwrap();
+        assert_eq!(read["session"]["messages"].as_array().unwrap().len(), 3);
+    }
+
+    /// `turn.messages` answers one turn's conversation from the host's own
+    /// rows, oldest first, windowed with an exact truncation flag, and an
+    /// unknown turn is an error rather than an empty list (ADR 0295 slot #8).
+    #[tokio::test]
+    async fn turn_messages_reads_one_turn_and_rejects_unknown_input() {
+        let data_dir = tempfile::tempdir().unwrap();
+        let mut app_state = AppState::open(data_dir.path()).unwrap();
+        app_state.handshook = true;
+        let session =
+            sessions::create_session(&app_state.db, None, None, None, None, None).unwrap();
+        let first = sessions::begin_turn(&app_state.db, &session.id, None, None).unwrap();
+        sessions::end_turn(&app_state.db, &first, "completed", None, None, false).unwrap();
+        let second = sessions::begin_turn(&app_state.db, &session.id, None, None).unwrap();
+        for (id, turn) in [
+            ("first-prompt", &first),
+            ("second-prompt", &second),
+            ("second-follow-up", &second),
+        ] {
+            sessions::append_message(
+                &app_state.db,
+                &session.id,
+                &sessions::UiMessage {
+                    id: id.to_string(),
+                    role: "user".into(),
+                    content: format!("text of {id}"),
+                    created_at: crate::db::ms_to_ts(crate::db::now_ms()),
+                    ..Default::default()
+                },
+                Some(turn),
+            )
+            .unwrap();
+        }
+        let state = Arc::new(Mutex::new(app_state));
+        let (tx, _rx) = mpsc::unbounded_channel();
+
+        let read = handle_request(
+            state.clone(),
+            "turn.messages",
+            json!({ "sessionId": session.id, "turnId": second }),
+            tx.clone(),
+        )
+        .await
+        .unwrap();
+        let turn = &read["turn"];
+        assert_eq!(turn["sessionId"], json!(session.id));
+        assert_eq!(turn["turnId"], json!(second));
+        assert_eq!(turn["messageCount"], json!(2));
+        assert_eq!(turn["truncated"], json!(false));
+        assert_eq!(
+            turn["messages"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|message| message["id"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            ["second-prompt", "second-follow-up"]
+        );
+        assert_eq!(
+            turn["messages"][0]["content"],
+            json!("text of second-prompt")
+        );
+
+        // A capped read returns the turn's first rows and says so.
+        let capped = handle_request(
+            state.clone(),
+            "turn.messages",
+            json!({ "sessionId": session.id, "turnId": second, "limit": 1 }),
+            tx.clone(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(capped["turn"]["truncated"], json!(true));
+        assert_eq!(capped["turn"]["messageCount"], json!(2));
+        assert_eq!(
+            capped["turn"]["messages"].as_array().unwrap()[0]["id"],
+            json!("second-prompt")
+        );
+
+        for (params, code, error_code) in [
+            (
+                json!({ "sessionId": session.id, "turnId": "turn-that-never-was" }),
+                1007,
+                "TURN_NOT_FOUND",
+            ),
+            (
+                json!({ "sessionId": "session-that-never-was", "turnId": second }),
+                1007,
+                "SESSION_NOT_FOUND",
+            ),
+            (
+                json!({ "sessionId": session.id, "turnId": second, "limit": 0 }),
+                1002,
+                "INVALID_PARAMS",
+            ),
+            (
+                json!({ "sessionId": session.id, "turnId": second, "contentLimit": 0 }),
+                1002,
+                "INVALID_PARAMS",
+            ),
+            (json!({ "sessionId": session.id }), 1002, "INVALID_PARAMS"),
+        ] {
+            let error = handle_request(state.clone(), "turn.messages", params, tx.clone())
+                .await
+                .unwrap_err();
+            assert_eq!(error.code, code, "{error:?}");
+            assert_eq!(error.data.unwrap()["errorCode"], json!(error_code));
+        }
     }
 }

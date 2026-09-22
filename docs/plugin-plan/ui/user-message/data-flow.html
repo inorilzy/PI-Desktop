@@ -1,0 +1,282 @@
+<!-- status: draft · issue #545 · branch feat/528-plugin-slots -->
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>用户消息卡 · 数据流</title>
+<style>
+  :root{
+    --bg:#0e0e0e; --surface:#161616; --surface-2:#1b1b1b; --line:#2a2a2a; --line-2:#353535;
+    --text:#ededed; --text-2:#b0b0b0; --muted:#7d7d7d; --faint:#5c5c5c;
+    --host:#4c8dff; --host-bg:rgba(76,141,255,.10);
+    --plugin:#c27aff; --plugin-bg:rgba(194,122,255,.10);
+    --slot:#ff8549; --slot-bg:rgba(255,133,73,.10);
+    --ok:#40c977; --ok-bg:rgba(64,201,119,.10);
+    --red:#ff6764; --red-bg:rgba(255,103,100,.10);
+    --font:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;
+    --mono:ui-monospace,"SF Mono","Cascadia Code",Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0}
+  body{background:var(--bg);color:var(--text);font-family:var(--font);font-size:14px;line-height:1.65;-webkit-font-smoothing:antialiased}
+  .top{border-bottom:1px solid var(--line);padding:24px 28px 20px;background:linear-gradient(180deg,#141414,#0e0e0e)}
+  .top .crumb{font-family:var(--mono);font-size:11.5px;color:var(--faint);letter-spacing:.06em}
+  .top h1{margin:6px 0;font-size:21px}
+  .top p{margin:0;color:var(--text-2);max-width:80ch}
+  .top .meta{margin-top:8px;color:var(--faint);font-size:12.5px}
+  code{font-family:var(--mono);font-size:12.5px;color:var(--text-2)}
+  main{max-width:960px;margin:0 auto;padding:24px 28px 90px}
+  section{margin:0 0 44px}
+  section > h2{display:flex;align-items:baseline;gap:8px;margin:0 0 6px;font-size:17px;border-top:1px solid var(--line);padding-top:14px}
+  section > h2 .n{font-family:var(--mono);font-size:11.5px;color:var(--muted)}
+  section > h2 .tag{font-family:var(--mono);font-size:11px;padding:1px 6px;border-radius:4px}
+  .tag.decided{color:var(--ok);background:var(--ok-bg)}
+  .tag.proposal{color:var(--slot);background:var(--slot-bg)}
+  .lead{margin:0 0 14px;color:var(--text-2);max-width:82ch}
+  h3{margin:20px 0 6px;font-size:14.5px}
+  p{margin:0 0 10px}
+  ul{margin:0 0 12px;padding-left:1.2em}li{margin:3px 0}
+  table{width:100%;border-collapse:collapse;font-size:13.5px;margin:0 0 14px}
+  th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{color:var(--muted);font-weight:500;font-size:12px;text-transform:uppercase;letter-spacing:.03em}
+  td.id{font-family:var(--mono);font-size:12.5px;color:var(--text-2);white-space:nowrap}
+  pre{margin:0 0 14px;padding:12px 14px;border-radius:9px;background:#121212;border:1px solid var(--line);overflow-x:auto;font-family:var(--mono);font-size:12.5px;line-height:1.6;color:var(--text-2)}
+  pre .k{color:var(--plugin)}
+  pre .c{color:var(--faint)}
+  .callout{margin:0 0 14px;padding:11px 13px;border-radius:9px;background:var(--surface);color:var(--text-2);font-size:13px}
+  .callout.warn{border-left:2px solid var(--slot)}
+  .callout.stop{border-left:2px solid var(--red)}
+  .callout b{color:var(--text);font-weight:560}
+  .legend{display:flex;flex-wrap:wrap;gap:8px 16px;margin:0 0 14px;font-size:12.5px;color:var(--muted)}
+  .chip{display:inline-block;padding:1px 7px;border-radius:99px;font-size:11px;font-family:var(--mono)}
+  .chip.host{color:var(--host);background:var(--host-bg)}
+  .chip.plugin{color:var(--plugin);background:var(--plugin-bg)}
+  .chip.slot{color:var(--slot);background:var(--slot-bg)}
+
+  /* --- 三栏流向图 --- */
+  .flow{border:1px solid var(--line);border-radius:12px;background:var(--surface);overflow:hidden;margin:0 0 16px}
+  .flow-head{display:grid;grid-template-columns:1fr 1fr 1fr;border-bottom:1px solid var(--line);font-size:12px;color:var(--muted);font-family:var(--mono);letter-spacing:.04em}
+  .flow-head div{padding:9px 14px}
+  .flow-head div + div{border-left:1px solid var(--line)}
+  .flow-head .h{color:var(--host)}
+  .flow-head .s{color:var(--slot)}
+  .flow-head .p{color:var(--plugin)}
+  .flow-body{display:grid;grid-template-columns:1fr 1fr 1fr}
+  .lane{padding:12px 14px;font-size:13px}
+  .lane + .lane{border-left:1px solid var(--line)}
+  .lane ul{margin:0;padding:0;list-style:none}
+  .lane li{padding:5px 0;border-bottom:1px dashed var(--line)}
+  .lane li:last-child{border-bottom:0}
+  .lane .what{display:block;font-family:var(--mono);font-size:12px;color:var(--text)}
+  .lane .why{display:block;color:var(--muted);font-size:12px}
+  .arrow-row{display:grid;grid-template-columns:1fr 1fr 1fr;border-top:1px solid var(--line);background:var(--surface-2);font-family:var(--mono);font-size:12px;color:var(--muted)}
+  .arrow-row div{padding:8px 14px}
+  .arrow-row div + div{border-left:1px solid var(--line)}
+  .arrow-row .x{color:var(--host)}.arrow-row .y{color:var(--plugin)}
+  /* 顶部导航：目录内各页互相跳转 */
+  .plan-nav{display:flex;flex-wrap:wrap;align-items:center;gap:4px;padding:10px 28px;background:#0c0c0c;border-bottom:1px solid var(--line);font-size:13px}
+  .plan-nav a{color:var(--text-2);text-decoration:none;padding:3px 8px;border-radius:6px}
+  .plan-nav a:hover{background:var(--surface);color:var(--text)}
+  .plan-nav a[aria-current="page"]{background:var(--surface);color:var(--text);box-shadow:inset 0 0 0 1px var(--line-2)}
+  .plan-nav .sep{color:var(--faint);padding:0 2px}
+  .plan-nav .spacer{flex:1}
+</style>
+</head>
+<body>
+
+<nav class="plan-nav">
+  <a href="../../index.html">插件插槽目录</a>
+  <span class="sep">/</span>
+  <a href="index.html">用户消息卡</a>
+  <span class="spacer"></span>
+  <a href="index.html">目录</a>
+  <a href="requirements.html">需求</a>
+  <a href="demo.html">演示</a>
+  <a href="data-flow.html" aria-current="page">数据流</a>
+</nav>
+
+<header class="top">
+  <div class="crumb">docs/plugin-plan · ui/user-message</div>
+  <h1>用户消息卡 · 数据流</h1>
+  <p>插件能拿到什么、自己画什么、点一下按钮真正发生什么。六节固定：接口约定 / 数据怎么走 / 出错怎么办 / 不提供什么 / 相关条目 / 还没定的事。</p>
+  <div class="meta">status: draft · issue #545 第 1 项 · 接口里的字段名是建议值，还没定</div>
+</header>
+
+<main>
+
+<!-- ============ 1 接口约定 ============ -->
+<section>
+  <h2><span class="n">1</span>接口约定 <span class="tag proposal">建议</span></h2>
+  <p class="lead">权限名用 <code>renderer.extension</code>：一个权限名管所有组件插槽，不用每个槽单独授权。</p>
+
+  <h3>插件能拿到的数据</h3>
+<pre><span class="c">// entry 和 entry.actions 收到的全部输入</span>
+{
+  <span class="k">entry</span>: { id, role: "user" },   <span class="c">// 任何插件都能渲染，不看这条是谁产生的</span>
+  <span class="k">message</span>: {
+    text,                       <span class="c">// 用户打出来的原文（改写之前）</span>
+    attachments: [              <span class="c">// 只有文件信息，没有文件内容</span>
+      { ref, name, kind: "image" | "file", mimeType, size }
+    ],
+    command,                    <span class="c">// 斜杠命令才有</span>
+    revision: { current, total } | null,   <span class="c">// 改过几版，没改过就是 null</span>
+    createdAt, streaming
+  },
+  <span class="k">sessionId</span>
+}</pre>
+
+  <h3>宿主提供的现成组件</h3>
+  <p>插件可以直接用，也可以不用、自己画。不是必须套的外壳。</p>
+  <table>
+    <thead><tr><th>组件</th><th>画什么</th><th>不用它的话，插件要自己做什么</th></tr></thead>
+    <tbody>
+      <tr><td class="id">UserBubble</td><td>默认气泡的外壳 + 附件 + 文字</td><td>整个气泡自己画</td></tr>
+      <tr><td class="id">UserAttachments</td><td>图片缩略图 / 文件芯片（点击能打开）</td><td>附件的样式和点击自己处理</td></tr>
+      <tr><td class="id">UserText</td><td>正文（其中的文件路径、网址会自动变成可点链接）</td><td>正文自己画，链接也要自己处理</td></tr>
+      <tr><td class="id">RewriteBadge</td><td>改写徽标（可以展开）</td><td>插件用了 <code>entry</code>，默认卡就不显示徽标；插件要自己决定还显不显示</td></tr>
+      <tr><td class="id">ActionBar</td><td>复制 / 编辑 / 删除 / 修订，可以隐藏其中某项，也可以加自己的按钮</td><td>操作栏整排自己排</td></tr>
+    </tbody>
+  </table>
+
+  <h3>插件能调用的操作</h3>
+  <table>
+    <thead><tr><th>操作</th><th>做什么</th><th>什么时候不能用</th></tr></thead>
+    <tbody>
+      <tr><td class="id">copy()</td><td>复制消息里存着的原文（不是插件画在屏幕上的字）</td><td>这条没有文字</td></tr>
+      <tr><td class="id">edit()</td><td>进入宿主的编辑状态；插槽让开，宿主的编辑框接管这条消息</td><td>正在回复中 / 协作转发的消息</td></tr>
+      <tr><td class="id">delete()</td><td>删除这条消息（会走宿主的确认）</td><td>正在回复中 / 协作转发的消息</td></tr>
+      <tr><td class="id">setRevision(n)</td><td>切到第 n 版</td><td>只有一版，没有可切的</td></tr>
+      <tr><td class="id">openAttachment(ref)</td><td>用宿主现有的方式打开附件（工作面板 / 文件视图）</td><td>找不到文件时给个提示</td></tr>
+    </tbody>
+  </table>
+  <div class="callout warn">插件可以让某个按钮不显示，但换不掉这些操作本身的行为。藏掉按钮不等于把功能废掉。</div>
+</section>
+
+<!-- ============ 2 数据怎么走 ============ -->
+<section>
+  <h2><span class="n">2</span>数据怎么走 <span class="tag proposal">建议</span></h2>
+  <div class="legend">
+    <span><span class="chip host">host</span> 宿主页面</span>
+    <span><span class="chip slot">slot</span> 插槽边界</span>
+    <span><span class="chip plugin">plugin</span> 插件组件</span>
+  </div>
+
+  <div class="flow">
+    <div class="flow-head">
+      <div class="h">宿主（消息这一行）</div>
+      <div class="s">&lt;PluginSlot&gt; 插槽</div>
+      <div class="p">插件组件</div>
+    </div>
+    <div class="flow-body">
+      <div class="lane">
+        <ul>
+          <li><span class="what">message + sessionId</span><span class="why">这条消息的全部数据，一次给全</span></li>
+          <li><span class="what">现成组件</span><span class="why">UserBubble / ActionBar 等</span></li>
+          <li><span class="what">操作函数</span><span class="why">跟这条消息绑定，不是一串名字</span></li>
+          <li><span class="what">出错隔离</span><span class="why">每个插槽单独隔开</span></li>
+          <li><span class="what">带插件 id 的外层容器</span><span class="why">插件的样式只在这里生效</span></li>
+        </ul>
+      </div>
+      <div class="lane">
+        <ul>
+          <li><span class="what">位置</span><span class="why">消息气泡整体 / 操作栏</span></li>
+          <li><span class="what">大小和位置</span><span class="why">由宿主决定</span></li>
+          <li><span class="what">出错兜底</span><span class="why">报错就换回默认卡</span></li>
+          <li><span class="what">插件被关掉后</span><span class="why">界面上不留位置</span></li>
+        </ul>
+      </div>
+      <div class="lane">
+        <ul>
+          <li><span class="what">画界面</span><span class="why">用现成组件，或整个自己画</span></li>
+          <li><span class="what">自己管状态</span><span class="why">折叠、按钮进行中</span></li>
+          <li><span class="what">调用操作</span><span class="why">copy / edit / delete…</span></li>
+          <li><span class="what">加样式</span><span class="why">必须通过宿主提供的样式接口</span></li>
+        </ul>
+      </div>
+    </div>
+    <div class="arrow-row">
+      <div class="x">数据往下传 →</div>
+      <div class="x">同一个页面进程，直接传 →</div>
+      <div class="y">← 操作回调</div>
+    </div>
+  </div>
+
+  <h3>两个槽各拿什么</h3>
+  <table>
+    <thead><tr><th></th><th>entry</th><th>entry.actions</th></tr></thead>
+    <tbody>
+      <tr><td class="id">位置</td><td>消息气泡整体</td><td>气泡下面那一行</td></tr>
+      <tr><td class="id">拿到</td><td>这条消息的数据 + 正文相关的组件</td><td>这条消息的数据 + 操作栏组件 + 各个操作</td></tr>
+      <tr><td class="id">典型改写</td><td>把 token 打码、重排附件、整个气泡自己画</td><td>加「在看板打开」、藏掉编辑</td></tr>
+      <tr><td class="id">什么时候重画</td><td>这条消息重新渲染时重画；插件自己的状态要自己保存</td><td>跟着操作栏出现 / 隐藏（鼠标悬停时）</td></tr>
+    </tbody>
+  </table>
+
+  <h3>谁能用这两个槽</h3>
+  <table>
+    <thead><tr><th></th><th>规则</th></tr></thead>
+    <tbody>
+      <tr><td class="id">谁</td><td>任何插件都能渲染这两个槽，不看这条消息是谁产生的</td></tr>
+      <tr><td class="id">范围</td><td>对所有用户消息生效，不按来源过滤</td></tr>
+      <tr><td class="id">插件能改哪一块</td><td>能增删的只有操作栏；消息气泡整体是整块替换，不做局部增删</td></tr>
+    </tbody>
+  </table>
+  <div class="callout stop">本轮不做「分享整段对话为图」，也不做「PDF 点一下就能看」。插槽拿到的数据只有这<b>一条用户消息</b>，助手的回复走另一套组件，不在消息这一行的数据里。</div>
+</section>
+
+<!-- ============ 3 出错怎么办 ============ -->
+<section>
+  <h2><span class="n">3</span>出错怎么办 <span class="tag decided">一定会遇到</span></h2>
+  <table>
+    <thead><tr><th>情况</th><th>这条消息会变成什么</th><th>靠什么保证</th></tr></thead>
+    <tbody>
+      <tr><td class="id">组件报错 / 卡死</td><td>换回默认卡；旁边的消息不受影响</td><td>每个插槽独立的出错隔离</td></tr>
+      <tr><td class="id">插件被关掉 / 崩溃 / 禁用</td><td>自动变回默认卡，界面上不留空位</td><td>插件不在就不占位置</td></tr>
+      <tr><td class="id">用户点了编辑</td><td>插槽让开，宿主的编辑框接管这条消息</td><td>宿主自己的编辑状态</td></tr>
+      <tr><td class="id">插件没声明 renderer 入口</td><td>跳过注册，普通插件不受影响</td><td>信任档</td></tr>
+      <tr><td class="id">插件没声明 renderer 入口</td><td>跳过注册，普通插件不受影响</td><td>信任档</td></tr>
+    </tbody>
+  </table>
+  <div class="callout warn"><b>挡不住的：</b>受信插件故意把界面画坏，比如把原文藏起来、把所有按钮删光。它和宿主跑在同一个页面进程里，这是已经接受的代价。能保证的是：它改不了数据库里的内容，也弄不垮整场对话。</div>
+</section>
+
+<!-- ============ 4 不提供什么 ============ -->
+<section>
+  <h2><span class="n">4</span>不提供什么 <span class="tag decided">已定</span></h2>
+  <table>
+    <thead><tr><th>不给</th><th>为什么</th><th>真需要就走哪</th></tr></thead>
+    <tbody>
+      <tr><td class="id">文件内容</td><td>附件只给文件名、路径、类型、大小</td><td><code>openAttachment</code> 交给宿主打开</td></tr>
+      <tr><td class="id">整段对话</td><td>插槽只管这一条消息，不该背着整个会话</td><td>本轮没有这条路（分享场景已移除）</td></tr>
+      <tr><td class="id">改数据库的权力</td><td>改写和删除必须由宿主来做</td><td>上面那组操作</td></tr>
+      <tr><td class="id">助手的回复</td><td>助手走的是另一套组件</td><td>助手气泡的槽下一轮单独谈</td></tr>
+      <tr><td class="id">旁边的消息、别的会话</td><td>插槽只拿到这一条</td><td>没有这条路</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<!-- ============ 5 相关条目 ============ -->
+<section>
+  <h2><span class="n">5</span>相关条目</h2>
+  <table>
+    <thead><tr><th>谁</th><th>关系</th><th>位置</th></tr></thead>
+    <tbody>
+      <tr><td class="id">entryExtra（#545 第 13 项）</td><td>用户气泡不再有行下追加位；要加东西就在 <code>entry</code> 里包一层默认气泡，或放到 <code>entry.actions</code> 旁边</td><td>—</td></tr>
+      <tr><td class="id">助手气泡的槽</td><td>下一轮单独谈，不在这份文档里</td><td>—</td></tr>
+      <tr><td class="id">tool-card</td><td>助手侧的工具卡，用同一套信任档和出错规则</td><td><code>ui/tool-card/</code></td></tr>
+      <tr><td class="id">api/open-attachment</td><td>把附件点击收到一个入口，自己画的芯片也能用</td><td><code>api/open-attachment/</code>（候选）</td></tr>
+      <tr><td class="id">renderer 宿主</td><td>这个槽的前提：插件代码能跑进宿主页面、共用同一个 React</td><td>批次 0（#528）</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<!-- ============ 6 还没定的事 ============ -->
+<section>
+  <h2><span class="n">6</span>还没定的事</h2>
+  <p style="color:var(--text-2)">本轮的问题都已拍板。下一轮的题目是助手气泡的槽。消息右键菜单不在本轮范围。</p>
+</section>
+
+</main>
+</body>
+</html>

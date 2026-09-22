@@ -1,4 +1,4 @@
-# 04. Data Storage (Schema v17)
+# 04. Data Storage (Schema v21)
 
 ## 0. Ownership decision
 
@@ -222,6 +222,21 @@ CREATE TABLE kv (
 | `cache` | model-refresh stamps, recent model refs (spec 13 §3) |
 | `plugin:<id>` | per-plugin settings; uninstall = `DELETE WHERE ns = ?` |
 | `projectMemory` | durable user-authored context keyed by canonical project path; structured values contain `format: "entries-v1"`, visual `entries`, derived `content`, and `updatedAt` |
+
+The app settings JSON optionally stores `thinkingDisplayMode` (`detailed` or
+`compact`). Missing values retain detailed presentation. This additive display
+preference neither rewrites stored reasoning nor changes the database schema.
+
+The same blob optionally stores the prompt-enhancement overrides
+`promptEnhancementCustomTemplate` (the switch that decides whether a stored
+template applies), `promptEnhancementUserTemplate`,
+`promptEnhancementProviderId`, `promptEnhancementModelId`, and
+`promptEnhancementThinkingLevel` (ADR 0121). An absent or blank user template means the
+built-in default applies, so clearing the field stores no key rather than an
+empty string. A non-blank user template must contain the draft variable and stay
+within `PROMPT_ENHANCEMENT_TEMPLATE_MAX_LENGTH`; host-core rejects a write that
+breaks either rule and drops any stored `promptEnhancementSystemPrompt`, which is
+no longer read. No schema version bump is required.
 
 New config domains (e.g. MCP servers) start as a namespace; they graduate to
 tables only when they need relations or indexes.
@@ -498,6 +513,17 @@ CREATE INDEX idx_turns_session ON turns(session_id, started_at DESC);
 CREATE INDEX idx_turns_ended_at ON turns(ended_at DESC);
 ```
 
+`input_tokens` / `output_tokens` are the authoritative model totals: they are
+the promoted columns every rollup reads, and a turn that recorded no usage
+record keeps the zeros its row was created with. `usage_json` is the provider's
+own record exactly as Electron reported it at `session.endTurn` — the cached /
+reasoning breakdown lives there. That record also carries the turn's
+**plugin-tool spend** as its own `pluginToolUsage` member when a plugin tool
+reported spend, kept beside the model totals instead of summed into them
+(ADR 0295 slot 5); a turn whose plugin tools reported nothing has no such
+member. Both are read back as they were stored: `turn.facts` exposes the record
+verbatim plus `pluginToolUsage` on its own (§4.16).
+
 ### 4.6a plan_approvals — immutable checkpoint and execution fields (schema v11)
 
 The host writes each submitted Markdown snapshot to a new unique file under the
@@ -707,7 +733,7 @@ stream (as today) with `text = NULL`.
 ```sql
 CREATE TABLE messages (
   mid          INTEGER PRIMARY KEY,             -- stable rowid: FTS anchor, VACUUM-safe
-  id           TEXT NOT NULL UNIQUE,            -- caller-facing uuid (optimistic UI)
+  id           TEXT NOT NULL UNIQUE,            -- caller-facing uuid (optimistic UI); colliding provider toolCallIds remap to {sessionId}:{id} (D444)
   session_id   TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
   turn_id      TEXT REFERENCES turns(id) ON DELETE SET NULL,
   seq          INTEGER NOT NULL,                -- per-session ordinal
@@ -900,27 +926,36 @@ CREATE INDEX idx_message_revisions_root
 
 ### 4.10 artifacts — files a session produced
 
-Backs the Artifacts surface (benchmark §3.7). v1 planned to derive this from
-`audit_log`, but audit payloads never recorded file paths; an explicit
-projection is precise, indexed, and survives audit pruning.
+Backs the Artifacts surface (benchmark §3.7) and is the host-owned answer to
+"which files did this turn change?" (ADR 0295 rule 8). v1 planned to derive
+this from `audit_log`, but audit payloads never recorded file paths; an
+explicit projection is precise, indexed, and survives audit pruning.
 
 ```sql
 CREATE TABLE artifacts (
+  id         INTEGER PRIMARY KEY,         -- one row per recorded touch
   session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
   path       TEXT NOT NULL,               -- absolute, workspace-resolved
-  op         TEXT NOT NULL,               -- write | edit | delete
-  turn_id    TEXT,
-  updated_at INTEGER NOT NULL,
-  PRIMARY KEY (session_id, path)
-) WITHOUT ROWID;
+  op         TEXT NOT NULL,               -- create | write | edit | download | delete
+  turn_id    TEXT,                        -- turn that touched the file
+  updated_at INTEGER NOT NULL             -- time of this touch
+);
 CREATE INDEX idx_artifacts_time ON artifacts(updated_at DESC);
+CREATE INDEX idx_artifacts_session_turn
+  ON artifacts(session_id, turn_id, updated_at);
 ```
 
-Upserted by host-core in the same transaction as the `tool_execute` audit row
-whenever Write/Edit (or a plugin tool declaring file effects) succeeds —
-repeat edits update `op`/`updated_at`, keeping one row per file per session.
-Writes into the session scratch directory (D114) are excluded: artifacts list
-workspace deliverables only.
+Rows are facts, not a per-file cache: a file changed in three turns has three
+rows, so all three stay attributable and no touch is hidden by deduplication.
+host-core inserts one row per recorded touch when Write/Edit (or a tool
+declaring its file effect) succeeds — `create` when the path did not exist
+before the call, `write` / `edit` otherwise, `delete` when the call removed
+it, `download` for a downloaded or generated artifact. The vocabulary lives in
+the typed write path (`artifacts.rs`), not in a SQL `CHECK`, so a row a build
+with a wider vocabulary wrote still reads back verbatim. `turn_id` is part of
+the exposed shape and `artifacts.list { sessionId, turnId }` is the per-turn
+read. Writes into the session scratch directory (D114) are excluded: artifacts
+list workspace deliverables only.
 
 ### 4.11 scheduled_tasks + task_runs — automations
 
@@ -1006,12 +1041,25 @@ CREATE TABLE audit_log (
   ts           INTEGER NOT NULL,
   kind         TEXT NOT NULL,              -- tool_execute | tool_denied | …
   session_id   TEXT,
-  payload_json TEXT NOT NULL DEFAULT '{}'
+  payload_json TEXT NOT NULL DEFAULT '{}',
+  turn_id      TEXT                        -- the turn the record belongs to (v21)
 );
 CREATE INDEX idx_audit_ts ON audit_log(ts);
 CREATE INDEX idx_audit_session ON audit_log(session_id, ts)
   WHERE session_id IS NOT NULL;
+CREATE INDEX idx_audit_turn ON audit_log(turn_id, ts)
+  WHERE turn_id IS NOT NULL;
 ```
+
+`turn_id` (schema v21, ADR 0295 rule 8) is the turn a record belongs to, so one
+turn's records are an indexed read instead of a scan of redacted payloads. The
+host writes it where it knows the turn: `tool_execute`, `tool_denied` and
+`tool_aborted` carry the turn the call was made in, and `turn.facts` counts
+executed calls by it (§4.16). It is NULL when a record is not about a turn and
+for every row written before v21 — the column is a fact, never a backfilled
+guess — so a per-turn read sees only rows the host actually attributed. The
+column is last because `ALTER TABLE` appends, which keeps a migrated file and a
+fresh one at the same shape.
 
 ### 4.14 notifications — durable local inbox (D117)
 
@@ -1057,6 +1105,117 @@ CREATE INDEX idx_notifications_unread
   read is one indexed update, and clear deletes notification rows only. None of
   these operations changes sessions, turns, or transcripts.
 
+### 4.15 plugin_rewrites — diff-level audit of plugin rewrites (schema v20)
+
+Every rewrite a runtime slot performs on what the model receives is recorded at
+**diff level** — which characters, which messages, which payload fields changed
+(ADR 0295 rule 5). Slot #1 (`runtime.send.before`, the outgoing message) is the
+producer that exists: the agent runtime's send hook hands the two texts to the
+host, `plugin.rewrites.record` stores the diff, and the transcript marks the row
+("rewritten by plugin X") with the changed span behind the expansion. Slot #6
+(`runtime.request.before`, system prompt / message list / request payload) was
+withdrawn before shipping (ADR 0295), so its `system_prompt`, `message_list`,
+and `request_payload` kinds are never written; the storage and the reads landed
+first because the ADR makes the audit a prerequisite of the rewrite capability
+rather than a follow-up.
+
+```sql
+CREATE TABLE plugin_rewrites (
+  id            INTEGER PRIMARY KEY,
+  session_id    TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+  turn_id       TEXT,                        -- null when the rewrite is outside a turn
+  plugin_id     TEXT NOT NULL,
+  kind          TEXT NOT NULL,               -- outgoing_message | system_prompt
+                                             -- | message_list | request_payload
+  truncated     INTEGER NOT NULL DEFAULT 0,  -- a cap clipped or dropped part of this record
+  dropped_edits INTEGER NOT NULL DEFAULT 0,  -- change entries the caps dropped
+  created_at    INTEGER NOT NULL,
+  diff_json     TEXT NOT NULL
+);
+CREATE INDEX idx_plugin_rewrites_session
+  ON plugin_rewrites(session_id, created_at, id);
+CREATE INDEX idx_plugin_rewrites_turn
+  ON plugin_rewrites(session_id, turn_id, created_at, id) WHERE turn_id IS NOT NULL;
+```
+
+`turn_id` has no foreign key, for the same reason `artifacts.turn_id` has none:
+slot #1 runs after send but before queueing, so a rewrite can be recorded before
+the `turns` row exists. `kind` carries no SQL `CHECK` either — the vocabulary is
+closed by the typed write path (`plugin_rewrites.rs`), so a row a build with a
+wider vocabulary wrote still reads back verbatim.
+
+`diff_json` is machine-readable and tagged by `kind`; a reader never has to parse
+prose to learn what changed:
+
+| kind | diff keys | what the record says |
+|---|---|---|
+| `outgoing_message` | `targetMessageId`, `characterEdits` | the changed span of the message the user sent |
+| `system_prompt` | `characterEdits` | the changed span of the system prompt |
+| `message_list` | `messageEdits` | per position `insert` / `replace` / `delete` / `reorder`, with the message ids and, for a reorder, `toIndex` |
+| `request_payload` | `fieldEdits`, `summary`, `body`, `bodyTruncated` | the dotted paths that differ, the exact payload sizes, and the capped payload the model received |
+
+A `characterEdits` entry locates a change by `start` / `end` — half-open Unicode
+scalar-value offsets into the original text — and carries the exact `beforeChars`
+/ `afterChars` counts plus the (possibly clipped) span. A `fieldEdits` path is
+dotted from the payload root (`$.messages.0.content`), and `request_payload`
+measures `summary.beforeBytes` / `summary.afterBytes` on the **full** objects, so
+the summary stays exact when the body is capped.
+
+Writes: `plugin.rewrites.record` is the one write RPC. It accepts the runtime's
+`extensions.rewrites.record` record (session, optional turn, plugin, the outgoing
+message id and both texts) and computes the character diff on the host side; a
+malformed payload is `INVALID_PARAMS` and an identifier past the cap is
+`LIMIT_EXCEEDED`, never a silent drop.
+
+Caps, stated here and enforced at the write boundary
+(`plugin_rewrites::record`); nothing else writes this table:
+
+| cap | value | behaviour at the boundary |
+|---|---|---|
+| change entries per record | 512 | entries that do not fit are dropped and counted in `dropped_edits` |
+| one text fragment (changed span, message id) | 2 KiB | clipped at a character boundary; `beforeChars` / `afterChars` stay exact |
+| request-payload body | 16 KiB | `bodyTruncated` set; `summary.afterBytes` still reports the full size |
+| stored `diff_json` | 64 KiB | hard ceiling — entries that do not fit are dropped, so one record cannot blow up the database |
+| session / turn / plugin identifier | 256 bytes | write rejected (`LIMIT_EXCEEDED`) instead of storing a record nobody can attribute |
+
+None of it is silent: `truncated` says a cap touched the record and
+`dropped_edits` says how many entries are missing, so a capped record is never
+mistaken for a full one.
+
+Reads: one turn's records oldest first — the order the rewrites happened in the
+turn, which is what the slot #1 rewrite surface reads — and one session's newest
+first. Both order by `created_at` with `id` as the deterministic tiebreak, both
+accept an optional kind filter, and both clamp the limit to 500.
+
+### 4.16 turn facts — one turn's authoritative numbers (slot #9)
+
+`turn.facts` answers "what happened in this turn" from host-owned tables only
+(ADR 0295 rule 8, slot #9 `runtime.turn.facts`); no number is reconstructed
+from plugin-observed events and no conversation text is involved. "This turn"
+means exactly one thing, because every source below is keyed by the turn's own
+id:
+
+| fact | source | what makes it authoritative |
+|---|---|---|
+| executed tool calls, outcomes, error codes | `audit_log` where `kind = 'tool_execute'` and `turn_id = ?` (via `idx_audit_turn`) | the audit row the host writes when a tool really ran, with its `ok` flag and `errorCode` |
+| model tokens, start/end, duration, status, provider/model, terminal error | `turns` (`input_tokens`, `output_tokens`, `started_at`, `ended_at`, `status`, `provider_id`, `model_id`, `error_code`) | the turn row the state machine owns |
+| provider usage record, plugin-tool spend | `turns.usage_json`, and its `pluginToolUsage` member | the record stored at `session.endTurn`, reported beside the model totals (slot 5) |
+| files touched, with their ops | `artifacts` where `turn_id = ?` (via `idx_artifacts_session_turn`) | one row per recorded touch (§4.10) |
+
+A call the host refused before running (`tool_denied` / `tool_aborted`) never
+executed and is not counted as a call the turn made; its own audit row still
+carries the turn, so the record is attributable without inflating the counts. A
+`tool_execute` row whose payload does not say `ok: true` counts as failed, which
+keeps `ok + failed = total` true for every row the table can hold. Per tool the
+answer carries `calls`, `ok`, `failed` and the distinct sorted `errorCodes` of
+that tool's failures, one entry per tool ordered by name.
+
+A turn that does not exist is an error, not an empty answer: zeroes are reserved
+for a turn that exists and really did nothing. `pluginToolUsage` and `usage` are
+`null` when the turn recorded none, `endedAt` / `durationMs` are `null` while the
+turn is still running, and `filesTruncated` marks a file list the caller's limit
+capped — the read probes with one row more than the limit so that flag is exact
+rather than a guess.
 ### Dropped from v1
 
 | v1 table | v2 home |
@@ -1080,7 +1239,8 @@ is the source of truth, the index is derived and self-healing.
 | assistant/tool message end | append message line; remove the in-flight checkpoint when its id matches | index row + touch session |
 | streaming reply checkpoint (`session.saveInflightMessage`, D299) | atomically replace `<id>.inflight.json`; no-op for an empty message or an id already indexed | — |
 | context checkpoint (`session.appendCompaction`) | append typed checkpoint line after its referenced message boundary | — (checkpoint is not searchable transcript content) |
-| tool succeeded (Write/Edit) | — | upsert `artifacts` + `audit_log` row, same tx as result persistence |
+| tool succeeded (Write/Edit) | — | insert one `artifacts` touch row per changed file + the `tool_execute` `audit_log` row, both stamped with the turn the call ran in |
+| tool refused or aborted (`tools.execute`) | — | the `tool_denied` / `tool_aborted` `audit_log` row, stamped with the turn the call was made in |
 | turn terminal via `session.endTurn` | `completed`/`error`: remove the in-flight checkpoint only when its id is already indexed; otherwise leave it for the outbox or boot (D327). `recoverInflight`: append the leftover as `complete` when the turn is `completed`, otherwise as `aborted`, when its final row never landed | update `turns`; for completed/error insert one notification and prune to 200 in the same tx; aborted inserts none; a promoted checkpoint gets an index row under the turn |
 | plan/goal submission | host writes the exact Markdown bytes to a new unique `<workspaceRoot>/.pi/<kind>/*.md` file | insert one `plan_approvals(pending)` row with the kind, structured title/question, artifact path/hash/size, and expiry before emitting the approval request |
 | plan/goal approval | verify the immutable artifact path/hash/size | atomically resolve `plan_approvals`, update `sessions.mode` and explicit `permission_mode`, and set `execution_state = 'queued'`; reject/expiry stay in the contract mode |
@@ -1187,7 +1347,12 @@ truncating at a guessed position.
   - group-by-project → `idx_sessions_project`
   - badges/cost rollup → `idx_turns_session` (latest turn per session)
   - global token history → `idx_turns_ended_at` (completed turns by end time)
-  - artifacts by session → PK; global recent artifacts → `idx_artifacts_time`
+  - artifacts of one session or one turn → `idx_artifacts_session_turn`; global
+    recent artifacts → `idx_artifacts_time`
+  - plugin rewrites of one session or one turn → `idx_plugin_rewrites_session` /
+    `idx_plugin_rewrites_turn`
+  - one turn's facts → the `turns` primary key for the turn row, `idx_audit_turn`
+    for its tool calls, and `idx_artifacts_session_turn` for its file touches
   - run history → `idx_task_runs`
   - audit forensics/pruning → `idx_audit_session` / `idx_audit_ts`
   - notification inbox → `idx_notifications_created`; unread filter/count →
@@ -1263,6 +1428,34 @@ truncating at a guessed position.
   step. The v15→v16 session-collaboration step now stamps `16` (its own version)
   instead of the latest schema constant, so a v15 file can walk both steps in one
   launch.
+- **Schema v19 rebuilds `artifacts` as one row per recorded touch.** The
+  `(session_id, path)` primary key is dropped and the surrogate `id` plus the
+  `idx_artifacts_session_turn` index are added, so `turn_id` can attribute a
+  file to every turn that changed it and `artifacts.list { sessionId, turnId }`
+  answers "this turn" directly (ADR 0295 rule 8). Every existing row is carried
+  over with its `path`, `op`, `turn_id`, and `updated_at` intact — the old
+  shape could hold only one row per file, so nothing merges — and `op` stays
+  unconstrained in SQL, which is why no stored value has to be rewritten. A
+  `pi.sqlite.v18.bak` copy precedes the step.
+- **Schema v20 is additive.** It adds `plugin_rewrites`, the diff-level audit of
+  what a plugin changed in what the model receives, with its two read indexes
+  (ADR 0295 rule 5). No existing row changes and no stored value is rewritten;
+  the table starts empty because the audit surface lands ahead of the capability
+  that depends on it: slot #1 (`runtime.send.before`) is the one producer that
+  writes this table, and slot #6 (`runtime.request.before`) was withdrawn before
+  shipping, so its kinds are never written. A `pi.sqlite.v19.bak` copy precedes
+  the step.
+- **Schema v21 is additive.** It adds the nullable `audit_log.turn_id` column and
+  its partial index `idx_audit_turn`, so one turn's records — and with them
+  `turn.facts` (§4.16, ADR 0295 rule 8) — are an indexed read rather than a scan
+  of redacted payloads. Every existing row keeps its content and carries a NULL
+  turn: the column is a fact the host writes when it knows the turn, never a
+  backfilled guess, so a per-turn read sees only rows the host actually
+  attributed. The column is appended last, which is where `ALTER TABLE` puts it,
+  so a migrated file and a fresh one hold the same column order. The step probes
+  `pragma_table_info` before altering, so a file that already created
+  `audit_log` from the current DDL is not altered twice. A `pi.sqlite.v20.bak`
+  copy precedes the step.
 - **Schema v14 is additive.** It adds nullable `sessions.deleted_at`, the
   partial deletion index, and `session_import_origins`. Existing sessions stay
   active and have no origin rows. The migration runs in the same guarded
@@ -1299,6 +1492,9 @@ destructive migration or a second settings store.
   gone, file present) are preserved, not garbage-collected: the file is the
   source of truth and a future re-index can recover it.
 - logs rotate at the file layer (D082); sessions are never auto-deleted.
+- plugin_rewrites: kept with the session (rows cascade on delete) and not pruned
+  yet — a rewrite record is audit evidence, a global cap belongs to the audit
+  surface that reads it, and no producer writes rows in this build.
 - Attachment GC (later): sweep `attachments/` for hashes unreferenced by any
   transcript file.
 
@@ -1414,7 +1610,11 @@ line and search text, retaining sequence, owning turn and every other row.
 Late partial snapshots and duplicate terminal snapshots cannot overwrite the
 settled result. Recovery promotes the latest checkpoint in that same position.
 The outbox likewise keeps a newer snapshot that replaces an append while its
-host call is still pending. No schema migration is required.
+host call is still pending. If `messages.id` already belongs to another
+session, the host remaps to `{sessionId}:{id}` before any JSONL write; a
+replay of the original id is a no-op against that remapped row. The outbox
+treats `UNIQUE constraint failed: messages.id` as an ack and keeps draining
+(D444). No schema migration is required.
 
 ## 12. Native Pi session authority (ADR 0254)
 

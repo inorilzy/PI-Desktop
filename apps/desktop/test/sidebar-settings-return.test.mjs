@@ -53,7 +53,7 @@ test("home and settings use the same material without animating the settings pla
     assert.match(styles, new RegExp(`\\.${selector}\\s*\\{[^}]*background:\\s*var\\(--ds-bg-primary\\);`));
   }
   assert.doesNotMatch(styles, /\.settings-shell-full \.settings-nav\s*\{[^}]*background:/);
-  assert.match(styles, /\.route-surface,\s*\.settings-content-inner\s*\{[^}]*animation:\s*route-surface-in/);
+  assert.match(styles, /\.route-surface,\s*\.settings-content-enter\s*\{[^}]*animation:\s*route-surface-in/);
   assert.doesNotMatch(styles, /\.route-surface,\s*\.settings-shell-full\s*\{/);
   assert.match(styles, /--ds-bg-sidebar:\s*var\(--ds-settings-rail-bg, var\(--ds-bg-under\)\)/);
   assert.match(styles, /--ds-bg-sidebar:\s*var\(--ds-settings-rail-bg, #f3f3f3\)/);

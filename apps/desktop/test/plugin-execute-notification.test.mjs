@@ -125,6 +125,11 @@ function fixture({ activeTurn } = {}) {
           },
         },
       ],
+      // Slot 5: the real runtime reads the plugin's recorded grants here and
+      // drops the kernel fields a plugin may not attach. This fake plugin
+      // holds none of them and returns no slot fields, so the gate is a
+      // passthrough and the payload wiring stays the subject of the test.
+      extendToolResult: (_pluginId, result) => result,
       drainToasts: () => [],
     },
     userMcp: { callTool: async () => null },

@@ -91,7 +91,22 @@ export type StartTurnParams = {
   sessionId: string;
   idempotencyKey?: string;
   admission?: RacpTurnAdmission;
-  input: { text: string; attachments?: AgentPromptAttachment[]; sessionMessageId?: string };
+  input: {
+    text: string;
+    attachments?: AgentPromptAttachment[];
+    sessionMessageId?: string;
+    /** Client-chosen id for the durable user row (D288). */
+    userMessageId?: string;
+    /**
+     * Provenance of a continuation a plugin asked for (ADR 0293 / ADR 0295
+     * rule 9, slot #10): the plugin id and the display name as of the request.
+     * It rides the whole path to the durable user row so the row can name the
+     * plugin; it is deliberately not part of the input hash, because the same
+     * prompt is the same prompt whoever asked for it.
+     */
+    pluginId?: string;
+    pluginLabel?: string;
+  };
   context: RacpRequestContext;
 };
 
@@ -470,9 +485,12 @@ export class AgentHost {
         principalSubject: principal.subject,
         content: params.input.text,
         ...(params.input.sessionMessageId ? { sessionMessageId: params.input.sessionMessageId } : {}),
+        ...(params.input.userMessageId ? { userMessageId: params.input.userMessageId } : {}),
         ...(params.input.attachments ? { attachments: params.input.attachments } : {}),
         effectivePermissionMode,
         ...(idempotencyKey ? { idempotencyKey } : {}),
+        ...(params.input.pluginId ? { pluginId: params.input.pluginId } : {}),
+        ...(params.input.pluginLabel ? { pluginLabel: params.input.pluginLabel } : {}),
         inputHash,
         createdAt: this.clock.now(),
       };
@@ -491,9 +509,12 @@ export class AgentHost {
         sessionId: state.id,
         content: params.input.text,
         ...(params.input.sessionMessageId ? { sessionMessageId: params.input.sessionMessageId } : {}),
+        ...(params.input.userMessageId ? { userMessageId: params.input.userMessageId } : {}),
         ...(params.input.attachments ? { attachments: params.input.attachments } : {}),
         effectivePermissionMode,
         ...(idempotencyKey ? { idempotencyKey } : {}),
+        ...(params.input.pluginId ? { pluginId: params.input.pluginId } : {}),
+        ...(params.input.pluginLabel ? { pluginLabel: params.input.pluginLabel } : {}),
         principal,
       });
       turn = this.ensureTurn(state, started.turnId);
@@ -681,6 +702,13 @@ export class AgentHost {
     return this.approvals.list(sessionId);
   }
 
+  /** The RACP view of a session the caller already fetched: its durable summary plus live state. */
+  describeSession(summary: SessionSummary): RacpSession {
+    const state = this.state(summary.id);
+    state.permissionMode = summary.permissionMode;
+    return this.toRacpSession(summary, state);
+  }
+
   queuedTurns(sessionId: string): RacpTurn[] {
     return this.queueEntries(sessionId).map((entry) => entry.turn);
   }
@@ -798,9 +826,15 @@ export class AgentHost {
             sessionId,
             content: record.content,
             ...(record.sessionMessageId ? { sessionMessageId: record.sessionMessageId } : {}),
+            ...(record.userMessageId ? { userMessageId: record.userMessageId } : {}),
             ...(record.attachments ? { attachments: record.attachments } : {}),
             effectivePermissionMode: record.effectivePermissionMode,
             ...(record.idempotencyKey ? { idempotencyKey: record.idempotencyKey } : {}),
+            // A queued continuation a plugin asked for keeps naming it when it
+            // drains: the provenance travels with the record into the durable
+            // user row (ADR 0293 / ADR 0295 rule 9).
+            ...(record.pluginId ? { pluginId: record.pluginId } : {}),
+            ...(record.pluginLabel ? { pluginLabel: record.pluginLabel } : {}),
             principal: { subject: record.principalSubject, roles: ["controller"] },
           });
           turn.runtimeTurnId = started.turnId;

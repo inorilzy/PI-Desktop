@@ -1,0 +1,161 @@
+<!-- status: draft · issue #561 · branch feat/528-plugin-slots -->
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>tool-gate · 需求</title>
+<style>
+  :root{
+    --bg:#0e0e0e; --surface:#161616; --line:#2a2a2a; --line-2:#353535;
+    --text:#ededed; --text-2:#b0b0b0; --muted:#7d7d7d; --faint:#5c5c5c;
+    --ok:#40c977; --ok-bg:rgba(64,201,119,.10);
+    --warn:#ff8549; --warn-bg:rgba(255,133,73,.10);
+    --ui:#c27aff; --ui-bg:rgba(194,122,255,.10);
+    --font:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;
+    --mono:ui-monospace,"SF Mono","Cascadia Code",Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0}
+  body{background:var(--bg);color:var(--text);font-family:var(--font);font-size:14px;line-height:1.65;-webkit-font-smoothing:antialiased}
+  .top{border-bottom:1px solid var(--line);padding:24px 28px 20px;background:linear-gradient(180deg,#141414,#0e0e0e)}
+  .top .crumb{font-family:var(--mono);font-size:11.5px;color:var(--faint);letter-spacing:.06em}
+  .top h1{margin:6px 0 6px;font-size:21px;letter-spacing:-.01em}
+  .top p{margin:0;color:var(--text-2);max-width:80ch}
+  .top .meta{margin-top:8px;color:var(--faint);font-size:12.5px}
+  code{font-family:var(--mono);font-size:12.5px;color:var(--text-2)}
+  main{max-width:920px;margin:0 auto;padding:24px 28px 80px}
+  section{margin:0 0 40px}
+  section > h2{display:flex;align-items:baseline;gap:8px;margin:0 0 10px;font-size:17px;border-top:1px solid var(--line);padding-top:14px}
+  section > h2 .tag{font-family:var(--mono);font-size:11px;padding:1px 6px;border-radius:4px}
+  .tag.verified{color:var(--ok);background:var(--ok-bg)}
+  .tag.proposal{color:var(--warn);background:var(--warn-bg)}
+  .tag.open{color:var(--ui);background:var(--ui-bg)}
+  h3{margin:22px 0 6px;font-size:14.5px;color:var(--text)}
+  p{margin:0 0 10px}
+  ul{margin:0 0 12px;padding-left:1.2em}
+  li{margin:3px 0}
+  table{width:100%;border-collapse:collapse;font-size:13.5px;margin:0 0 14px}
+  th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{color:var(--muted);font-weight:500;font-size:12px;letter-spacing:.03em;text-transform:uppercase}
+  td.id{font-family:var(--mono);font-size:12.5px;color:var(--text-2);white-space:nowrap}
+  .callout{margin:0 0 14px;padding:11px 13px;border-radius:9px;background:var(--surface);color:var(--text-2);font-size:13px}
+  .callout.verified{border-left:2px solid var(--ok)}
+  .callout.warn{border-left:2px solid var(--warn)}
+  .callout.open{border-left:2px solid var(--ui)}
+  .callout b{color:var(--text);font-weight:560}
+  .plan-nav{display:flex;flex-wrap:wrap;align-items:center;gap:4px;padding:10px 28px;background:#0c0c0c;border-bottom:1px solid var(--line);font-size:13px}
+  .plan-nav a{color:var(--text-2);text-decoration:none;padding:3px 8px;border-radius:6px}
+  .plan-nav a:hover{background:var(--surface);color:var(--text)}
+  .plan-nav a[aria-current="page"]{background:var(--surface);color:var(--text);box-shadow:inset 0 0 0 1px var(--line-2)}
+  .plan-nav .sep{color:var(--faint);padding:0 2px}
+  .plan-nav .spacer{flex:1}
+</style>
+</head>
+<body>
+
+<nav class="plan-nav">
+  <a href="../../index.html">插件插槽目录</a>
+  <span class="sep">/</span>
+  <a href="index.html">tool-gate</a>
+  <span class="spacer"></span>
+  <a href="index.html">目录</a>
+  <a href="requirements.html" aria-current="page">需求</a>
+  <a href="data-flow.html">数据流</a>
+</nav>
+
+<header class="top">
+  <div class="crumb">docs/plugin-plan · runtime/tool-gate</div>
+  <h1>tool-gate · 需求</h1>
+  <p>工具调用前后的守门位：拦得下、改得了结果、改不了参数。#561 里安全类插件（审计、防误删、合规）的主战场。</p>
+  <div class="meta">status: draft · issue #561 · 槽 <code>runtime.tool.gate</code> · 预算 30s</div>
+</header>
+
+<main>
+<section>
+  <h2>范围 <span class="tag verified">已核实</span></h2>
+  <ul>
+    <li>每次<b>宿主 / 模型发起的工具调用</b>的前后两个时刻。</li>
+    <li>不谈：改参数（永久排除）、插件自己工具的结果增强（那是 tool-extend）、轮中途观察流（turn-watch）。</li>
+  </ul>
+</section>
+
+<section>
+  <h2>现状（代码核实） <span class="tag verified">已核实</span></h2>
+  <ul>
+    <li><b>已接进内核循环</b>：<code>beforeToolCall</code> → <code>extensionToolCall</code>（<code>runtime.ts:2069, 2263-2277</code>），<code>afterToolCall</code> → <code>extensionToolResult</code>（<code>runtime.ts:2058, 2285-2314</code>）；事件映射 <code>runtime.tool.gate</code>（<code>trusted-extensions.ts:171-173</code>）。</li>
+    <li><b>结果性预算</b>：30 秒，超时 = 无意见 + <code>handler_timeout</code>（<code>trusted-extensions.ts:152</code>, <code>runner.ts:716-718</code>）。</li>
+    <li><b>「改参数不做」属实且永久</b>：内核 <code>BeforeToolCallResult</code> 类型根本没有 args 字段（<code>pi-agent-core/dist/types.d.ts:40-48</code>）；ADR 0295 规则 4 连「包一层再改」的绕路也一并排除（<code>0295:105-123</code>）。</li>
+    <li><b>折叠规则</b>：拦截第一个 block 赢（<code>runtime.ts:2274</code>）；结果覆盖按字段合并（<code>runtime.ts:2302-2313</code>）。</li>
+    <li><b>沙箱缺口</b>：ADR 0292 broker 未建。</li>
+  </ul>
+</section>
+
+<section>
+  <h2>契约（建议，待拍板） <span class="tag proposal">建议</span></h2>
+  <h3>执行前：tool_call</h3>
+  <table>
+    <thead><tr><th>方面</th><th>内容</th></tr></thead>
+    <tbody>
+      <tr><td class="id">拿到</td><td><code>{ toolName, toolCallId, input }</code>——校验过的参数</td></tr>
+      <tr><td class="id">可返回</td><td><code>{ block: true, reason }</code> 拦下（reason 给模型看）；<code>terminate?</code> 顺带结束轮；不返回 = 放行</td></tr>
+      <tr><td class="id">不能</td><td>改 <code>input</code>——类型层面无此字段</td></tr>
+    </tbody>
+  </table>
+  <h3>执行后：tool_result</h3>
+  <table>
+    <thead><tr><th>方面</th><th>内容</th></tr></thead>
+    <tbody>
+      <tr><td class="id">拿到</td><td><code>{ toolName, toolCallId, input, content, details, usage, isError, … }</code></td></tr>
+      <tr><td class="id">可返回</td><td>字段级覆盖：<code>{ content?, details?, isError?, usage?, terminate? }</code>——只覆盖给的字段，其余原样</td></tr>
+      <tr><td class="id">不能</td><td>改 <code>input</code>、把错误伪造成成功以外的语义混淆</td></tr>
+    </tbody>
+  </table>
+  <div class="callout warn"><b>慢确认是插件的 UI 义务。</b>想「执行前问一下用户」：自己画界面（自理弹窗），决定后经 <code>runtime.turn.continue</code> 两段式处理——不许在 gate 里干等超过 30 秒（ADR 0295 规则 6）。</div>
+</section>
+
+<section>
+  <h2>插件场景（建议） <span class="tag proposal">建议</span></h2>
+  <table>
+    <thead><tr><th>#</th><th>场景</th></tr></thead>
+    <tbody>
+      <tr><td>1</td><td>防误删：执行前看 <code>input</code>，<code>rm -rf</code> 级别命令弹自己的确认，拒绝则 block + reason</td></tr>
+      <tr><td>2</td><td>合规审计：记录每次工具调用与结果（result 事件里全量可见）</td></tr>
+      <tr><td>3</td><td>结果净化：把结果里的密钥打码后覆盖 content</td></tr>
+      <tr><td>4</td><td>失败重试包装：isError 时覆盖 content 附加诊断建议</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<section>
+  <h2>本轮拍板 <span class="tag open">待定</span></h2>
+  <table>
+    <thead><tr><th>问题</th><th>选项</th></tr></thead>
+    <tbody>
+      <tr><td>慢确认的 UI 义务</td><td>A. 插件自理弹窗 + 两段式（ADR 0295 规则 6 现状）　B. 宿主提供「等待插件决定」的标准确认卡位</td></tr>
+      <tr><td>terminate 的可见性</td><td>A. 插件可设置 terminate（现状字段）　B. 收回该字段，只留宿主</td></tr>
+      <tr><td>veto 风暴</td><td>A. 维持「每条决定可诊断」不加限　B. 连续 block 超阈值自动禁用该插件 gate</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<section>
+  <h2>还没定的事 <span class="tag open">未定</span></h2>
+  <ul>
+    <li>上面三条。</li>
+  </ul>
+</section>
+
+<section>
+  <h2>明确不做 <span class="tag verified">已核实</span></h2>
+  <ul>
+    <li><b>不改参数</b>——永久排除，含包装绕路（ADR 0295 规则 4）。</li>
+    <li>不无限等待——30 秒封顶，超时无意见。</li>
+    <li>不静默拦截——block 必须带 reason，每条决定可诊断。</li>
+    <li>不 gate 别家插件工具的结果增强——那是 tool-extend 的地盘，归属不同。</li>
+  </ul>
+</section>
+
+</main>
+</body>
+</html>

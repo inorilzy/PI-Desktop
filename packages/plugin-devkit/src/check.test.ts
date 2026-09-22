@@ -1,6 +1,6 @@
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { check, HIGH_RISK_PERMISSIONS } from "./check.js";
 import { scaffold } from "./templates.js";
@@ -27,6 +27,40 @@ async function editManifest(
   const manifest = JSON.parse(await readFile(path, "utf8"));
   mutate(manifest);
   await writeFile(path, JSON.stringify(manifest, null, 2), "utf8");
+}
+
+/**
+ * A renderer plugin with exactly the manifest and sources a test needs. The
+ * base manifest carries the permission `manifest.renderer` requires; each test
+ * overwrites whatever else it is about.
+ */
+async function writeRendererPlugin(
+  dir: string,
+  manifest: Record<string, unknown>,
+  files: Record<string, string>,
+): Promise<void> {
+  await mkdir(dir, { recursive: true });
+  await writeFile(
+    join(dir, "manifest.json"),
+    JSON.stringify(
+      {
+        schemaVersion: 1,
+        id: "local.renderer-check",
+        name: "Renderer Check",
+        version: "0.1.0",
+        permissions: ["renderer.extension"],
+        ...manifest,
+      },
+      null,
+      2,
+    ),
+    "utf8",
+  );
+  for (const [relative, content] of Object.entries(files)) {
+    const target = join(dir, relative);
+    await mkdir(dirname(target), { recursive: true });
+    await writeFile(target, content, "utf8");
+  }
 }
 
 describe("check", () => {
@@ -145,5 +179,90 @@ describe("check", () => {
       .map((w) => w.message);
     expect(called.some((m) => m.includes('"audio.capture.background"'))).toBe(false);
     expect(called.some((m) => m.includes('"net.websocket"'))).toBe(true);
+  });
+
+  it("accepts renderer actions that are declared and quoted in a source", async () => {
+    const dir = join(await tempDir(), "renderer-declared");
+    await writeRendererPlugin(
+      dir,
+      { renderer: "renderer/index.mjs", rendererActions: ["ui.toast", "plugin.call"] },
+      {
+        "renderer/index.mjs":
+          'import { forward } from "./slots.mjs";\n\nexport function onLoad(pi) {\n  pi.slots.register("modal", () => pi.dispatch("ui.toast", {}));\n  forward();\n}\n',
+        "renderer/slots.mjs": "export const forward = () => dispatch('plugin.call', {});\n",
+      },
+    );
+
+    const result = await check(dir);
+    expect(result.ok).toBe(true);
+    expect(result.warnings.filter((w) => w.code.startsWith("renderer-action."))).toEqual([]);
+  });
+
+  it("reports a renderer action the sources quote but the manifest does not declare", async () => {
+    const dir = join(await tempDir(), "renderer-undeclared");
+    await writeRendererPlugin(
+      dir,
+      { renderer: "renderer/index.ts", rendererActions: ["ui.toast"] },
+      { "renderer/index.ts": "export const ask = () => dispatch(`ui.openModal`, {});\n" },
+    );
+
+    const result = await check(dir);
+    const undeclared = result.warnings.filter((w) => w.code === "renderer-action.undeclared");
+    expect(undeclared).toHaveLength(1);
+    expect(undeclared[0]?.message).toContain('"ui.openModal"');
+    expect(undeclared[0]?.message).toContain("renderer/index.ts");
+    // The declared action is never quoted, which is the other direction.
+    expect(result.warnings.filter((w) => w.code === "renderer-action.unused")).toHaveLength(1);
+  });
+
+  it("reports a declared renderer action no scanned source quotes", async () => {
+    const dir = join(await tempDir(), "renderer-unused");
+    await writeRendererPlugin(
+      dir,
+      {
+        renderer: "renderer/index.mjs",
+        rendererActions: ["ui.toast", "composer.insertText"],
+      },
+      { "renderer/index.mjs": 'export const ping = () => dispatch("ui.toast", {});\n' },
+    );
+
+    const result = await check(dir);
+    const unused = result.warnings.filter((w) => w.code === "renderer-action.unused");
+    expect(unused).toHaveLength(1);
+    expect(unused[0]?.message).toContain('"composer.insertText"');
+    expect(result.warnings.filter((w) => w.code === "renderer-action.undeclared")).toEqual([]);
+  });
+
+  it("matches quoted literals only, so an identifier or a longer name is not a hit", async () => {
+    const dir = join(await tempDir(), "renderer-literals");
+    await writeRendererPlugin(
+      dir,
+      { renderer: "renderer/index.mjs", rendererActions: ["ui.openModal"] },
+      {
+        "renderer/index.mjs": [
+          "export const ask = (name) => {",
+          "  dispatch(ui.toast);",
+          '  return name === "ui.toastLater" || dispatch("ui.openOverlayish", {});',
+          "};",
+          "",
+        ].join("\n"),
+      },
+    );
+
+    const result = await check(dir);
+    expect(result.warnings.filter((w) => w.code === "renderer-action.undeclared")).toEqual([]);
+    expect(result.warnings.filter((w) => w.code === "renderer-action.unused")).toHaveLength(1);
+  });
+
+  it("stays quiet when the plugin ships no renderer sources", async () => {
+    const dir = join(await tempDir(), "renderer-absent");
+    await scaffold({ dir, template: "panel-basic" });
+    await editManifest(dir, (m) => {
+      m.rendererActions = ["ui.toast"];
+    });
+
+    const result = await check(dir);
+    expect(result.ok).toBe(true);
+    expect(result.warnings.filter((w) => w.code.startsWith("renderer-action."))).toEqual([]);
   });
 });

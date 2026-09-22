@@ -1,0 +1,276 @@
+<!-- status: draft · issue #528 / #545 / #561 -->
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>插件插槽目录 · 总表</title>
+<style>
+  :root{
+    --bg:#0e0e0e; --surface:#161616; --surface-2:#1c1c1c; --line:#2a2a2a; --line-2:#353535;
+    --text:#ededed; --text-2:#b0b0b0; --muted:#7d7d7d; --faint:#5c5c5c;
+    --ui:#c27aff; --ui-bg:rgba(194,122,255,.10);
+    --rt:#4c8dff; --rt-bg:rgba(76,141,255,.10);
+    --api:#40c977; --api-bg:rgba(64,201,119,.10);
+    --warn:#ff8549; --warn-bg:rgba(255,133,73,.10);
+    --font:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;
+    --mono:ui-monospace,"SF Mono","Cascadia Code",Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0}
+  body{background:var(--bg);color:var(--text);font-family:var(--font);font-size:14px;line-height:1.6;-webkit-font-smoothing:antialiased}
+  a{color:inherit}
+  .top{border-bottom:1px solid var(--line);padding:26px 28px 20px;background:linear-gradient(180deg,#141414,#0e0e0e)}
+  .top h1{margin:0 0 6px;font-size:21px;letter-spacing:-.01em}
+  .top p{margin:0;color:var(--text-2);max-width:76ch}
+  .top .meta{margin-top:8px;color:var(--faint);font-size:12.5px}
+  .top code,td code{font-family:var(--mono);font-size:12px;color:var(--text-2)}
+  main{max-width:1080px;margin:0 auto;padding:26px 28px 80px}
+  section{margin:0 0 44px}
+  section > h2{display:flex;align-items:baseline;gap:10px;margin:0 0 4px;font-size:16.5px}
+  section > h2 .n{font-family:var(--mono);font-size:11.5px;color:var(--muted);border:1px solid var(--line-2);border-radius:4px;padding:1px 6px}
+  section > .lead{margin:0 0 16px;color:var(--text-2);max-width:82ch}
+  table{width:100%;border-collapse:collapse;font-size:13.5px}
+  th,td{text-align:left;padding:9px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{color:var(--muted);font-weight:500;font-size:12px;letter-spacing:.03em;text-transform:uppercase}
+  td.id{font-family:var(--mono);font-size:12.5px;color:var(--text-2);white-space:nowrap}
+  tr.open td{background:var(--surface)}
+  .pill{display:inline-block;padding:1px 7px;border-radius:99px;font-size:11px;font-family:var(--mono);white-space:nowrap}
+  .pill.ui{color:var(--ui);background:var(--ui-bg)}
+  .pill.rt{color:var(--rt);background:var(--rt-bg)}
+  .pill.api{color:var(--api);background:var(--api-bg)}
+  .pill.draft{color:var(--warn);background:var(--warn-bg)}
+  .pill.none{color:var(--faint);background:rgba(255,255,255,.04)}
+  .pill.has{color:var(--api);background:var(--api-bg)}
+  td a{color:var(--text);text-decoration:none;border-bottom:1px solid var(--line-2)}
+  td a:hover{border-bottom-color:var(--ui)}
+  .note{margin:16px 0 0;padding:12px 14px;border-radius:10px;background:var(--surface);color:var(--text-2);font-size:13px}
+  .note b{color:var(--text);font-weight:560}
+  .legend{display:flex;flex-wrap:wrap;gap:8px 16px;margin:0 0 16px;font-size:12.5px;color:var(--muted)}
+
+  /* 顶部导航：目录之间互相跳转 */
+  .plan-nav{display:flex;flex-wrap:wrap;align-items:center;gap:4px;padding:10px 28px;background:#0c0c0c;border-bottom:1px solid var(--line);font-size:13px}
+  .plan-nav a{color:var(--text-2);text-decoration:none;padding:3px 8px;border-radius:6px}
+  .plan-nav a:hover{background:var(--surface);color:var(--text)}
+  .plan-nav a[aria-current="page"]{background:var(--surface);color:var(--text);box-shadow:inset 0 0 0 1px var(--line-2)}
+  .plan-nav .sep{color:var(--faint);padding:0 2px}
+  .plan-nav .spacer{flex:1}
+</style>
+</head>
+<body>
+
+<nav class="plan-nav">
+  <a href="index.html" aria-current="page">插件插槽目录</a>
+  <span class="sep">·</span>
+  <span style="color:var(--muted);font-size:12.5px">已开：</span>
+  <a href="ui/user-message/index.html">用户消息卡</a>
+  <a href="ui/tool-card/index.html">工具调用卡</a>
+  <a href="ui/block-renderer/index.html">块渲染器</a>
+  <a href="ui/layers/index.html">提示与浮层</a>
+  <a href="ui/self-dialog/index.html">弹窗与悬浮层</a>
+  <a href="ui/composer/index.html">输入区</a>
+</nav>
+
+<header class="top">
+  <h1>插件插槽目录</h1>
+  <p>每个 UI 插槽、每个插件可用的运行时钩子、每个核心方法各占一个文件夹。文件夹里固定三份页面：需求、演示、数据流。规则见 <code>AGENTS.md</code>。</p>
+  <div class="meta">状态：<b>draft</b> —— 只有 <code>ui/user-message</code> 已开。issue #528（宿主）· #545（UI 插槽）· #561（运行时钩子）</div>
+</header>
+
+<main>
+
+  <div class="legend">
+    <span><span class="pill ui">ui</span> 界面位置</span>
+    <span><span class="pill rt">runtime</span> 运行时钩子</span>
+    <span><span class="pill api">api</span> 核心方法（非插槽）</span>
+    <span><span class="pill has">已开</span> / <span class="pill none">未开</span> / <span class="pill draft">draft</span></span>
+  </div>
+
+  <section>
+    <h2><span class="n">#545</span> 内容区</h2>
+    <p class="lead">对话流里能被插件接管的位置。</p>
+    <table>
+      <thead><tr><th>id</th><th>插槽</th><th>形态</th><th>文件夹</th><th>状态</th></tr></thead>
+      <tbody>
+        <tr class="open">
+          <td class="id">user-message</td>
+          <td>用户消息卡<br /><span style="color:var(--muted);font-size:12.5px">消息气泡整体 + 操作栏，可加可去</span></td>
+          <td><span class="pill ui">组件</span></td>
+          <td><a href="ui/user-message/index.html">ui/user-message/</a></td>
+          <td><span class="pill draft">draft</span></td>
+        </tr>
+        <tr class="open">
+          <td class="id">tool-card</td>
+          <td>工具调用卡<br /><span style="color:var(--muted);font-size:12.5px">按工具名认领，固定数据格式 + 默认卡；本期只做展示</span></td>
+          <td><span class="pill ui">组件</span></td>
+          <td><a href="ui/tool-card/index.html">ui/tool-card/</a></td>
+          <td><span class="pill draft">draft</span></td>
+        </tr>
+        <tr class="open">
+          <td class="id">block-renderer</td>
+          <td>块渲染器<br /><span style="color:var(--muted);font-size:12.5px">按代码块语言标签认领，接管 AI 回复里 fenced code block 的渲染</span></td>
+          <td><span class="pill ui">组件</span></td>
+          <td><a href="ui/block-renderer/index.html">ui/block-renderer/</a></td>
+          <td><span class="pill draft">draft</span></td>
+        </tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2><span class="n">#545</span> 输入区</h2>
+    <table>
+      <thead><tr><th>id</th><th>插槽</th><th>形态</th><th>文件夹</th><th>状态</th></tr></thead>
+      <tbody>
+        <tr class="open">
+          <td class="id">composer</td>
+          <td>输入区<br /><span style="color:var(--muted);font-size:12.5px">composer.left / composer.middle / composer.trigger / composer.content，三个方法归 api/（readDraft / writeDraft / attachments 各一权限，附件含加·列·移）；固定件：附件 · 模式 · 权限 · 模型 · 发送；中槽默认项（上下文用量）交给插件处置：可隐藏 / 替换 / 重排，插件之间按声明顺序；记号由插件给 label 与 send 两份数据</span></td>
+          <td><span class="pill ui">组件 + 方法</span></td>
+          <td><a href="ui/composer/index.html">ui/composer/</a></td>
+          <td><span class="pill draft">draft</span></td>
+        </tr>
+      </tbody>
+    </table>
+    <p class="note" style="margin:10px 0 0">原 #545 输入区五条（composer-controls / composer-reference / completion-source / attachment-source / draft-rewrite）合并进 <code>ui/composer/</code> 一个文件夹，按新边界重新划分。</p>
+  </section>
+
+  <section>
+    <h2><span class="n">#545</span> 提示与浮层</h2>
+    <table>
+      <thead><tr><th>id</th><th>能力</th><th>形态</th><th>文件夹</th><th>状态</th></tr></thead>
+      <tbody>
+        <tr class="open">
+          <td class="id">ui.confirm</td>
+          <td>确认卡<br /><span style="color:var(--muted);font-size:12.5px">固定卡壳（输入框上方同宽横栏）+ 配置化按钮；内容只传参（固定字段文案，不做内容组件、不让自绘），点击回调；不提供接管宿主权限审批卡；属于 renderer 档</span></td>
+          <td><span class="pill api">api · 渲染进程</span></td>
+          <td><a href="ui/layers/index.html">ui/layers/</a></td>
+          <td><span class="pill draft">draft</span></td>
+        </tr>
+        <tr class="open">
+          <td class="id">self-dialog</td>
+          <td>弹窗 / 悬浮层 · 插件自理<br /><span style="color:var(--muted);font-size:12.5px">插件在自己的组件里 position:fixed 自画；无槽、无注册、无抢注；四条底线 + 官方工具类（pi-dlg / pi-notice）+ 主题 token 说明；Esc 不关、关闭只走 ✕、仅悬浮层可拖动</span></td>
+          <td><span class="pill ui">指导</span></td>
+          <td><a href="ui/self-dialog/index.html">ui/self-dialog/</a></td>
+          <td><span class="pill draft">draft</span></td>
+        </tr>
+      </tbody>
+    </table>
+    <p class="note" style="margin:10px 0 0">原 inline-confirm / modal / global-overlay 三条拆为两个文件夹：<code>ui/layers/</code> 收 <code>ui.confirm()</code> 固定格式确认卡（inline-confirm 的接管语义取消，宿主审批卡不可认领）；<code>ui/self-dialog/</code> 收弹窗 / 悬浮层的插件自理（现有注册制槽位与 <code>ui.openModal</code> 等四个动作在重设计中移除，实现批次处理）。</p>
+  </section>
+
+  <section>
+    <h2><span class="n">#545</span> 全局</h2>
+    <table>
+      <thead><tr><th>id</th><th>能力</th><th>形态</th><th>文件夹</th><th>状态</th></tr></thead>
+      <tbody>
+        <tr><td class="id">message-i18n</td><td>文案多语种</td><td><span class="pill api">非 UI</span></td><td><span class="pill none">未开</span></td><td></td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2><span class="n">#561</span> 运行时钩子</h2>
+    <p class="lead">2026-09-22 按代码核实修正：多数钩子在 agent 侧已实现（ADR 0295），沙箱插件进程接不到的真实缺口是 ADR 0292 的 broker 通道。现状列以代码为准。</p>
+    <table>
+      <thead><tr><th>id</th><th>时机</th><th>现状（已核实）</th><th>文件夹</th><th>状态</th></tr></thead>
+      <tbody>
+        <tr class="open">
+          <td class="id">before-send</td>
+          <td>发送后、入队前</td>
+          <td><span style="color:var(--muted);font-size:12.5px">已 emit（三动作 · 改写留审计）</span></td>
+          <td><a href="runtime/before-send/index.html">runtime/before-send/</a></td>
+          <td><span class="pill draft">draft</span></td>
+        </tr>
+        <tr class="open">
+          <td class="id">turn-watch</td>
+          <td>本轮进行中</td>
+          <td><span style="color:var(--muted);font-size:12.5px">已开放（medium · 11 事件只读）</span></td>
+          <td><a href="runtime/turn-watch/index.html">runtime/turn-watch/</a></td>
+          <td><span class="pill draft">draft</span></td>
+        </tr>
+        <tr class="open">
+          <td class="id">abort-turn</td>
+          <td>中止本轮</td>
+          <td><span style="color:var(--muted);font-size:12.5px">已实现（API · high）</span></td>
+          <td><a href="runtime/abort-turn/index.html">runtime/abort-turn/</a></td>
+          <td><span class="pill draft">draft</span></td>
+        </tr>
+        <tr class="open">
+          <td class="id">tool-gate</td>
+          <td>工具调用前 / 后</td>
+          <td><span style="color:var(--muted);font-size:12.5px">已接进循环（30s 预算 · 改参数永久不做）</span></td>
+          <td><a href="runtime/tool-gate/index.html">runtime/tool-gate/</a></td>
+          <td><span class="pill draft">draft</span></td>
+        </tr>
+        <tr class="open">
+          <td class="id">tool-extend</td>
+          <td>插件工具的结果增强</td>
+          <td><span style="color:var(--muted);font-size:12.5px">内核字段在 + 双端门控</span></td>
+          <td><a href="runtime/tool-extend/index.html">runtime/tool-extend/</a></td>
+          <td><span class="pill draft">draft</span></td>
+        </tr>
+        <tr class="open">
+          <td class="id">before-request</td>
+          <td>每次发模型前</td>
+          <td><span style="color:var(--muted);font-size:12.5px">已撤回（重开需审计 + 预算前置）</span></td>
+          <td><a href="runtime/before-request/index.html">runtime/before-request/</a></td>
+          <td><span class="pill draft">draft</span></td>
+        </tr>
+        <tr class="open">
+          <td class="id">turn-closing</td>
+          <td>本轮即将结束 ⭐</td>
+          <td><span style="color:var(--muted);font-size:12.5px">已 emit · 0 消费者 · 每运行续 4 轮封顶</span></td>
+          <td><a href="runtime/turn-closing/index.html">runtime/turn-closing/</a></td>
+          <td><span class="pill draft">draft</span></td>
+        </tr>
+        <tr class="open">
+          <td class="id">turn-recap</td>
+          <td>一轮结束后读本轮</td>
+          <td><span style="color:var(--muted);font-size:12.5px">已实现（turn=事实 / session=行 · 需 session.read）</span></td>
+          <td><a href="runtime/turn-recap/index.html">runtime/turn-recap/</a></td>
+          <td><span class="pill draft">draft</span></td>
+        </tr>
+        <tr class="open">
+          <td class="id">turn-facts</td>
+          <td>本轮事实查询</td>
+          <td><span style="color:var(--muted);font-size:12.5px">已实现（低风险）</span></td>
+          <td><a href="runtime/turn-facts/index.html">runtime/turn-facts/</a></td>
+          <td><span class="pill draft">draft</span></td>
+        </tr>
+        <tr class="open">
+          <td class="id">turn-continue</td>
+          <td>宿主续跑</td>
+          <td><span style="color:var(--muted);font-size:12.5px">已实现（署名可见 · 无配额）</span></td>
+          <td><a href="runtime/turn-continue/index.html">runtime/turn-continue/</a></td>
+          <td><span class="pill draft">draft</span></td>
+        </tr>
+        <tr class="open">
+          <td class="id">session-lifecycle</td>
+          <td>创建 / 切换 / fork / 压缩前</td>
+          <td><span style="color:var(--muted);font-size:12.5px">已接通（桌面供事件 · compact 在 sidecar · 仅压缩前可否决）</span></td>
+          <td><a href="runtime/session-lifecycle/index.html">runtime/session-lifecycle/</a></td>
+          <td><span class="pill draft">draft</span></td>
+        </tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2><span class="n">API</span> 核心方法</h2>
+    <p class="lead">不是插槽，但插件要用来把自己的界面接到宿主数据上。</p>
+    <table>
+      <thead><tr><th>id</th><th>方法</th><th>给谁用</th><th>文件夹</th><th>状态</th></tr></thead>
+      <tbody>
+        <tr><td class="id">open-attachment</td><td>打开一个附件（用宿主现有的方式）</td><td>插件自己画的附件要能点开</td><td><span class="pill none">未开</span></td><td><span class="pill draft">候选</span></td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <p class="note">
+    <b>怎么用这份表。</b> 只有链到文件夹的条目才有内容；其余是待开清单，不建空目录。
+    开一个新文件夹时，先把 <code>index.html</code> 里这一行的状态和链接补上，再写三份页面。
+  </p>
+
+</main>
+</body>
+</html>

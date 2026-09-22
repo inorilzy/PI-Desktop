@@ -1,0 +1,151 @@
+<!-- status: draft · issue #561 · branch feat/528-plugin-slots -->
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>turn-continue · 需求</title>
+<style>
+  :root{
+    --bg:#0e0e0e; --surface:#161616; --line:#2a2a2a; --line-2:#353535;
+    --text:#ededed; --text-2:#b0b0b0; --muted:#7d7d7d; --faint:#5c5c5c;
+    --ok:#40c977; --ok-bg:rgba(64,201,119,.10);
+    --warn:#ff8549; --warn-bg:rgba(255,133,73,.10);
+    --ui:#c27aff; --ui-bg:rgba(194,122,255,.10);
+    --font:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;
+    --mono:ui-monospace,"SF Mono","Cascadia Code",Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0}
+  body{background:var(--bg);color:var(--text);font-family:var(--font);font-size:14px;line-height:1.65;-webkit-font-smoothing:antialiased}
+  .top{border-bottom:1px solid var(--line);padding:24px 28px 20px;background:linear-gradient(180deg,#141414,#0e0e0e)}
+  .top .crumb{font-family:var(--mono);font-size:11.5px;color:var(--faint);letter-spacing:.06em}
+  .top h1{margin:6px 0 6px;font-size:21px;letter-spacing:-.01em}
+  .top p{margin:0;color:var(--text-2);max-width:80ch}
+  .top .meta{margin-top:8px;color:var(--faint);font-size:12.5px}
+  code{font-family:var(--mono);font-size:12.5px;color:var(--text-2)}
+  main{max-width:920px;margin:0 auto;padding:24px 28px 80px}
+  section{margin:0 0 40px}
+  section > h2{display:flex;align-items:baseline;gap:8px;margin:0 0 10px;font-size:17px;border-top:1px solid var(--line);padding-top:14px}
+  section > h2 .tag{font-family:var(--mono);font-size:11px;padding:1px 6px;border-radius:4px}
+  .tag.verified{color:var(--ok);background:var(--ok-bg)}
+  .tag.proposal{color:var(--warn);background:var(--warn-bg)}
+  .tag.open{color:var(--ui);background:var(--ui-bg)}
+  h3{margin:22px 0 6px;font-size:14.5px;color:var(--text)}
+  p{margin:0 0 10px}
+  ul{margin:0 0 12px;padding-left:1.2em}
+  li{margin:3px 0}
+  table{width:100%;border-collapse:collapse;font-size:13.5px;margin:0 0 14px}
+  th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{color:var(--muted);font-weight:500;font-size:12px;letter-spacing:.03em;text-transform:uppercase}
+  td.id{font-family:var(--mono);font-size:12.5px;color:var(--text-2);white-space:nowrap}
+  .callout{margin:0 0 14px;padding:11px 13px;border-radius:9px;background:var(--surface);color:var(--text-2);font-size:13px}
+  .callout.verified{border-left:2px solid var(--ok)}
+  .callout.warn{border-left:2px solid var(--warn)}
+  .callout.open{border-left:2px solid var(--ui)}
+  .callout b{color:var(--text);font-weight:560}
+  .plan-nav{display:flex;flex-wrap:wrap;align-items:center;gap:4px;padding:10px 28px;background:#0c0c0c;border-bottom:1px solid var(--line);font-size:13px}
+  .plan-nav a{color:var(--text-2);text-decoration:none;padding:3px 8px;border-radius:6px}
+  .plan-nav a:hover{background:var(--surface);color:var(--text)}
+  .plan-nav a[aria-current="page"]{background:var(--surface);color:var(--text);box-shadow:inset 0 0 0 1px var(--line-2)}
+  .plan-nav .sep{color:var(--faint);padding:0 2px}
+  .plan-nav .spacer{flex:1}
+</style>
+</head>
+<body>
+
+<nav class="plan-nav">
+  <a href="../../index.html">插件插槽目录</a>
+  <span class="sep">/</span>
+  <a href="index.html">turn-continue</a>
+  <span class="spacer"></span>
+  <a href="index.html">目录</a>
+  <a href="requirements.html" aria-current="page">需求</a>
+  <a href="data-flow.html">数据流</a>
+</nav>
+
+<header class="top">
+  <div class="crumb">docs/plugin-plan · runtime/turn-continue</div>
+  <h1>turn-continue · 需求</h1>
+  <p>插件的主动续跑 API：往宿主队列推一条消息。花的是真请求，署的是插件的名，走的是用户看得见的队列。</p>
+  <div class="meta">status: draft · issue #561 · 槽 <code>runtime.turn.continue</code></div>
+</header>
+
+<main>
+<section>
+  <h2>范围 <span class="tag verified">已核实</span></h2>
+  <ul>
+    <li>一个<b>主动 API</b>：<code>pi.continueTurn({ message })</code>——回合结束后任意时刻可调。</li>
+    <li>不谈：轮末被动询问（turn-closing）、模型请求改写（撤回）、静默注入（永不做）。</li>
+  </ul>
+</section>
+
+<section>
+  <h2>现状（代码核实） <span class="tag verified">已核实</span></h2>
+  <ul>
+    <li><b>插件面已实现 + e2e</b>：槽 <code>runtime.turn.continue</code>（<code>trusted-extensions.ts:479</code>），经宿主队列 <code>session.queuePush</code> 入列、带插件来源（<code>runtime.ts:2794-2804</code>）；e2e 在 <code>trusted-extensions/seed.mjs:84,153</code> 与 <code>drive.mjs:173</code>。总表「内部用了」只说对一半。</li>
+    <li><b>署名落库</b>：排队的轮是<b>插件署名的可见行</b>（ADR 0293，schema v22）。</li>
+    <li><b>无配额</b>：ADR 0295 规则 9 有意不设上限（<code>0295:67</code>）——控制手段是署名 + 可见 + 用户随时中止。</li>
+    <li><b>同名不同物</b>：内核的 <code>steeringContinuation</code>（<code>runtime.ts:1822, 8189-8198</code>）是 provider 恢复的内部路径，与本 API 无关。</li>
+    <li><b>沙箱缺口</b>：ADR 0292 broker 未建。</li>
+  </ul>
+</section>
+
+<section>
+  <h2>契约（建议，待拍板） <span class="tag proposal">建议</span></h2>
+  <table>
+    <thead><tr><th>方面</th><th>内容</th></tr></thead>
+    <tbody>
+      <tr><td class="id">调用</td><td><code>pi.continueTurn({ message })</code>——回合结束后任意时刻</td></tr>
+      <tr><td class="id">返回</td><td><code>{ queuedTurnId }</code>——排上了，轮 id 可查</td></tr>
+      <tr><td class="id">署名</td><td><code>{ message, pluginId, pluginLabel }</code> 入队——对话里显示为插件署名的行</td></tr>
+      <tr><td class="id">配额</td><td>现状<b>无上限</b>（ADR 0295 规则 9）；可选上限待拍板</td></tr>
+      <tr><td class="id">权限</td><td><code>runtime.turn.continue</code>，装时确认</td></tr>
+    </tbody>
+  </table>
+  <div class="callout warn"><b>立身之本：署名可见。</b>插件能花用户的钱让宿主继续跑——交换条件是每一轮都以插件的名义出现在对话里，用户看得到、停得下。</div>
+</section>
+
+<section>
+  <h2>插件场景（建议） <span class="tag proposal">建议</span></h2>
+  <table>
+    <thead><tr><th>#</th><th>场景</th></tr></thead>
+    <tbody>
+      <tr><td>1</td><td>定时巡检：每小时续跑一轮「检查 CI 状态并汇报」</td></tr>
+      <tr><td>2</td><td>慢确认两段式：gate 里弹自绘确认后，用户点允许 → continue 推「继续执行」</td></tr>
+      <tr><td>3</td><td>工作流串联：A 步骤完成后自动推「开始 B 步骤」</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<section>
+  <h2>本轮拍板 <span class="tag open">待定</span></h2>
+  <table>
+    <thead><tr><th>问题</th><th>选项</th></tr></thead>
+    <tbody>
+      <tr><td>署名展示形态</td><td>A. 用户消息位 + 插件徽标　B. 独立「插件行动」行样式</td></tr>
+      <tr><td>可选上限</td><td>A. 维持无上限（ADR 0295 现状）　B. 插件声明上限、装时确认　C. 会话级开关（用户可关）</td></tr>
+      <tr><td>目录现状列</td><td>「内部用了」改为「已实现（署名可见、无配额）」</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<section>
+  <h2>还没定的事 <span class="tag open">未定</span></h2>
+  <ul>
+    <li>上面三条。</li>
+  </ul>
+</section>
+
+<section>
+  <h2>明确不做 <span class="tag verified">已核实</span></h2>
+  <ul>
+    <li>不允许无署名 / 隐藏的续跑轮——可见性是本 API 的存在前提。</li>
+    <li>不允许插件冒充用户身份发消息——署名永远是插件。</li>
+    <li>不提供后台无人值守模式——每轮都在用户的会话里、受用户的停止键管。</li>
+  </ul>
+</section>
+
+</main>
+</body>
+</html>

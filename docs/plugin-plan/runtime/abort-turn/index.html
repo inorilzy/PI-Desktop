@@ -1,0 +1,91 @@
+<!-- status: draft · issue #561 · branch feat/528-plugin-slots -->
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>abort-turn · 目录</title>
+<style>
+  :root{
+    --bg:#0e0e0e; --surface:#161616; --line:#2a2a2a; --line-2:#353535;
+    --text:#ededed; --text-2:#b0b0b0; --muted:#7d7d7d; --faint:#5c5c5c;
+    --font:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;
+    --mono:ui-monospace,"SF Mono","Cascadia Code",Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0}
+  body{background:var(--bg);color:var(--text);font-family:var(--font);font-size:14px;line-height:1.65;-webkit-font-smoothing:antialiased}
+  code{font-family:var(--mono);font-size:12.5px;color:var(--text-2)}
+  .plan-nav{display:flex;flex-wrap:wrap;align-items:center;gap:4px;padding:10px 28px;background:#0c0c0c;border-bottom:1px solid var(--line);font-size:13px}
+  .plan-nav a{color:var(--text-2);text-decoration:none;padding:3px 8px;border-radius:6px}
+  .plan-nav a:hover{background:var(--surface);color:var(--text)}
+  .plan-nav a[aria-current="page"]{background:var(--surface);color:var(--text);box-shadow:inset 0 0 0 1px var(--line-2)}
+  .plan-nav .sep{color:var(--faint);padding:0 2px}
+  .plan-nav .spacer{flex:1}
+  .top{border-bottom:1px solid var(--line);padding:24px 28px 20px;background:linear-gradient(180deg,#141414,#0e0e0e)}
+  .top .crumb{font-family:var(--mono);font-size:11.5px;color:var(--faint);letter-spacing:.06em}
+  .top h1{margin:6px 0;font-size:21px}
+  .top p{margin:0;color:var(--text-2);max-width:80ch}
+  .top .meta{margin-top:8px;color:var(--faint);font-size:12.5px}
+  main{max-width:880px;margin:0 auto;padding:24px 28px 80px}
+  h2{font-size:15px;margin:28px 0 10px;padding-top:14px;border-top:1px solid var(--line)}
+  h2:first-child{margin-top:0;border-top:0;padding-top:0}
+  .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px}
+  .card{display:block;padding:14px 16px;border-radius:11px;background:var(--surface);border:1px solid var(--line);text-decoration:none;color:inherit}
+  .card:hover{border-color:var(--line-2);background:#191919}
+  .card .name{font-family:var(--mono);font-size:12.5px;color:var(--text-2)}
+  .card .what{margin:6px 0 0;font-size:13.5px}
+  .card .files{margin:8px 0 0;font-family:var(--mono);font-size:11.5px;color:var(--faint)}
+  ul{margin:0;padding-left:1.2em}
+  li{margin:3px 0}
+</style>
+</head>
+<body>
+
+<nav class="plan-nav">
+  <a href="../../index.html">插件插槽目录</a>
+  <span class="sep">/</span>
+  <a href="index.html" aria-current="page">abort-turn</a>
+  <span class="spacer"></span>
+  <a href="index.html" aria-current="page">目录</a>
+  <a href="requirements.html">需求</a>
+  <a href="data-flow.html">数据流</a>
+</nav>
+
+<header class="top">
+  <div class="crumb">docs/plugin-plan · runtime · abort-turn</div>
+  <h1>abort-turn · 中止本轮</h1>
+  <p>插件主动叫停用户正在跑的一轮。不是事件，是一个 API：<code>pi.requestTurnAbort()</code>。总表「未开放」的说法已被代码推翻——它已实现、已在权限清单里（风险 high）。</p>
+  <div class="meta">status: draft · issue #561 · 槽 <code>runtime.turn.abort</code>（风险：high）</div>
+</header>
+
+<main>
+
+  <h2>这个目录里有什么</h2>
+  <div class="cards">
+    <a class="card" href="requirements.html">
+      <div class="name">requirements.html</div>
+      <p class="what">要什么：现状核实（已实现为 API）、调用语义、滥用面与对策。</p>
+      <p class="files">已核实 / 建议 / 还没定 分开标色</p>
+    </a>
+    <a class="card" href="data-flow.html">
+      <div class="name">data-flow.html</div>
+      <p class="what">数据怎么走：一次中止请求从插件到内核的路径、返回值语义、伴随的取消信号。</p>
+      <p class="files">接口约定 · 数据怎么走 · 出错怎么办 · 不提供什么 · 相关条目 · 还没定的事</p>
+    </a>
+  </div>
+
+  <h2>一句话回顾</h2>
+  <ul>
+    <li><b>现状已核实</b>：<code>pi.requestTurnAbort()</code> 已实现（<code>runtime.turn.abort</code>，high）——refusal 返回 <code>false</code> 并记诊断，不静默。</li>
+    <li><b>无载荷、返回布尔</b>：有轮在跑就请求中止；插件自己的长任务同时收到取消信号（同一个决定的两半）。</li>
+    <li><b>滥用面</b>：插件可以随意杀掉用户在跑的轮——对策是装时确认 + 审计；无速率限制（只影响用户自己的轮）。</li>
+    <li><b>不管</b>：别的会话、伪造结束原因、事后抵赖。</li>
+  </ul>
+
+  <h2>还没定的事</h2>
+  <p style="color:var(--muted);font-size:13px">中止在界面上的呈现（是否标注「由插件中止」）——见 requirements.html 的「本轮拍板（待定）」。</p>
+
+</main>
+</body>
+</html>

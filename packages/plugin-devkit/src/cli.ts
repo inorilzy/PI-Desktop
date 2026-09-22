@@ -68,7 +68,7 @@ async function runInit(flags: Flags): Promise<number> {
   process.stdout.write(`Created ${result.name} (${result.id}) in ${result.dir}\n`);
   for (const file of result.files) process.stdout.write(`  ${file}\n`);
   process.stdout.write(
-    "\nNext: load it from the Plugins page with \"Load development plugin\", then run `pi-plugin pack`.\n",
+    "\nNext: load it from the Extensions page with \"Load local plugin\", then run `pi-plugin pack`.\n",
   );
   return 0;
 }

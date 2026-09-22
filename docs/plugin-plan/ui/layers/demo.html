@@ -1,0 +1,578 @@
+<!-- status: draft · issue #545 · demo first · index/requirements 待拍板后补齐 -->
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>提示与浮层 · 演示</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --gray-800: #212121;
+      --gray-0: #fff;
+      --gray-1000: #181818;
+      --ds-bg-primary: #181818;
+      --ds-bg-under: #000;
+      --ds-bg-composer: color-mix(in oklab, var(--gray-800) 96%, transparent);
+      --ds-bg-hover: color-mix(in oklab, #fff 6%, transparent);
+      --ds-text-primary: #fff;
+      --ds-text-secondary: color-mix(in oklab, #fff 70%, transparent);
+      --ds-text-muted: color-mix(in oklab, #fff 52%, transparent);
+      --ds-text-faint: color-mix(in oklab, #fff 38%, transparent);
+      --ds-tile: color-mix(in oklab, #fff 3.5%, transparent);
+      --ds-tile-deep: color-mix(in oklab, #fff 8%, transparent);
+      --ds-error: #ff6764;
+      --ds-success: #40c977;
+      --ds-purple: #c27aff;
+      --radius-xs: 4px;
+      --radius-sm: 6px;
+      --radius-md: 10px;
+      --radius-lg: 12px;
+      --radius-lg-plus: 16px;
+      --radius-2xl: 22px;
+      --font: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+      --mono: ui-monospace, "SF Mono", "Cascadia Code", Consolas, monospace;
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; height: 100%; }
+    body {
+      display: flex;
+      flex-direction: column;
+      font-family: var(--font);
+      background: var(--ds-bg-under);
+      color: var(--ds-text-primary);
+      -webkit-font-smoothing: antialiased;
+    }
+    button { font: inherit; color: inherit; }
+
+    .shell { display: flex; min-height: 0; flex: 1; flex-direction: column; background: var(--ds-bg-primary); }
+    .topbar { padding: 14px 28px 12px; border-bottom: 1px solid color-mix(in oklab, #fff 6%, transparent); }
+    .topbar h1 { margin: 0; font-size: 14px; font-weight: 560; }
+    .topbar p { margin: 4px 0 0; max-width: 90ch; color: var(--ds-text-faint); font-size: 12.5px; line-height: 1.5; }
+    .topbar code { font-family: var(--mono); font-size: 11px; color: var(--ds-text-secondary); }
+
+    .thread { flex: 1; min-height: 0; overflow: auto; }
+    .inner { width: min(860px, calc(100% - 48px)); margin: 0 auto; padding: 24px 0 40px; display: flex; flex-direction: column; }
+
+    .stage {
+      display: flex; align-items: center; gap: 10px;
+      margin: 30px 0 10px;
+      color: var(--ds-text-faint); font-family: var(--mono); font-size: 11px; letter-spacing: 0.05em;
+    }
+    .stage::after { content: ""; flex: 1; height: 1px; background: color-mix(in oklab, #fff 6%, transparent); }
+    .stage .no {
+      display: inline-grid; place-items: center; min-width: 18px; height: 18px;
+      border-radius: 99px; background: var(--ds-tile-deep); color: var(--ds-text-secondary); font-size: 10.5px;
+    }
+    .stage .hint { color: var(--ds-text-faint); letter-spacing: 0; text-transform: none; }
+
+    /* 插件内容边界：紫色虚线 */
+    .slot-name {
+      position: absolute; top: -9px; left: 8px; padding: 0 6px;
+      background: #1f1f1f;
+      font-family: var(--mono); font-size: 10px; letter-spacing: 0.04em; color: #e4c8ff;
+      white-space: nowrap;
+    }
+
+    /* ============================================================
+       窗口快照
+       ============================================================ */
+    .win {
+      position: relative;
+      margin: 14px 0 4px;
+      border-radius: var(--radius-lg-plus);
+      border: 1px solid color-mix(in oklab, #fff 8%, transparent);
+      background: var(--ds-bg-primary);
+      overflow: hidden;
+      padding: 16px 18px;
+    }
+    .chat-bg { opacity: 0.55; pointer-events: none; user-select: none; }
+    .chat-bg .u { display: flex; justify-content: flex-end; margin: 10px 0; }
+    .chat-bg .u span {
+      max-width: 60%; border-radius: 14px 14px 2px 14px;
+      background: var(--ds-tile-deep); padding: 7px 12px; font-size: 12.5px;
+    }
+    .chat-bg .a { margin: 10px 0; color: var(--ds-text-secondary); font-size: 12.5px; max-width: 76%; }
+    .win.has-scrim::before {
+      content: ""; position: absolute; inset: 0;
+      background: color-mix(in oklab, #000 52%, transparent);
+      z-index: 1;
+    }
+    .win.has-scrim > :not(.layer) { position: relative; z-index: 2; }
+    .layer { position: absolute; z-index: 2; }
+    .layer.center { left: 50%; top: 50%; transform: translate(-50%, -50%); }
+    .layer.br { right: 16px; bottom: 14px; }
+
+    /* ============================================================
+       审批 / 确认栏：与输入框同宽（窄 5px），紧贴输入框上方，无间距。
+       左边内容，右边按钮。卡壳、位置、按钮容器是宿主的。
+       ============================================================ */
+    .abar {
+      position: relative; z-index: 3;
+      display: flex; align-items: center; gap: 12px;
+      width: calc(100% - 5px);
+      margin: 14px auto 0;
+      border-radius: var(--radius-lg-plus);
+      background: #1f1f1f;
+      border: 1px solid color-mix(in oklab, #fff 10%, transparent);
+      padding: 10px 12px 10px 14px;
+    }
+    .abar + .cshell { margin-top: 0; }
+    .abar .a-main { flex: 1; min-width: 0; }
+    .abar .a-head { display: flex; align-items: center; gap: 7px; font-size: 12.5px; font-weight: 560; color: var(--ds-text-secondary); }
+    .abar .a-sub {
+      margin-top: 3px;
+      font-family: var(--mono); font-size: 11.5px; color: var(--ds-text-muted);
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .abar .a-actions { display: flex; align-items: center; gap: 8px; flex: none; }
+    .abar .risk {
+      font-family: var(--mono); font-size: 10px; font-weight: 400; padding: 1px 6px;
+      border-radius: 99px; background: color-mix(in oklab, var(--ds-error) 14%, transparent); color: var(--ds-error);
+    }
+    .abar .tag {
+      font-family: var(--mono); font-size: 10px; font-weight: 400; padding: 1px 7px;
+      border-radius: 99px; background: color-mix(in oklab, var(--ds-purple) 14%, transparent); color: #e4c8ff;
+    }
+    .abar .qbadge {
+      font-family: var(--mono); font-size: 10px; font-weight: 400; padding: 1px 7px;
+      border-radius: 99px; background: var(--ds-tile-deep); color: var(--ds-text-muted);
+    }
+    .abar.slim { padding: 8px 10px 8px 12px; }
+
+    /* 按钮：宿主样式，文案来自参数 */
+    .btn {
+      height: 28px; padding: 0 13px; border: 0; border-radius: 8px;
+      background: var(--ds-tile-deep); color: var(--ds-text-primary);
+      font-size: 12.5px; cursor: default; white-space: nowrap;
+    }
+    .btn.primary { background: var(--ds-error); color: #fff; }
+    .btn.safe { background: var(--ds-text-primary); color: #181818; }
+    .btn.ghosty { background: transparent; border: 1px solid color-mix(in oklab, #fff 16%, transparent); color: var(--ds-text-secondary); }
+
+    /* 下拉选择按钮：主钮 + 竖线 + 箭头，菜单是宿主的 */
+    .split { position: relative; display: inline-flex; height: 28px; border-radius: 8px; }
+    .split .s-main {
+      height: 28px; padding: 0 12px; border: 0;
+      border-radius: 8px 0 0 8px;
+      background: var(--ds-text-primary); color: #181818;
+      font-size: 12.5px; cursor: default; white-space: nowrap;
+    }
+    .split .s-caret {
+      height: 28px; width: 22px; border: 0;
+      border-left: 1px solid rgba(0, 0, 0, 0.2);
+      border-radius: 0 8px 8px 0;
+      background: var(--ds-text-primary); color: #181818;
+      display: grid; place-items: center; cursor: default;
+    }
+    .split.danger .s-main, .split.danger .s-caret { background: var(--ds-error); color: #fff; }
+    .split.danger .s-caret { border-left-color: rgba(0, 0, 0, 0.25); }
+    .menu {
+      position: absolute; top: 33px; right: 0; z-index: 6;
+      min-width: 150px;
+      border-radius: 10px;
+      background: #1f1f1f;
+      border: 1px solid color-mix(in oklab, #fff 12%, transparent);
+      box-shadow: 0 10px 26px rgba(0, 0, 0, 0.55);
+      padding: 4px;
+      font-size: 12.5px; font-weight: 400; color: var(--ds-text-secondary);
+    }
+    .menu .mi { display: flex; align-items: center; gap: 6px; padding: 6px 9px; border-radius: 6px; white-space: nowrap; }
+    .menu .mi:hover { background: var(--ds-bg-hover); }
+    .menu .mi .ck { margin-left: auto; color: var(--ds-text-primary); }
+
+    /* 排队中的卡：折叠成一条（排队时不渲染整卡，只有计数） */
+    .qstrip {
+      display: flex; align-items: center; gap: 8px;
+      width: calc(100% - 5px);
+      margin: 12px auto 0;
+      border-radius: var(--radius-md);
+      border: 1px dashed color-mix(in oklab, var(--ds-purple) 40%, transparent);
+      background: color-mix(in oklab, #000 25%, transparent);
+      padding: 7px 11px;
+      font-size: 11.5px; color: var(--ds-text-muted);
+    }
+    .qstrip .qbadge { margin-left: auto; font-family: var(--mono); font-size: 10px; padding: 1px 7px; border-radius: 99px; background: var(--ds-tile-deep); color: var(--ds-text-muted); }
+
+    /* ============================================================
+       输入区 — 按 docs/plugin-plan/ui/composer/demo.html 复刻
+       ============================================================ */
+    .cshell {
+      position: relative;
+      width: 100%;
+      margin: 0;
+      border-radius: var(--radius-2xl);
+      background: var(--ds-bg-composer);
+      box-shadow: 0 3px 7.5px #0000000a, 0 0 20px #0000000d;
+      padding: 10px 12px 8px;
+      isolation: isolate;
+    }
+    .cinput-wrap { padding: 2px 6px 0; min-height: 44px; }
+    .cinput { min-height: 44px; color: var(--ds-text-primary); font-size: 14px; line-height: 1.55; }
+    .cinput.is-empty { color: var(--ds-text-secondary); opacity: .72; }
+    .ctoolbar { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 4px; }
+    .cleft, .cright { display: flex; align-items: center; gap: 4px; min-width: 0; }
+    .cright { justify-content: flex-end; }
+    .icon-btn {
+      display: inline-flex; height: 28px; min-width: 28px;
+      align-items: center; justify-content: center; gap: 6px;
+      border: 0; border-radius: 99px; padding: 0 8px;
+      background: transparent; color: var(--ds-text-secondary);
+      font-size: 13px; cursor: default;
+    }
+    .icon-btn:hover { background: var(--ds-bg-hover); color: var(--ds-text-primary); }
+    .icon-btn .face { display: inline-flex; align-items: center; gap: 6px; }
+    .icon-btn.sq { padding: 0; }
+    .send-btn {
+      display: inline-flex; height: 28px; width: 28px; flex: 0 0 28px;
+      align-items: center; justify-content: center;
+      border: 0; border-radius: 99px;
+      background: var(--gray-0); color: var(--gray-1000); cursor: default;
+    }
+
+    /* 宿主的层壳（modal 场景） */
+    .l-shell {
+      width: min(430px, 84%);
+      border-radius: var(--radius-lg-plus);
+      background: #1f1f1f;
+      border: 1px solid color-mix(in oklab, #fff 10%, transparent);
+      box-shadow: 0 12px 32px rgba(0, 0, 0, 0.55);
+      overflow: hidden;
+    }
+    .l-bar {
+      display: flex; align-items: center; gap: 8px;
+      padding: 9px 10px 9px 14px;
+      border-bottom: 1px solid color-mix(in oklab, #fff 6%, transparent);
+    }
+    .l-bar .t { font-size: 12.5px; font-weight: 560; color: var(--ds-text-secondary); flex: 1; }
+    .l-bar .esc {
+      font-family: var(--mono); font-size: 10px; color: var(--ds-text-faint);
+      border: 1px solid color-mix(in oklab, #fff 10%, transparent); border-radius: 4px; padding: 1px 5px;
+    }
+    .l-x {
+      width: 24px; height: 24px; border: 0; border-radius: var(--radius-xs);
+      background: transparent; color: var(--ds-text-muted); cursor: default;
+      display: grid; place-items: center;
+    }
+    .l-body { padding: 14px; color: var(--ds-text-secondary); font-size: 13px; line-height: 1.55; }
+    .l-foot { display: flex; justify-content: flex-end; gap: 8px; padding: 10px 14px; }
+
+    /* overlay：插件整盒自画，无遮罩、不挡聊天 */
+    .ov-widget {
+      width: 210px;
+      border-radius: var(--radius-md);
+      background: color-mix(in oklab, var(--ds-purple) 10%, #161616);
+      border: 1px solid color-mix(in oklab, var(--ds-purple) 40%, transparent);
+      box-shadow: 0 8px 22px rgba(0, 0, 0, 0.45);
+      padding: 10px 12px;
+      font-size: 12px;
+    }
+    .ov-widget .hd { display: flex; align-items: center; gap: 6px; color: #e4c8ff; font-family: var(--mono); font-size: 10.5px; }
+    .ov-widget .row { display: flex; justify-content: space-between; margin-top: 7px; color: var(--ds-text-secondary); }
+    .ov-widget .row b { font-family: var(--mono); font-weight: 500; }
+    .ov-widget .bar { margin-top: 9px; height: 4px; border-radius: 99px; background: color-mix(in oklab, #fff 8%, transparent); overflow: hidden; }
+    .ov-widget .bar i { display: block; height: 100%; width: 62%; border-radius: 99px; background: linear-gradient(90deg, #8f6bff, #c27aff); }
+
+    /* mini 快照 */
+    .minis { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin: 14px 0 4px; }
+    .mini {
+      position: relative; min-height: 190px;
+      border-radius: var(--radius-lg); border: 1px solid color-mix(in oklab, #fff 8%, transparent);
+      background: var(--ds-bg-primary); overflow: hidden; padding: 12px;
+    }
+    .mini .cap {
+      position: absolute; left: 0; right: 0; bottom: 0;
+      padding: 7px 12px;
+      background: color-mix(in oklab, #000 55%, transparent);
+      color: var(--ds-text-muted); font-family: var(--mono); font-size: 10px; letter-spacing: 0.03em;
+    }
+    .mini .abar { width: 100%; margin-top: 0; }
+    .mini .abar .a-head { flex-wrap: nowrap; white-space: nowrap; overflow: hidden; gap: 5px; }
+    .mini .abar .a-head > * { flex: none; }
+    .mini .abar .tag { padding: 1px 5px; }
+    .mini .abar .a-actions { gap: 6px; }
+    .mini .abar .btn { padding: 0 10px; }
+    .mini .abar .s-main { padding: 0 9px; }
+    .mini.dim::before { content: ""; position: absolute; inset: 0; background: color-mix(in oklab, #000 45%, transparent); z-index: 1; }
+    .mini .abar.under { filter: brightness(0.5); }
+    .mini .abar.over { position: absolute; z-index: 3; left: 12px; right: 12px; }
+
+    /* 页面底部的输入框（页面 chrome，非快照） */
+    .composer-dock { padding: 0 24px 16px; background: var(--ds-bg-primary); }
+    .composer-dock .cshell { width: min(760px, 100%); margin: 0 auto; }
+
+  .plan-nav{display:flex;flex-wrap:wrap;align-items:center;gap:4px;padding:10px 28px;background:#0c0c0c;border-bottom:1px solid color-mix(in oklab, #fff 8%, transparent);font-size:13px;flex:0 0 auto}
+  .plan-nav a{color:var(--ds-text-muted);text-decoration:none;padding:3px 8px;border-radius:6px}
+  .plan-nav a:hover{background:var(--ds-bg-hover);color:var(--ds-text-primary)}
+  .plan-nav a[aria-current="page"]{background:var(--ds-tile-deep);color:var(--ds-text-primary);box-shadow:inset 0 0 0 1px color-mix(in oklab, #fff 14%, transparent)}
+  .plan-nav .sep{color:var(--ds-text-faint);padding:0 2px}
+  .plan-nav .spacer{flex:1}
+  </style>
+</head>
+<body>
+
+<nav class="plan-nav">
+  <a href="../../index.html">插件插槽目录</a>
+  <span class="sep">/</span>
+  <a href="demo.html" aria-current="page">提示与浮层</a>
+  <span class="spacer"></span>
+  <a href="demo.html" aria-current="page">演示</a>
+</nav>
+
+  <div class="shell">
+    <header class="topbar">
+      <h1>清理工作区</h1>
+      <p>确认卡是<b>固定格式</b>：与输入框同宽（窄 5px）、紧贴其上、左内容右按钮；位置、卡壳、按钮样式是宿主的，内容与按钮都走参数，点击后回调。插件不能接管宿主的权限审批卡。要全屏弹窗或角落浮层 → <code>ui/self-dialog/</code>（插件自理）。</p>
+    </header>
+
+    <div class="thread">
+      <div class="inner">
+
+        <!-- ① 权限审批卡：重设计后的默认形态 -->
+        <div class="stage" id="s1"><span class="no">1</span><span class="hint">权限审批卡 · 与输入框同宽（窄 5px）紧贴其上 · 左内容右按钮 · 下拉选择按钮</span></div>
+
+        <div class="win flow">
+          <div class="chat-bg">
+            <div class="u"><span>把改动提交并推送。</span></div>
+            <div class="a">好的，远端有分叉，需要执行强推：</div>
+          </div>
+          <div class="abar">
+            <div class="a-main">
+              <div class="a-head">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="color:var(--ds-error);flex:none"><path d="M12 9v4M12 17h.01"/><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"/></svg>
+                权限请求
+                <span class="risk">high</span>
+              </div>
+              <div class="a-sub">shell.exec("git push --force")</div>
+            </div>
+            <div class="a-actions">
+              <button class="btn ghosty" type="button">拒绝</button>
+              <span class="split">
+                <button class="s-main" type="button">允许一次</button>
+                <button class="s-caret" type="button" aria-label="更多允许方式"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M6 9l6 6 6-6"/></svg></button>
+                <div class="menu">
+                  <div class="mi">允许一次<span class="ck">✓</span></div>
+                  <div class="mi">本会话允许</div>
+                </div>
+              </span>
+            </div>
+          </div>
+          <div class="cshell">
+            <div class="cinput-wrap">
+              <div class="cinput is-empty">问点什么…</div>
+            </div>
+            <div class="ctoolbar">
+              <div class="cleft">
+                <button class="icon-btn sq" type="button" aria-label="添加文件"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg></button>
+                <button class="icon-btn" type="button"><span class="face"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="8" width="16" height="11" rx="2"/><path d="M12 8V4M8 4h8"/></svg><span>Agent</span></span></button>
+                <button class="icon-btn" type="button"><span class="face"><span>询问</span><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg></span></button>
+              </div>
+              <div class="cright">
+                <button class="icon-btn" type="button"><span class="face"><span>GLM-4.7</span><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg></span></button>
+                <button class="send-btn" type="button" aria-label="发送"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M12 19V5"/><path d="M5 12l7-7 7 7"/></svg></button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- ② ui.confirm：固定卡壳 + 参数内容 -->
+        <div class="stage" id="s2"><span class="no">2</span><span class="hint">ui.confirm() · 固定卡壳；内容与按钮都走参数（不做内容组件、不让自绘），点击后回调</span></div>
+
+        <div class="win flow">
+          <div class="chat-bg">
+            <div class="u"><span>把这三个临时分支都清掉。</span></div>
+            <div class="a">工作区里有 3 个已合并的分支，我可以直接删除：</div>
+          </div>
+          <div class="abar">
+            <div class="a-main">
+              <div class="a-head">分支清理 · 确认删除 <span class="tag">ui.confirm</span></div>
+              <div class="a-sub">将删除 feat/528-plugin-slots · feat/545-composer · fix/draft-cache</div>
+            </div>
+            <div class="a-actions">
+              <button class="btn ghosty" type="button">取消</button>
+              <button class="btn primary" type="button">全部删除</button>
+            </div>
+          </div>
+          <div class="cshell">
+            <div class="cinput-wrap">
+              <div class="cinput is-empty">问点什么…</div>
+            </div>
+            <div class="ctoolbar">
+              <div class="cleft">
+                <button class="icon-btn sq" type="button" aria-label="添加文件"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg></button>
+                <button class="icon-btn" type="button"><span class="face"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="8" width="16" height="11" rx="2"/><path d="M12 8V4M8 4h8"/></svg><span>Agent</span></span></button>
+                <button class="icon-btn" type="button"><span class="face"><span>询问</span><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg></span></button>
+              </div>
+              <div class="cright">
+                <button class="icon-btn" type="button"><span class="face"><span>GLM-4.7</span><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg></span></button>
+                <button class="send-btn" type="button" aria-label="发送"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M12 19V5"/><path d="M5 12l7-7 7 7"/></svg></button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- ③ 固定卡型 -->
+        <div class="stage" id="s3"><span class="no">3</span><span class="hint">固定卡型 · 确认（2 钮）/ 选择（下拉）/ 知会（1 钮），结果都是 Promise</span></div>
+
+        <div class="minis">
+          <div class="mini" style="display:flex;flex-direction:column;justify-content:flex-end;padding-bottom:34px">
+            <div class="abar slim">
+              <div class="a-main">
+                <div class="a-head">分支清理 <span class="tag">confirm</span></div>
+                <div class="a-sub">将删除 3 个分支…</div>
+              </div>
+              <div class="a-actions">
+                <button class="btn ghosty" type="button">取消</button>
+                <button class="btn primary" type="button">删除</button>
+              </div>
+            </div>
+            <div class="cap">→ "ok" | "cancel"</div>
+          </div>
+
+          <div class="mini" style="display:flex;flex-direction:column;justify-content:flex-end;padding-bottom:34px">
+            <div class="abar slim">
+              <div class="a-main">
+                <div class="a-head">依赖升级 <span class="tag">choice</span></div>
+                <div class="a-sub">发现 3 个新版本</div>
+              </div>
+              <div class="a-actions">
+                <span class="split">
+                  <button class="s-main" type="button">去升级</button>
+                  <button class="s-caret" type="button" aria-label="更多选项"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M6 9l6 6 6-6"/></svg></button>
+                </span>
+              </div>
+            </div>
+            <div class="cap">→ 按下的 actionId（下拉展开候选）</div>
+          </div>
+
+          <div class="mini" style="display:flex;flex-direction:column;justify-content:flex-end;padding-bottom:34px">
+            <div class="abar slim">
+              <div class="a-main">
+                <div class="a-head">同步完成 <span class="tag">alert</span></div>
+                <div class="a-sub">索引已重建 · 1,208 条。</div>
+              </div>
+              <div class="a-actions">
+                <button class="btn safe" type="button">知道了</button>
+              </div>
+            </div>
+            <div class="cap">→ "ok"</div>
+          </div>
+        </div>
+
+        <!-- ④ 排队：权限请求插队；插件确认卡 FIFO -->
+        <div class="stage" id="s4"><span class="no">4</span><span class="hint">排队 · 权限请求永远第一优先；插件确认卡 FIFO，一次只显示一张，其余折叠成条</span></div>
+
+        <div class="minis" style="grid-template-columns:repeat(2,1fr)">
+          <div class="mini" style="display:flex;flex-direction:column;justify-content:flex-end;gap:8px;padding-bottom:34px;min-height:210px">
+            <div class="abar slim">
+              <div class="a-main">
+                <div class="a-head">
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="color:var(--ds-error);flex:none"><path d="M12 9v4M12 17h.01"/><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"/></svg>
+                  权限请求
+                  <span class="qbadge">确认卡 1 张等待</span>
+                  <span class="risk">high</span>
+                </div>
+                <div class="a-sub">shell.exec("git push --force")</div>
+              </div>
+              <div class="a-actions">
+                <button class="btn ghosty" type="button">拒绝</button>
+                <span class="split">
+                  <button class="s-main" type="button">允许一次</button>
+                  <button class="s-caret" type="button" aria-label="更多允许方式"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M6 9l6 6 6-6"/></svg></button>
+                </span>
+              </div>
+            </div>
+            <div class="qstrip" style="margin-top:0">
+              分支清理 · 确认删除
+              <span class="qbadge">排队中</span>
+            </div>
+            <div class="cap">权限请求插队，确认卡退回队列折叠成条</div>
+          </div>
+
+          <div class="mini" style="display:flex;flex-direction:column;justify-content:flex-end;padding-bottom:34px">
+            <div class="abar slim">
+              <div class="a-main">
+                <div class="a-head">依赖升级 <span class="qbadge">还有 1 个等待</span></div>
+                <div class="a-sub">发现 3 个新版本</div>
+              </div>
+              <div class="a-actions">
+                <button class="btn ghosty" type="button">忽略</button>
+                <span class="split">
+                  <button class="s-main" type="button">去升级</button>
+                  <button class="s-caret" type="button" aria-label="更多选项"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M6 9l6 6 6-6"/></svg></button>
+                </span>
+              </div>
+            </div>
+            <div class="cap">同队列一次只显示一张，其余折叠成条</div>
+          </div>
+        </div>
+
+        <!-- ⑤ 边界：停用回退 / await 得到 cancel / 权限插队 -->
+        <div class="stage" id="s5"><span class="no">5</span><span class="hint">边界 · 插件停用 → 确认卡消失；ui.confirm 的 await 收到 cancel；权限请求插队优先</span></div>
+
+        <div class="minis">
+          <div class="mini" style="display:flex;flex-direction:column;justify-content:flex-end;gap:8px;padding-bottom:34px;min-height:210px">
+            <div class="abar slim">
+              <div class="a-main">
+                <div class="a-head">
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="color:var(--ds-error);flex:none"><path d="M12 9v4M12 17h.01"/><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"/></svg>
+                  权限请求
+                  <span class="qbadge">确认卡 1 张等待</span>
+                  <span class="risk">high</span>
+                </div>
+                <div class="a-sub">shell.exec("git push --force")</div>
+              </div>
+              <div class="a-actions">
+                <button class="btn ghosty" type="button">拒绝</button>
+                <span class="split">
+                  <button class="s-main" type="button">允许一次</button>
+                  <button class="s-caret" type="button" aria-label="更多允许方式"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M6 9l6 6 6-6"/></svg></button>
+                </span>
+              </div>
+            </div>
+            <div class="qstrip" style="margin-top:0">
+              分支清理 · 确认删除
+              <span class="qbadge">排队中</span>
+            </div>
+            <div class="cap">权限请求插队优先，永不被插件卡挡住</div>
+          </div>
+
+          <div class="mini" style="display:flex;flex-direction:column;justify-content:flex-end;padding-bottom:34px">
+            <div class="abar slim under">
+              <div class="a-main">
+                <div class="a-head">分支清理 · 确认删除</div>
+                <div class="a-sub">将删除 3 个已合并分支…</div>
+              </div>
+              <div class="a-actions">
+                <button class="btn ghosty" type="button">取消</button>
+                <button class="btn primary" type="button">全部删除</button>
+              </div>
+            </div>
+            <div class="cap" style="color:var(--ds-error)">await 收到 { choice: "cancel", reason: "plugin-unloaded" }</div>
+          </div>
+        </div>
+
+      </div>
+    </div>
+
+    <div class="composer-dock">
+      <div class="cshell">
+        <div class="cinput-wrap">
+          <div class="cinput is-empty">问点什么…</div>
+        </div>
+        <div class="ctoolbar">
+          <div class="cleft">
+            <button class="icon-btn sq" type="button" aria-label="添加文件"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg></button>
+            <button class="icon-btn" type="button"><span class="face"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="8" width="16" height="11" rx="2"/><path d="M12 8V4M8 4h8"/></svg><span>Agent</span></span></button>
+            <button class="icon-btn" type="button"><span class="face"><span>询问</span><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg></span></button>
+          </div>
+          <div class="cright">
+            <button class="icon-btn" type="button"><span class="face"><span>GLM-4.7</span><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg></span></button>
+            <button class="send-btn" type="button" aria-label="发送"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M12 19V5"/><path d="M5 12l7-7 7 7"/></svg></button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</body>
+</html>

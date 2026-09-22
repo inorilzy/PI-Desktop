@@ -11,7 +11,7 @@
  *   parent -> child  { t: "init", id, pluginId, pluginPath, main, manifest }
  *   parent -> child  { t: "call", id, method, payload, invocationId? } command.run | tool.execute |
  *                                                        service.start | service.stop |
- *                                                        lifecycle.unload
+ *                                                        renderer.call | lifecycle.unload
  *   child  -> parent { t: "call", id, api, args, invocationId? } host API request
  *   parent -> child  { t: "cancel", invocationId, reason } abort one tool invocation
  *   *      -> *      { t: "res", id, ok, value } | { t: "res", id, ok: false, error: { code, message } }
@@ -38,6 +38,25 @@ function onHostMessage(handler) {
 
 function log(level, message) {
   send({ t: "log", level, message: String(message) });
+}
+
+/**
+ * A renderer call's answer is carried by `postMessage`, Electron IPC and the
+ * `Result` envelope, so a value the transport cannot carry is refused here: a
+ * function answer fails once posted, with a `DOMException` that names neither
+ * the plugin nor the method it answered. `undefined` is not one of those
+ * values — it passes through and the reply frame turns an absent answer into
+ * `null`, so a hook that returns nothing is an answer rather than a gap.
+ */
+function assertDeliverable(value, method) {
+  try {
+    structuredClone(value);
+  } catch {
+    const error = new Error(`renderer call answer is not serializable: ${method}`);
+    error.code = "PLUGIN_CALL_UNSERIALIZABLE";
+    throw error;
+  }
+  return value;
 }
 
 let pluginId = "";
@@ -150,6 +169,7 @@ function normalizeBytes(value) {
 // the broker only ever holds the descriptor plus a proxy back into this process.
 const commands = new Map();
 const tools = new Map();
+const speechHandles = new Map();
 // Resident services declared in the manifest. The broker decides when they run;
 // this map only holds the callables and whether they are currently up.
 const services = new Map();
@@ -205,6 +225,35 @@ function buildApi() {
       unregister: async (id) => {
         commands.delete(id);
         await call("commands.unregister", [id]);
+      },
+    },
+    speech: {
+      registerAdapter: async (adapter) => {
+        if (!adapter || typeof adapter.protocol !== "string" || !adapter.protocol.trim()) {
+          throw new Error("speech protocol is required");
+        }
+        if (typeof adapter.handle !== "function") {
+          throw new Error("speech handle must be a function");
+        }
+        const protocol = adapter.protocol.trim();
+        const roles = Array.isArray(adapter.roles) ? adapter.roles : [];
+        speechHandles.set(protocol, adapter.handle);
+        try {
+          await call("speech.registerAdapter", [
+            {
+              protocol,
+              label: adapter.label,
+              roles,
+            },
+          ]);
+        } catch (error) {
+          speechHandles.delete(protocol);
+          throw error;
+        }
+      },
+      unregisterAdapter: async (protocol) => {
+        speechHandles.delete(String(protocol ?? ""));
+        await call("speech.unregisterAdapter", [protocol]);
       },
     },
     ui: {
@@ -272,6 +321,17 @@ function buildApi() {
       },
       complete: (input) => call("agent.complete", [input ?? {}]),
     },
+    ai: {
+      /** Plugin-level completion on user-configured models (`agent.model.complete`). */
+      complete: (input) => call("ai.complete", [input ?? {}]),
+      completeStream: async (input, onDelta) => {
+        const result = await call("ai.complete", [input ?? {}]);
+        if (typeof onDelta === "function" && result && typeof result.text === "string") {
+          onDelta(result.text);
+        }
+        return result;
+      },
+    },
     models: {
       list: () => call("models.list"),
     },
@@ -284,6 +344,12 @@ function buildApi() {
       importBatch: (input) => call("session.importBatch", [input ?? {}]),
       rename: (input) => call("session.rename", [input ?? {}]),
       delete: (input) => call("session.delete", [input ?? {}]),
+    },
+    // Read-only usage facts (`usage.read`). The main-process dispatch owns
+    // the permission check and parameter bounds; the host returns per-turn
+    // counters and identifiers only, so no message body crosses this bridge.
+    usage: {
+      listTurns: (input) => call("usage.listTurns", [input ?? {}]),
     },
     /**
      * Resident background workers (spec 07 §3). Registration is local: the
@@ -473,6 +539,19 @@ async function handleParentCall(method, payload, invocationId) {
       }
       return invoke(String(payload?.channel ?? ""), payload?.payload ?? {});
     }
+    case "renderer.call": {
+      const invoke = pluginModule?.onRendererCall;
+      const name = String(payload?.method ?? "");
+      if (typeof invoke !== "function") {
+        // A structured answer, never `undefined`: the renderer has to be able
+        // to tell "this plugin implements no renderer methods" from a method
+        // that happened to return nothing.
+        const error = new Error(`plugin does not expose renderer calls: ${name}`);
+        error.code = "PLUGIN_CALL_NO_HANDLER";
+        throw error;
+      }
+      return assertDeliverable(await invoke(name, payload?.args ?? null), name);
+    }
     case "command.run": {
       const run = commands.get(String(payload?.id ?? ""));
       if (!run) {
@@ -482,6 +561,15 @@ async function handleParentCall(method, payload, invocationId) {
       }
       await run();
       return { ok: true };
+    }
+    case "speech.handle": {
+      const handle = speechHandles.get(String(payload?.protocol ?? ""));
+      if (!handle) {
+        const error = new Error(`speech adapter not registered: ${payload?.protocol}`);
+        error.code = "NOT_FOUND";
+        throw error;
+      }
+      return handle(payload ?? {});
     }
     case "tool.execute": {
       if (typeof invocationId !== "string" || !invocationId || invocations.has(invocationId)) {
@@ -543,6 +631,7 @@ async function handleParentCall(method, payload, invocationId) {
       }
       commands.clear();
       tools.clear();
+      speechHandles.clear();
       services.clear();
       busHandlers.clear();
       eventListeners.clear();

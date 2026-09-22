@@ -6,6 +6,7 @@ import {
   useId,
   useLayoutEffect,
   useState,
+  useMemo,
 } from "react";
 import { useTranslation } from "react-i18next";
 import type { UiMessage } from "@pi-desktop/shared";
@@ -45,6 +46,8 @@ import { useAppStore } from "../../../stores/app-store";
 import { Markdown } from "../../../components/Markdown";
 import { ReviewChangeCard } from "../../../components/ReviewChangeCard";
 import { ToolChips, ToolDetailBlocks } from "../../../components/ToolDetails";
+import { PluginSlot, useSlotRegistrations } from "../../../plugins/renderer-slots/SlotOutlet";
+import { useRendererCandidates } from "../../../plugins/renderer-slots/use-renderer-candidates";
 import {
   IconArrowDown,
   IconBot,
@@ -73,6 +76,7 @@ import {
   delegateModelId,
   delegateThinkingLevel,
 } from "./model";
+import { toolCardSlotProps, toolOwnerPluginId } from "./model";
 
 type ToolRowProps = {
   message: UiMessage;
@@ -152,7 +156,33 @@ export const ToolRow = memo(function ToolRow({
   const failed = status === "error" || run === "failed";
   // Tool details are always user-opened. Failure stays visible in the row head
   // through its status icon/label without expanding the payload automatically.
-  const disclosure = useAutomaticDisclosure(false);
+  // Slot 2 (`toolCard`): the card body of a tool. The plugin that owns the tool
+  // is the only one offered this row, and the host reads that ownership from the
+  // tool's forced prefix (D015) rather than from its name's shape, so a host
+  // tool and another plugin's tool can never be taken over. A plugin's own card
+  // body is drawn open, because it is the body of a card the host would
+  // otherwise only collapse for the user; the row's disclosure still owns it
+  // afterwards, and losing the registration hides it again.
+  const sessionId = useAppStore((s) => s.activeSessionId);
+  const slotCandidates = useRendererCandidates();
+  const toolCardRegistrations = useSlotRegistrations("toolCard");
+  const ownerPluginId = toolOwnerPluginId(message.toolName, slotCandidates);
+  const ownedToolCard = useMemo(
+    () =>
+      ownerPluginId
+        ? toolCardRegistrations.filter((entry) => entry.pluginId === ownerPluginId)
+        : [],
+    [ownerPluginId, toolCardRegistrations],
+  );
+  const toolCardProps = useMemo(
+    () =>
+      ownerPluginId && sessionId
+        ? toolCardSlotProps(message, sessionId, ownerPluginId)
+        : undefined,
+    [message, ownerPluginId, sessionId],
+  );
+  const pluginBody = ownedToolCard.length > 0;
+  const disclosure = useAutomaticDisclosure(pluginBody);
   const { open, toggle: toggleDisclosure, collapse: collapseDisclosure } = disclosure;
   const titleRef = disclosure.titleRef;
   const toggleRow = useCallback(() => {
@@ -180,7 +210,9 @@ export const ToolRow = memo(function ToolRow({
     : "";
   // A delegation is always expandable: its brief, report and the delegate's
   // own rows all live in the body.
-  const hasDetails = hasToolDetails(message) || Boolean(delegate);
+  // A plugin's own card body counts as details, so its row is expandable and
+  // collapsible exactly like a host row with a body.
+  const hasDetails = hasToolDetails(message) || Boolean(delegate) || pluginBody;
   const chips = toolResultChips(message);
   // A lifecycle row (ADR 0089) is about subagents, so it is presented as one:
   // the agent names it reports on replace the bare delegation ids it was
@@ -496,7 +528,14 @@ export const ToolRow = memo(function ToolRow({
             label={t("chat.collapseDetails")}
             onCollapse={collapseRow}
           />
-          <ToolDetailBlocks blocks={blocks} plain={runHead} />
+          <PluginSlot
+            slot="toolCard"
+            slotProps={toolCardProps}
+            candidates={slotCandidates}
+            registrations={ownedToolCard}
+          >
+            <ToolDetailBlocks blocks={blocks} plain={runHead} />
+          </PluginSlot>
         </div>
       ) : null}
       {inlineOpen && delegate ? (

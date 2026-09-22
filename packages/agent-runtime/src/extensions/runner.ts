@@ -22,7 +22,19 @@ import {
 } from "@earendil-works/pi-ai";
 import {
   trustedExtensionAgentProviderId,
+  trustedExtensionApiPermission,
+  trustedExtensionApiScopePermission,
+  trustedExtensionEventPermission,
+  isWithdrawnRuntimeEvent,
+  PLUGIN_MODEL_COMPLETE_PERMISSION,
+  TRUSTED_EXTENSION_RECAP_DEFAULT_LIMIT,
+  TRUSTED_EXTENSION_RECAP_MAX_LIMIT,
   type TrustedExtensionAgentModelConfig,
+  type TrustedExtensionApiCall,
+  type TrustedExtensionContinuation,
+  type TrustedExtensionContinuationRequest,
+  type TrustedExtensionTurnFacts,
+  type TrustedExtensionTurnRecap,
 } from "@pi-desktop/shared";
 import {
   createVirtualModules,
@@ -42,7 +54,15 @@ import {
   type TrustedExtensionUiResponse,
 } from "./types.js";
 
-/** Events the desktop runtime emits in v1 (spec §6). */
+/**
+ * Event names `pi.on` accepts in v1 (spec §6); a name outside this list and
+ * outside `NOT_EMITTED_EVENTS` is reported as `unsupported_api`. The six names
+ * withdrawn with slot 6 — `before_agent_start`, `context`,
+ * `before_provider_request`, `before_provider_headers`, `model_select`,
+ * `thinking_level_select` — must stay listed so a registration is accepted
+ * instead of rejected; the runner never consults their handlers
+ * (`isWithdrawnRuntimeEvent`).
+ */
 export const TRUSTED_EXTENSION_EVENTS = [
   "session_start",
   "session_shutdown",
@@ -67,28 +87,42 @@ export const TRUSTED_EXTENSION_EVENTS = [
   "tool_execution_update",
   "tool_execution_end",
   "tool_result",
+  "turn_closing",
   "model_select",
   "thinking_level_select",
   "session_before_compact",
   "session_compact",
   "session_compact_failed",
   "session_before_fork",
+  "session_before_switch",
+  "session_lifecycle",
   "input",
 ] as const;
 
 export type TrustedExtensionEventName = (typeof TRUSTED_EXTENSION_EVENTS)[number];
 
-/** Upstream events the runtime never emits in v1; handlers register silently. */
+/**
+ * Upstream events the runtime never emits in v1; handlers register silently.
+ * `session_before_switch` left this list with slot 11: the desktop emits it
+ * from the host side, because the switch happens there. `session_before_tree`
+ * stays: the desktop has no tree navigation to announce.
+ */
 const NOT_EMITTED_EVENTS = new Set([
   "user_bash",
-  "session_before_switch",
   "session_before_tree",
   "session_tree",
   "ui_prompt_start",
   "ui_prompt_end",
 ]);
 
-/** Events whose handler result is honored, and therefore time-limited. */
+/**
+ * Events whose handler result is honored, and therefore time-limited.
+ *
+ * The session lifecycle notices are in here for the budget rather than for a
+ * result: they are informed-only (ADR 0295 rule 11), so the caller ignores
+ * what they return, but a handler that stalls is still cut off after the
+ * budget instead of holding the notification loop forever.
+ */
 const RESULT_EVENTS = new Set<string>([
   "resources_discover",
   "before_agent_start",
@@ -98,8 +132,11 @@ const RESULT_EVENTS = new Set<string>([
   "message_end",
   "tool_call",
   "tool_result",
+  "turn_closing",
   "session_before_compact",
   "session_before_fork",
+  "session_before_switch",
+  "session_lifecycle",
   "input",
   "project_trust",
 ]);
@@ -154,7 +191,18 @@ export type ExtensionExecResult = {
   killed: boolean;
 };
 
-export type ExtensionToolInfo = { name: string; description: string; active: boolean };
+/**
+ * One row of the tool catalogue an extension reads through `getAllTools()`.
+ * `introducedBy: "plugin"` marks a tool another plugin brought in at runtime
+ * through a tool result (ADR 0295 slot 5), so the catalogue never presents it
+ * as a host tool.
+ */
+export type ExtensionToolInfo = {
+  name: string;
+  description: string;
+  active: boolean;
+  introducedBy?: "plugin";
+};
 
 export type TrustedExtensionAgentDefinition = {
   id: string;
@@ -196,6 +244,12 @@ export interface TrustedExtensionBridge {
   getThinkingLevel(): string;
   setThinkingLevel(level: string): void;
   isIdle(): boolean;
+  /**
+   * The running turn's cancellation token, or `undefined` when no turn is
+   * running. Plugin work observes the abort through this (ADR 0295 slot 3);
+   * `abort()` is the same turn being stopped.
+   */
+  getAbortSignal(): AbortSignal | undefined;
   abort(): void;
   hasPendingMessages(): boolean;
   getContextUsage(): { tokens: number | null; contextWindow: number; percent: number | null } | undefined;
@@ -206,13 +260,54 @@ export interface TrustedExtensionBridge {
   setActiveTools(names: string[]): void;
   getSessionName(): string | undefined;
   setSessionName(name: string): void | Promise<void>;
-  sendUserMessage(
-    content: string | unknown[],
-    options?: { deliverAs?: "steer" | "followUp" },
-  ): void | Promise<void>;
   waitForIdle(): Promise<void>;
   newSession(): Promise<{ cancelled: boolean }>;
   fork(entryId: string): Promise<{ cancelled: boolean }>;
+  /**
+   * Slot 9: the host's own facts for one turn (`turn.facts`, ADR 0295 rule 8).
+   * `turnId` absent means the turn running now. `undefined` means the host
+   * holds no such turn — a turn it never recorded is never answered with
+   * zeroes, and the caller reports the failure rather than inventing one.
+   */
+  turnFacts(input: {
+    turnId?: string;
+    limit?: number;
+  }): Promise<TrustedExtensionTurnFacts | undefined>;
+  /**
+   * Slot 8: a session's newest transcript rows, windowed and attributed by the
+   * host (`session.get`), never by this process. `limit` is a positive window
+   * size; `truncated` says older rows exist outside it.
+   */
+  recapSession(input: { limit: number; sessionId?: string; before?: number }): Promise<{
+    messages: ReadonlyArray<unknown>;
+    truncated: boolean;
+    title?: string;
+    messageStart?: number;
+    messageEnd?: number;
+  }>;
+  /**
+   * Slot 10: queue a real, durable turn for this plugin's continuation (ADR
+   * 0295 rule 9). `undefined` means the host refused or could not queue it.
+   * The request carries the plugin's identity, because only the caller knows
+   * which plugin asked for the continuation (ADR 0293).
+   */
+  continueTurn(
+    input: TrustedExtensionContinuationRequest,
+  ): Promise<TrustedExtensionContinuation | undefined>;
+  /**
+   * Plugin-level AI on user-configured models (`agent.model.complete`).
+   * Credentials stay in the host; `system` is not merged with the session prompt.
+   */
+  aiComplete(input: {
+    messages: Array<{ role: string; content: string }>;
+    system?: string;
+    modelKey?: string;
+    purpose?: string;
+    maxTokens?: number;
+  }): Promise<
+    | { ok: true; text: string; modelKey: string; usage?: unknown }
+    | { ok: false; code: string; detail?: string }
+  >;
   requestUi(
     extension: TrustedExtensionSpec,
     request: TrustedExtensionUiRequest,
@@ -249,6 +344,8 @@ type Handler = (event: unknown, ctx: unknown) => unknown;
 
 type LoadedExtension = {
   spec: TrustedExtensionSpec;
+  /** Permissions the owning plugin holds, from {@link TrustedExtensionSpec.permissions}. */
+  permissions: ReadonlySet<string>;
   tools: Map<string, ToolDefinitionLike>;
   commands: Map<string, RegisteredCommandLike>;
   agents: Map<string, RegisteredTrustedExtensionAgent>;
@@ -361,6 +458,24 @@ function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
   });
 }
 
+/**
+ * Transcript window one `recap` read asks the host for.
+ *
+ * An absent or unusable value falls back to the shared default; a real number
+ * is clamped, so a plugin cannot ask one call to pull an unbounded history
+ * into its process. The host still decides what the window means and reports
+ * truncation itself.
+ */
+function recapLimit(value: number | undefined): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return TRUSTED_EXTENSION_RECAP_DEFAULT_LIMIT;
+  }
+  return Math.min(
+    Math.max(1, Math.floor(value)),
+    TRUSTED_EXTENSION_RECAP_MAX_LIMIT,
+  );
+}
+
 export type TrustedExtensionRunnerOptions = {
   specs: TrustedExtensionSpec[];
   bridge: TrustedExtensionBridge;
@@ -393,6 +508,7 @@ export class TrustedExtensionRunner {
     for (const spec of this.specs) {
       const extension: LoadedExtension = {
         spec,
+        permissions: new Set(spec.permissions ?? []),
         tools: new Map(),
         commands: new Map(),
         agents: new Map(),
@@ -487,6 +603,8 @@ export class TrustedExtensionRunner {
   }
 
   hasHandlers(event: string): boolean {
+    // Slot 6 is withdrawn: the runtime must never treat these as live hooks.
+    if (isWithdrawnRuntimeEvent(event)) return false;
     for (const extension of this.loaded.values()) {
       if ((extension.handlers.get(event)?.length ?? 0) > 0) return true;
     }
@@ -544,21 +662,56 @@ export class TrustedExtensionRunner {
   }
 
   /**
-   * Emit one event to every handler in load order. For result events the
-   * results are folded by the caller-supplied reducer; a throwing or stalled
-   * handler counts as `undefined` (spec §6).
+   * Emit one event to every handler in load order, after the runtime slot gate
+   * (ADR 0295 rule 2). For result events the results are folded by the
+   * caller-supplied reducer; a throwing or stalled handler counts as
+   * `undefined` (spec §6). The reducer also receives the id and the label of
+   * the extension that produced `next`, so a hook that changes control flow can
+   * name its source — the id for a record, the label for anything the user
+   * reads — without a second lookup.
    */
   async emit<R = unknown>(
     event: TrustedExtensionEventName,
     payload: Record<string, unknown>,
-    fold?: (acc: R | undefined, next: R) => R,
+    fold?: (
+      acc: R | undefined,
+      next: R,
+      extensionId: string,
+      extensionLabel: string,
+    ) => R,
   ): Promise<R | undefined> {
     if (this.disposed) return undefined;
+    if (this.disposed) return undefined;
+    if (isWithdrawnRuntimeEvent(event)) {
+      for (const extension of this.loaded.values()) {
+        if ((extension.handlers.get(event)?.length ?? 0) > 0) {
+          this.report(
+            extension.spec.id,
+            "rejected_registration",
+            `handler for "${event}" skipped: slot 6 (runtime.request.before) is not offered`,
+            event,
+          );
+        }
+      }
+      return undefined;
+    }
     let acc: R | undefined;
     const timed = RESULT_EVENTS.has(event);
     for (const extension of this.loaded.values()) {
       const handlers = extension.handlers.get(event);
       if (!handlers?.length) continue;
+      const refused = this.refusedSlot(extension, event);
+      if (refused) {
+        // A skip is never silent: the plugin author and the user both need to
+        // know why the hook did nothing (ADR 0295 rule 2).
+        this.report(
+          extension.spec.id,
+          "permission_denied",
+          `handler for "${event}" skipped: the plugin does not hold ${refused}`,
+          event,
+        );
+        continue;
+      }
       const ctx = this.createContext(extension);
       for (const handler of handlers) {
         try {
@@ -567,7 +720,7 @@ export class TrustedExtensionRunner {
             ? withTimeout(run, TRUSTED_EXTENSION_HANDLER_TIMEOUT_MS)
             : run)) as R | undefined;
           if (result !== undefined && result !== null) {
-            acc = fold ? fold(acc, result) : result;
+            acc = fold ? fold(acc, result, extension.spec.id, extension.spec.label) : result;
           }
         } catch (err) {
           const kind: TrustedExtensionDiagnosticKind = /exceeded \d+ms/.test(errorMessage(err))
@@ -578,6 +731,305 @@ export class TrustedExtensionRunner {
       }
     }
     return acc;
+  }
+
+  /**
+   * The slot permission that refuses `event` for this extension, or `undefined`
+   * when its handlers may run (ADR 0295 rule 2).
+   */
+  private refusedSlot(extension: LoadedExtension, event: string): string | undefined {
+    return this.refusedPermission(extension, trustedExtensionEventPermission(event));
+  }
+
+  /**
+   * The slot permission that refuses the non-event call `apiCall` for this
+   * extension, or `undefined` when the call may run (ADR 0295 rule 2). An API
+   * call has no event name, so its slot comes from the named contract in
+   * `@pi-desktop/shared` rather than from the payload.
+   */
+  private refusedApi(
+    extension: LoadedExtension,
+    apiCall: TrustedExtensionApiCall,
+  ): string | undefined {
+    return this.refusedPermission(extension, trustedExtensionApiPermission(apiCall));
+  }
+
+  /**
+   * Report and refuse `apiCall` for `extension` when the plugin does not hold
+   * its slot permission; `true` means the call may proceed. Every refusal is
+   * reported, never swallowed: the author and the user both need to know why
+   * the call did nothing (ADR 0295 rule 2).
+   */
+  private refuseApi(
+    extension: LoadedExtension,
+    apiCall: TrustedExtensionApiCall,
+    member: string,
+  ): boolean {
+    const refused = this.refusedApi(extension, apiCall);
+    if (!refused) return false;
+    this.report(
+      extension.spec.id,
+      "permission_denied",
+      `${member} was refused: the plugin does not hold ${refused}`,
+      member,
+    );
+    return true;
+  }
+
+  /**
+   * Report and refuse `apiCall` in `scope` for `extension` when the scope
+   * needs a permission the plugin does not hold; `true` means the call may
+   * proceed. Only one scope needs a second right, and it is a property of the
+   * scope rather than of the call: a whole-session recap reads conversation
+   * content, so it needs `runtime.session.read` on top of the slot's own name
+   * (ADR 0295 rule 7). The refusal is reported like every other one.
+   */
+  private refuseApiScope(
+    extension: LoadedExtension,
+    apiCall: TrustedExtensionApiCall,
+    scope: string,
+    member: string,
+  ): boolean {
+    const refused = this.refusedPermission(
+      extension,
+      trustedExtensionApiScopePermission(apiCall, scope),
+    );
+    if (!refused) return false;
+    this.report(
+      extension.spec.id,
+      "permission_denied",
+      `${member} was refused: the plugin does not hold ${refused}`,
+      member,
+    );
+    return true;
+  }
+
+  /**
+   * Report a host read or write that failed for `apiCall`'s member and answer
+   * `undefined` to the plugin.
+   *
+   * A call that could not be answered is visible, never a silent no-op: the
+   * plugin row shows the host's own message. `handler_error` is the
+   * diagnostic kind for it because the failure is the plugin's request, not
+   * its load.
+   */
+  private reportCallFailure(extension: LoadedExtension, member: string, error: unknown): void {
+    this.report(extension.spec.id, "handler_error", errorMessage(error), member);
+  }
+
+  /**
+   * Slot 9: hand one turn's host facts to the plugin exactly as the host
+   * answered them.
+   *
+   * `undefined` is the answer for every failure, and each one is reported: the
+   * plugin does not hold `runtime.turn.facts`, or the host has no such turn (a
+   * turn it never recorded is an error, not zeroes), or the read itself
+   * failed. Nothing here is counted, derived or cached from what the plugin
+   * observed — the plugin's own event stream is best-effort and is not the
+   * host's numbers.
+   */
+  private async extensionTurnFacts(
+    extension: LoadedExtension,
+    input?: { turnId?: string; limit?: number },
+  ): Promise<TrustedExtensionTurnFacts | undefined> {
+    if (this.refuseApi(extension, "turnFacts", "turnFacts")) return undefined;
+    const turnId = typeof input?.turnId === "string" ? input.turnId.trim() : "";
+    try {
+      return await this.bridge.turnFacts({
+        ...(turnId ? { turnId } : {}),
+        ...(typeof input?.limit === "number" ? { limit: input.limit } : {}),
+      });
+    } catch (error) {
+      this.reportCallFailure(extension, "turnFacts", error);
+      return undefined;
+    }
+  }
+
+  /**
+   * Slot 8: read what a turn contained.
+   *
+   * One turn answers with the host's facts for it — the numbers are the host's
+   * (`turn.facts`), and the conversation text of that one turn is named as
+   * unavailable rather than returned empty, because the host exposes no
+   * per-turn message read yet. A whole session answers with the newest
+   * transcript rows windowed by the host (`session.get`), which is conversation
+   * content and therefore needs `runtime.session.read` on top of the slot's own
+   * `runtime.turn.recap` (rule 7). Reads are not recorded one by one.
+   */
+  private async extensionRecap(
+    extension: LoadedExtension,
+    input?: { scope?: "turn" | "session"; turnId?: string; limit?: number; sessionId?: string; before?: number },
+  ): Promise<TrustedExtensionTurnRecap | undefined> {
+    const scope = input?.scope === "session" ? "session" : "turn";
+    if (this.refuseApi(extension, "recap", "recap")) return undefined;
+    if (this.refuseApiScope(extension, "recap", scope, `recap:${scope}`)) return undefined;
+    const limit = recapLimit(input?.limit);
+    try {
+      if (scope === "session") {
+        const target = input?.sessionId;
+        if (target !== undefined && (typeof target !== "string" || !target.trim() || target.length > 256)) {
+          throw new Error("Session recap needs a valid session identity");
+        }
+        if (input?.before !== undefined && (!Number.isSafeInteger(input.before) || input.before < 0)) {
+          throw new Error("Session recap needs a non-negative physical cursor");
+        }
+        const read = await this.bridge.recapSession({
+          limit,
+          ...(target === undefined ? {} : { sessionId: target.trim() }),
+          ...(input?.before === undefined ? {} : { before: input.before }),
+        });
+        return {
+          scope: "session" as const,
+          sessionId: target?.trim() ?? this.bridge.sessionId,
+          messages: read.messages,
+          truncated: read.truncated,
+          ...(read.title === undefined ? {} : { title: read.title }),
+          ...(read.messageStart === undefined ? {} : { messageStart: read.messageStart }),
+          ...(read.messageEnd === undefined ? {} : { messageEnd: read.messageEnd }),
+        };
+      }
+      const turnId = typeof input?.turnId === "string" ? input.turnId.trim() : "";
+      const facts = await this.bridge.turnFacts({
+        ...(turnId ? { turnId } : {}),
+        limit,
+      });
+      if (!facts) return undefined;
+      return {
+        scope: "turn" as const,
+        sessionId: facts.sessionId,
+        turnId: facts.turnId,
+        facts,
+        messages: null,
+        messagesUnavailable: "no-host-turn-read" as const,
+      };
+    } catch (error) {
+      this.reportCallFailure(extension, `recap:${scope}`, error);
+      return undefined;
+    }
+  }
+
+  /**
+   * Slot 10: start another turn after this one ends.
+   *
+   * The host owns the queue, so the continuation is a real, durable turn that
+   * survives a restart and is drained at the next turn boundary — the same
+   * mechanism a user message uses. There is no numeric quota (ADR 0295 rule
+   * 9): what replaces it is the visible row ADR 0293 asks for, which is why the
+   * request carries the plugin's id and label. The queued row is real and
+   * visible today, and both it and the durable message row it becomes store
+   * that provenance (schema v22, host-core `plugin_provenance.rs`), so the row
+   * names the plugin that asked for it.
+   */
+  private async extensionContinueTurn(
+    extension: LoadedExtension,
+    input: string | { message?: string },
+  ): Promise<TrustedExtensionContinuation | undefined> {
+    if (this.refuseApi(extension, "continueTurn", "continueTurn")) return undefined;
+    const message = typeof input === "string" ? input : input?.message;
+    if (typeof message !== "string" || !message.trim()) {
+      this.reportCallFailure(
+        extension,
+        "continueTurn",
+        new Error("continueTurn needs a message to continue with"),
+      );
+      return undefined;
+    }
+    try {
+      return await this.bridge.continueTurn({
+        message,
+        pluginId: extension.spec.id,
+        pluginLabel: extension.spec.label,
+      });
+    } catch (error) {
+      this.reportCallFailure(extension, "continueTurn", error);
+      return undefined;
+    }
+  }
+
+  /**
+   * Plugin-level completion on user-configured models. Permission
+   * `agent.model.complete` (or legacy `agent.complete` at the host). Not a
+   * renderer path: business AI belongs in the extension/plugin process.
+   */
+  private async extensionAiComplete(
+    extension: LoadedExtension,
+    input: unknown,
+  ): Promise<unknown> {
+    const perms = extension.spec.permissions ?? [];
+    const allowed =
+      perms.includes(PLUGIN_MODEL_COMPLETE_PERMISSION) || perms.includes("agent.complete");
+    if (!allowed) {
+      this.report(
+        extension.spec.id,
+        "permission_denied",
+        `ai.complete was refused: the plugin does not hold ${PLUGIN_MODEL_COMPLETE_PERMISSION}`,
+        "ai.complete",
+      );
+      return { ok: false, code: "PERMISSION_DENIED" };
+    }
+    const record = input && typeof input === "object" ? (input as Record<string, unknown>) : {};
+    if (!Array.isArray(record.messages) || record.messages.length === 0) {
+      this.reportCallFailure(extension, "ai.complete", new Error("ai.complete needs messages"));
+      return { ok: false, code: "INVALID_INPUT" };
+    }
+    try {
+      return await this.bridge.aiComplete({
+        ...record,
+        pluginId: extension.spec.id,
+        permissions: extension.spec.permissions ?? [],
+      } as never);
+    } catch (error) {
+      this.reportCallFailure(extension, "ai.complete", error);
+      return { ok: false, code: "PROVIDER_ERROR", detail: errorMessage(error) };
+    }
+  }
+
+  /**
+   * The slot permission that refuses this extension, or `undefined` when it
+   * holds the permission and may proceed (ADR 0295 rule 2).
+   *
+   * Every mapped slot name is registered, so there is no exception: the gate
+   * applies to every plugin, and the high-trust tier is no different —
+   * `agent.extension` says where the code runs and never implies a slot grant.
+   * A handler the plugin may not run is skipped and reported, never silently
+   * allowed (see `emit`, `refuseApi`, and `toolResultExtensionAllowed`).
+   */
+  private refusedPermission(
+    extension: LoadedExtension,
+    permission: string | undefined,
+  ): string | undefined {
+    if (!permission) return undefined;
+    return extension.permissions.has(permission) ? undefined : permission;
+  }
+
+  /**
+   * Slot-5 gate for one tool result (ADR 0295 rule 2): may the extension that
+   * registered `toolName` introduce tools, report spend, and request early
+   * termination with its result? A refusal is reported as `permission_denied`
+   * on the plugin row. `undefined` means the tool belongs to no extension, so
+   * the caller's own rules decide; only the runner knows the slot behind a tool
+   * an extension registered.
+   */
+  toolResultExtensionAllowed(toolName: string): boolean | undefined {
+    const owner = [...this.loaded.values()].find((extension) =>
+      extension.tools.has(toolName),
+    );
+    if (!owner) return undefined;
+    return !this.refuseApi(owner, "toolResult", `toolResult:${toolName}`);
+  }
+
+  /**
+   * Report an answer a slot accepted but the host will not honour (ADR 0295
+   * rules 2 and 5).
+   *
+   * The plugin holds the grant, so this is not a permission refusal: its hook
+   * ran and answered, and the answer itself cannot be applied — a model this
+   * run cannot request, or a message list that is not a message list. The host
+   * says so on the plugin row instead of quietly passing the answer through,
+   * which is the same rule that makes a skipped handler a diagnostic.
+   */
+  rejectSlotAnswer(extensionId: string, member: string, message: string): void {
+    this.report(extensionId, "handler_error", message, member);
   }
 
   private errorReport(extensionId: string): TrustedExtensionLoadReport {
@@ -729,6 +1181,9 @@ export class TrustedExtensionRunner {
         return bridge.getModel();
       },
       isIdle: () => bridge.isIdle(),
+      // The live cancellation token of the running turn (ADR 0295 slot 3): a
+      // long-running plugin keeps the signal and stops when the turn aborts.
+      signal: bridge.getAbortSignal(),
       abort: () => bridge.abort(),
       hasPendingMessages: () => bridge.hasPendingMessages(),
       shutdown: this.inert(extension, "shutdown"),
@@ -748,8 +1203,6 @@ export class TrustedExtensionRunner {
       fork: (entryId: string) => bridge.fork(entryId),
       navigateTree: this.inert(extension, "navigateTree", Promise.resolve({ cancelled: true })),
       switchSession: this.inert(extension, "switchSession", Promise.resolve({ cancelled: true })),
-      sendUserMessage: (content: string | unknown[], options?: { deliverAs?: "steer" | "followUp" }) =>
-        bridge.sendUserMessage(content, options),
     };
   }
 
@@ -939,8 +1392,60 @@ export class TrustedExtensionRunner {
         void bridge.setSessionName(String(name));
       },
       getSessionName: () => bridge.getSessionName(),
-      sendUserMessage: (content: string | unknown[], options?: { deliverAs?: "steer" | "followUp" }) =>
-        bridge.sendUserMessage(content, options),
+      /**
+       * Slot 3: ask the host to stop the current turn (ADR 0295 rule 2). The
+       * plugin's own long-running work learns about it through
+       * `ctx.signal` / the tool execution context's `signal`. Returns whether
+       * the request was accepted: a plugin that does not hold
+       * `runtime.turn.abort` is refused with a `permission_denied` diagnostic
+       * and gets `false`, never a throw and never a silent no-op.
+       */
+      requestTurnAbort: (): boolean => {
+        if (this.refuseApi(extension, "requestTurnAbort", "requestTurnAbort")) return false;
+        bridge.abort();
+        return true;
+      },
+      /**
+       * Slot 9: the host's own facts for one turn (`runtime.turn.facts`). The
+       * answer is the host's `turn.facts` payload, passed through unchanged —
+       * nothing is re-derived from the events this plugin saw. `turnId` absent
+       * means the turn running now. A plugin without the grant — or a turn the
+       * host never recorded — gets `undefined` plus a diagnostic, never a
+       * throw and never a silent empty answer.
+       */
+      turnFacts: (input?: { turnId?: string; limit?: number }) =>
+        this.extensionTurnFacts(extension, input),
+      /**
+       * Slot 8: read what a turn contained (`runtime.turn.recap`). The default
+       * scope is one turn; `scope: "session"` reads the whole session and
+       * needs `runtime.session.read` as well (ADR 0295 rule 7). Reads are not
+       * logged one by one.
+       */
+      getPluginSettings: () => structuredClone(extension.spec.settings ?? {}),
+      recap: (input?: { scope?: "turn" | "session"; turnId?: string; limit?: number; sessionId?: string; before?: number }) =>
+        this.extensionRecap(extension, input),
+      /**
+       * Slot 10: start another turn after this one ends
+       * (`runtime.turn.continue`). The host owns the queue, so the
+       * continuation is a real durable turn and there is no numeric quota
+       * (ADR 0295 rule 9). Without the grant the plugin gets `undefined` and a
+       * `permission_denied` diagnostic.
+       */
+      continueTurn: (input: string | { message?: string }) =>
+        this.extensionContinueTurn(extension, input),
+      ai: {
+        complete: (input: unknown) => this.extensionAiComplete(extension, input),
+        completeStream: async (input: unknown, onDelta?: (text: string) => void) => {
+          const result = (await this.extensionAiComplete(extension, input)) as {
+            ok?: boolean;
+            text?: string;
+          };
+          if (typeof onDelta === "function" && result?.ok && typeof result.text === "string") {
+            onDelta(result.text);
+          }
+          return result;
+        },
+      },
       events: {
         on: () => () => {},
         emit: () => {},

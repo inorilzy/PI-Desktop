@@ -28,7 +28,10 @@ Main risks:
 ## 3. Isolation strategy
 
 ### Must
-1. Plugin UI is isolated from the host UI DOM
+1. Untrusted plugin UI is isolated from the host UI DOM. Panels, views, and
+   settings destinations keep their own `webContents` and never draw into the
+   host document. The trusted UI tier (`manifest.renderer`, §3.3) is the one
+   deliberate exception: it runs inside the host renderer realm by design
 2. Plugins cannot directly require host modules
 3. The secret store is not open to plugins. Host-owned completions
    (`agent.complete`) resolve credentials in Electron main and never pass keys,
@@ -42,6 +45,15 @@ Main risks:
    cannot provide those identities. Host-core owns the target Session ID,
    delivery ledger, permission ceiling, turn binding, callback, cancellation,
    and transcript provenance.
+
+### Host-rendered scenic Settings destinations
+
+`contributes.scenicThemes` is data only. The host validates both grants,
+same-plugin theme ownership, declared preview assets, and the exact bounded
+`--nexus-backdrop-blur` variable before it renders cards in Extensions. A plugin
+cannot supply Settings HTML, CSS, JavaScript, selectors, DOM, arbitrary actions,
+or direct renderer IPC. The host owns the transparent canvas, layout, focus,
+native controls, titlebar, Apply action, and lifecycle fallback to General.
 
 Clipboard history is host-owned and remains in the Electron main process only.
 It is never written to the plugin data directory or the host database. The host
@@ -80,9 +92,10 @@ transcript replacement and regeneration.
 
 ## 3.1 Contributed theme CSS
 
-A theme contribution (`ui.theme`) is the one case where plugin-authored content
-runs inside the host renderer, so it crosses a sanitizer in the main process
-before it is ever sent to the UI:
+A theme contribution (`ui.theme`) is untrusted plugin-authored content that
+runs inside the host renderer (the trusted UI tier of §3.3 is the other way
+into that realm, and it is not sanitized because it is trusted code), so the
+CSS crosses a sanitizer in the main process before it is ever sent to the UI:
 
 - Only CSS the browser applies is inspected: comment bodies and string literals
   are blanked first, with one space per masked character so any offset still
@@ -113,6 +126,57 @@ before it is ever sent to the UI:
 
 CSS cannot script, but it can mislead: a theme is still third-party code shaping
 what the user sees, which is why it is a declared, revocable permission.
+
+## 3.3 Trust tiers
+
+Trust follows the entries a plugin declares, and the tiers are orthogonal, not a
+ladder: declaring one tier grants nothing in another, and a plugin may declare
+any combination.
+
+| Entry | Where the code runs | Permission | Component slots |
+|---|---|---|---|
+| `main` / `ui.panel` / `views[].entry` / `settingsDestinations[].entry` | plugin `utilityProcess` / plugin `webContents` | the manifest's own permissions | none |
+| `renderer` | the host renderer, same realm as the host UI | `renderer.extension` (high) | allowed, by tier |
+| `contributes.agentExtensions` | the agent sidecar | `agent.extension` (high) | none |
+
+The base tier (`main` and/or a page) is the sandboxed model above: process
+isolation, its own DOM, and no slot registration. The trusted agent tier runs in
+the agent sidecar and is specified in
+[16-trusted-extensions.md](16-trusted-extensions.md) §2.
+
+The trusted UI tier puts plugin code **inside the app's own window**: the entry
+module shares the host renderer's JavaScript realm, its DOM, its module graph,
+and its React tree. There is no process isolation, no `iframe`, and no second
+sandbox (ADR 0291). The mitigations that do ship with it:
+
+- **React singleton.** The host injects its own React through the module's
+  import map; a plugin that ships its own React is refused at load with a
+  diagnostic, because two React copies break hooks and context.
+- **Namespaced styling.** Every slot is wrapped in a
+  `data-pi-plugin="<plugin-id>"` container, plugin styles must go through
+  `pi.ui.injectStyle(css)`, the host removes them on unload, and the host
+  auto-scopes selectors under the plugin's `data-pi-plugin` container.
+  A stylesheet with a top-level `html`, `body`, or `*` selector is refused rather
+  than narrowed.
+- **Per-slot error boundary.** A slot that throws collapses to nothing, its
+  neighbours are unaffected, and the host reports the crash.
+- **Distribution is left ungated.** A plugin declaring `renderer` installs
+  through the ordinary local, development, and marketplace paths; the
+  `renderer.extension` grant is where the user sees the risk.
+
+The global bridge handle is the boundary that does not exist: `contextBridge`
+defines `window.piDesktop` as a non-configurable own property of the window, so
+the app cannot delete it and a later-loaded module reaches the host's whole
+preload surface — 243 whitelisted channels (220 invoke + 23 event) — with no
+per-caller check. Plugins are trusted and broadly permissioned on purpose: the
+boundary is marketplace review plus install-time consent, not isolation.
+
+What this tier gives up is recorded rather than implied: an infinite loop, a
+memory leak, or global pollution from the entry is not contained by the error
+boundary, and unloading is not guaranteed to roll back global mutations. The
+crash radius of the renderer host is an accepted cost of the same-realm design
+(ADR 0291). The entry contract itself is specified in
+[16-trusted-extensions.md](16-trusted-extensions.md) §2A.
 
 ## 4. Permission-grant UX
 
@@ -217,6 +281,30 @@ containing directory, is held in memory, and dies with the process; nothing is
 persisted, and a rate-brake prompt is offered no session option at all. A host
 with no consent service refuses — a host that cannot ask must never assume yes.
 Both the denial and the grant are audited.
+
+### 6.2.1 Test-only auto consent for an automated run
+
+An automated run cannot click a native dialog, so a suite that already owns a
+temp data directory opts in by creating one marker file inside it:
+`<dataDir>/e2e-auto-consent`, where `<dataDir>` is the directory the run was
+started against (`PI_DESKTOP_DATA_DIR`, `AUTO_CONSENT_MARKER_FILE` in
+`apps/desktop/electron/main/tool-permission-consent.ts`).
+
+While that marker exists **and** the build is not packaged, the tool-permission
+confirmation (spec 03-runtime/01-ipc-protocol §10) answers the request itself as
+**Allow once**. It does so by producing the decision that the "Allow once"
+button index maps to, through the same mapping and the same downstream
+permission flow a click goes through: the switch bypasses neither the prompt
+vocabulary nor the grant. It can therefore grant nothing a single click could
+not grant, and every auto-answer writes one audit line naming the tool it
+approved.
+
+Two properties keep the affordance away from a real user:
+
+- It is ignored when `app.isPackaged` is true, even with the marker present: a
+  shipped build has no auto-consent path in it at all.
+- A run without the marker performs one file existence check and then shows the
+  native prompt exactly as before.
 
 ### 6.3 The user-selected root
 

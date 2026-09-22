@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "id": "example.prompt-enhance-demo",
+  "name": "Prompt Enhance Demo",
+  "version": "0.0.1",
+  "description": "Renderer slot UI + plugin-process AI enhance via pi.ai.complete",
+  "main": "main.js",
+  "renderer": "renderer/index.mjs",
+  "permissions": [
+    "renderer.extension",
+    "agent.model.complete"
+  ],
+  "rendererActions": [
+    "plugin.call",
+    "composer.readDraft",
+    "composer.replaceDraft",
+    "ui.toast"
+  ],
+  "rendererData": [],
+  "contributes": {}
+}

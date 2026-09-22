@@ -20,6 +20,7 @@ import {
 } from "@pi-desktop/shared";
 import { useOpenChatFileRef, useOpenPreviewTarget } from "../../../hooks/use-preview-target";
 import { useDisclosureAnchorNotifier } from "../../../lib/disclosure-anchor-context";
+import { isThinkingActive, resolveThinkingDisplayMode } from "../../../lib/turn-process";
 import { messageThinking as thinkingText } from "../../../lib/assistant-turns";
 import { useReferencedImageDataUrl } from "../../../lib/use-referenced-image-data-url";
 import { isHtmlFilePath, splitChatText } from "../../../lib/chat-links";
@@ -378,43 +379,6 @@ export function fileChipIcon(name: string, kind?: "image" | "file") {
   return IconFileText;
 }
 
-/** Compact session chip; click opens the referenced durable conversation. */
-export function SessionRefChip({
-  sessionId,
-  ...position
-}: {
-  sessionId: string;
-} & SourcePositionProps) {
-  const { t } = useTranslation();
-  const session = useAppStore((state) =>
-    state.sessions.find((candidate) => candidate.id === sessionId),
-  );
-  const selectSession = useAppStore((state) => state.selectSession);
-  const showToast = useAppStore((state) => state.showToast);
-  const title = session?.title.trim() || sessionId;
-  return (
-    <button
-      type="button"
-      className="composer-chip chat-file-chip"
-      {...position}
-      title={`${t("sessionCollaboration.openSession", { name: title })} — ${sessionId}`}
-      aria-label={`${title} — ${sessionId}`}
-      onClick={() => {
-        void selectSession(sessionId).catch((error: unknown) => {
-          showToast(error instanceof Error ? error.message : String(error), {
-            variant: "error",
-          });
-        });
-      }}
-    >
-      <span className="composer-chip-icon" aria-hidden>
-        <IconBranch size={13} />
-      </span>
-      <span className="composer-chip-name">{title}</span>
-    </button>
-  );
-}
-
 /** Compact leaf-name chip matching the composer file node (D320). */
 export function FileRefChip({
   name,
@@ -510,12 +474,6 @@ export function LinkifiedText({ text }: { text: string }) {
             onOpen={openFileRef}
             {...position}
           />
-        ) : segment.target.kind === "session" ? (
-          <SessionRefChip
-            key={index}
-            sessionId={segment.target.sessionId}
-            {...position}
-          />
         ) : (
           <TooltipButton
             key={index}
@@ -594,6 +552,21 @@ export const ThinkingRow = memo(function ThinkingRow({
     onUserInteraction?.();
     collapseDisclosure();
   }, [collapseDisclosure, onUserInteraction]);
+  const compact = useAppStore(
+    (state) => resolveThinkingDisplayMode(state.settings?.thinkingDisplayMode) === "compact",
+  );
+  if (compact) {
+    return isThinkingActive(message, streaming) ? (
+      <div className="tool-row thinking thinking-compact" role="status">
+        <span className="tool-row-icon" aria-hidden>
+          <IconSparkles size={15} />
+        </span>
+        <span className="tool-row-name running">
+          {t("chat.thinking", { defaultValue: "Thinking" })}
+        </span>
+      </div>
+    ) : null;
+  }
   const text = thinkingText(message);
   const summary = text.replace(/\s+/g, " ").trim();
   return (

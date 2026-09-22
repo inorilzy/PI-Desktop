@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+  manifestEntries,
+  pluginHasEntry,
   pluginMcpToolKey,
   pluginSkillId,
   pluginThemeId,
@@ -10,8 +12,15 @@ import {
   LEGACY_FS_PERMISSIONS,
   MAX_GLOBAL_SHORTCUTS_PER_PLUGIN,
   PLUGIN_PERMISSIONS,
+  PLUGIN_RENDERER_ACTIONS,
+  PLUGIN_RENDERER_DATA,
+  PLUGIN_RENDERER_SCHEME,
+  PLUGIN_RENDERER_SLOTS,
   PLUGIN_VIEW_ICONS,
+  type PluginManifest,
   type PluginProviderContrib,
+  type PluginRendererActionName,
+  type PluginRendererDataKey,
 } from "./index.js";
 
 const base = { schemaVersion: 1, id: "demo.x", name: "X", version: "0.1.0", main: "main.js" };
@@ -135,7 +144,7 @@ describe("validateManifest", () => {
     ).toMatch(/duplicate session source/);
   });
 
-  it("validates typed theme variables and sandboxed settings destinations", () => {
+  it("validates typed theme variables and data-only scenic Settings contributions", () => {
     expect(
       validateContributions({
         themes: [{
@@ -144,12 +153,18 @@ describe("validateManifest", () => {
           path: "themes/scenic.css",
           variables: [{ name: "--nexus-backdrop-blur", type: "length", unit: "px", min: 0, max: 20, default: 6 }],
         }],
-        settingsDestinations: [{
+        scenicThemes: {
           id: "scenic-themes",
           label: { en: "Scenic themes", "zh-CN": "风景主题" },
+          description: { en: "Scenic cards", "zh-CN": "风景卡片" },
           icon: "palette",
-          entry: "settings/index.html",
-        }],
+          themes: [{
+            themeId: "scenic",
+            label: { en: "Scenic", "zh-CN": "风景" },
+            description: { en: "Scenic card", "zh-CN": "风景卡片" },
+            previewAsset: "assets/scenic.png",
+          }],
+        },
       }),
     ).toBeUndefined();
     expect(
@@ -157,6 +172,122 @@ describe("validateManifest", () => {
         themes: [{ id: "scenic", label: "Scenic", path: "themes/scenic.css", variables: [{ name: "--pi-bg", type: "color", default: "#000000" }] }],
       }),
     ).toMatch(/variable declaration/);
+  });
+
+  // The three entries a plugin can run through — the headless module (`main`),
+  // the trusted renderer module, and a plugin-owned page. These cases start
+  // from a manifest that declares none of them.
+  const entryless = { schemaVersion: 1, id: "demo.entryless", name: "No entry", version: "0.1.0" };
+
+  it("still accepts a manifest whose only entry is main", () => {
+    const result = validateManifest(base);
+    expect(result.ok).toBe(true);
+    expect(result.manifest?.main).toBe("main.js");
+  });
+
+  it("accepts a renderer-only manifest that declares the trusted grant", () => {
+    const result = validateManifest({
+      ...entryless,
+      renderer: "renderer/index.js",
+      permissions: ["renderer.extension"],
+    });
+    expect(result.ok).toBe(true);
+    expect(result.manifest?.renderer).toBe("renderer/index.js");
+  });
+
+  it("accepts any plugin page as the only entry", () => {
+    expect(validateManifest({ ...entryless, ui: { panel: "renderer/index.html" } }).ok).toBe(true);
+    expect(
+      validateManifest({
+        ...entryless,
+        contributes: {
+          views: [{ id: "changes", title: "Changes", entry: "views/changes.html" }],
+        },
+      }).ok,
+    ).toBe(true);
+  });
+
+  it("rejects a manifest with no entry at all", () => {
+    const result = validateManifest(entryless);
+    expect(result.ok).toBe(false);
+    expect(result.error).toBe("manifest needs one of main, renderer, or a plugin page");
+  });
+
+  it("does not count contributions that are not entries as an entry", () => {
+    // The agent extension itself is well formed, so only the entry rule can
+    // reject this manifest.
+    const agentOnly = {
+      ...entryless,
+      permissions: ["agent.extension"],
+      contributes: { agentExtensions: ["agent/hooks.ts"] },
+    };
+    expect(validateContributions(agentOnly.contributes)).toBeUndefined();
+    const result = validateManifest(agentOnly);
+    expect(result.ok).toBe(false);
+    expect(result.error).toBe("manifest needs one of main, renderer, or a plugin page");
+
+    for (const contributes of [
+      { skills: ["skills/a.md"] },
+      { commands: [{ id: "a.open", title: "Open" }] },
+      { services: [{ id: "watcher" }] },
+      { themes: [{ id: "a", label: "A", path: "themes/a.css" }] },
+      { mcpServers: [{ id: "files", transport: "stdio" as const, command: "mcp-files" }] },
+    ]) {
+      expect(validateContributions(contributes), JSON.stringify(contributes)).toBeUndefined();
+      expect(
+        validateManifest({ ...entryless, contributes }).error,
+        JSON.stringify(contributes),
+      ).toBe("manifest needs one of main, renderer, or a plugin page");
+    }
+  });
+
+  it("rejects a renderer entry without the renderer.extension grant", () => {
+    const result = validateManifest({ ...entryless, renderer: "renderer/index.js" });
+    expect(result.ok).toBe(false);
+    expect(result.error).toBe("manifest.renderer requires the renderer.extension permission");
+  });
+
+  it("keeps the renderer entry inside the plugin directory", () => {
+    const granted = { ...entryless, permissions: ["renderer.extension"] };
+    const escaping = validateManifest({ ...granted, renderer: "../evil.js" });
+    expect(escaping.ok).toBe(false);
+    expect(escaping.error).toBe('manifest.renderer must not contain ".."');
+    const absolute = validateManifest({ ...granted, renderer: "/evil.js" });
+    expect(absolute.ok).toBe(false);
+    expect(absolute.error).toBe("manifest.renderer must not be an absolute path");
+    // A drive-letter path is absolute too, on the platform that writes them.
+    expect(validateManifest({ ...granted, renderer: "C:\\evil.js" }).error).toBe(
+      "manifest.renderer must not be an absolute path",
+    );
+  });
+
+  it("rejects a blank main instead of reading it as an absent entry", () => {
+    expect(validateManifest({ ...base, main: "" }).error).toBe(
+      "manifest.main must be a non-empty string",
+    );
+    expect(validateManifest({ ...base, main: 7 as never }).error).toBe(
+      "manifest.main must be a non-empty string",
+    );
+  });
+
+  it("validates host-rendered scenic Settings contributions", () => {
+    const scenicThemes = {
+      id: "nexus-scenic-themes",
+      label: { en: "Nexus Scenic Themes", "zh-CN": "Nexus 风景主题" },
+      description: { en: "Four scenic themes", "zh-CN": "四款风景主题" },
+      icon: "palette" as const,
+      themes: [{
+        themeId: "twilight-mountains",
+        label: { en: "Twilight Mountains", "zh-CN": "暮光山脉" },
+        description: { en: "Twilight glass", "zh-CN": "暮光玻璃" },
+        previewAsset: "assets/twilight-mountains.png",
+      }],
+    };
+    expect(validateContributions({ scenicThemes })).toBeUndefined();
+    expect(validateContributions({ scenicThemes: { ...scenicThemes, themes: [] } })).toMatch(/1 to 12 cards/);
+    expect(validateContributions({ scenicThemes: { ...scenicThemes, themes: [{ ...scenicThemes.themes[0], previewAsset: "../escape.png" }] } })).toMatch(/previewAsset/);
+    expect(validateContributions({ scenicThemes: { ...scenicThemes, themes: [{ ...scenicThemes.themes[0], label: "Twilight" as unknown as typeof scenicThemes.themes[number]["label"] }] } })).toMatch(/localized label/);
+    expect(validateContributions({ scenicThemes: { ...scenicThemes, keywords: ["scenic" as unknown as { en: string; "zh-CN": string }] } })).toMatch(/keywords/);
   });
 });
 
@@ -359,7 +490,7 @@ describe("planSafeActions contract (ADR 0211)", () => {
 });
 
 describe("contributed theme assets and window appearance", () => {
-  it("accepts a whitelisted absolute asset list", () => {
+  it("accepts whitelisted package-relative and absolute asset lists", () => {
     expect(
       validateContributions({
         themes: [
@@ -367,17 +498,15 @@ describe("contributed theme assets and window appearance", () => {
             id: "midnight",
             label: "Midnight",
             path: "a.css",
-            assets: ["C:/art/bg.png", "file:///C:/font/ui.woff2", "/art/sheen.svg"],
+            assets: ["assets/bg.png", "fonts/ui.woff2", "assets/sheen.svg", "C:/art/external.png"],
           },
         ],
       }),
     ).toBeUndefined();
   });
 
-  it("rejects a relative path, an escape, an unknown scheme or a wrong extension", () => {
+  it("rejects an escape, an unknown scheme or a wrong extension", () => {
     for (const asset of [
-      "art/bg.png",
-      "./art/bg.png",
       "../bg.png",
       "art/../bg.png",
       "C:/art/../bg.png",
@@ -401,7 +530,7 @@ describe("contributed theme assets and window appearance", () => {
             id: "m",
             label: "M",
             path: "a.css",
-            assets: ["C:/art/bg.png", "file:///C:/art/bg.png"],
+            assets: ["assets/bg.png", "./assets/bg.png", "C:/art/external.png", "file:///C:/art/external.png"],
           },
         ],
       }),
@@ -537,12 +666,14 @@ describe("PLUGIN_PERMISSIONS", () => {
       "models.list",
       "project.create",
       "session.read",
+      "usage.read",
       "fs.read",
       "fs.write",
       "fs.delete",
       "browser.cdp",
       "audio.capture.background",
       "audio.playback.background",
+      "speech.adapter.register",
       "keyboard.globalShortcut",
       "net.websocket",
     ]) {
@@ -555,6 +686,25 @@ describe("PLUGIN_PERMISSIONS", () => {
     for (const legacy of Object.keys(LEGACY_FS_PERMISSIONS)) {
       expect(PLUGIN_PERMISSIONS).not.toContain(legacy);
     }
+  });
+
+  it("gains the renderer and runtime slot grants without dropping earlier names", () => {
+    for (const permission of [
+      "renderer.extension",
+      "runtime.send.before",
+      "runtime.turn.abort",
+      "runtime.turn.closing",
+    ]) {
+      expect(PLUGIN_PERMISSIONS).toContain(permission);
+    }
+    // The list is additive: a name an installed plugin already declares keeps
+    // resolving. `fs.read.workspace` is deliberately not in the list any more —
+    // LEGACY_FS_PERMISSIONS still accepts it, see "accepts a legacy permission
+    // name as the scope's backing" — so the samples here are names that stay.
+    for (const permission of ["agent.extension", "net.websocket"]) {
+      expect(PLUGIN_PERMISSIONS).toContain(permission);
+    }
+    expect(PLUGIN_PERMISSIONS.length).toBeGreaterThanOrEqual(42);
   });
 });
 
@@ -649,6 +799,118 @@ describe("contributes.agentExtensions", () => {
         .error,
     ).toMatch(/at most/);
     expect(PLUGIN_PERMISSIONS).toContain("agent.extension");
+  });
+});
+
+describe("rendererData and rendererActions declarations", () => {
+  const base = { schemaVersion: 1, id: "demo.relay", name: "Relay", version: "0.1.0", main: "main.js" };
+
+  it("keeps both fields optional", () => {
+    const result = validateManifest(base);
+    expect(result.ok).toBe(true);
+    expect(result.manifest?.rendererData).toBeUndefined();
+    expect(result.manifest?.rendererActions).toBeUndefined();
+  });
+
+  it("freezes both vocabularies in their documented order", () => {
+    expect(PLUGIN_RENDERER_DATA).toEqual([
+      "entry",
+      "session",
+      "code",
+      "theme",
+      "selection",
+      "draft",
+      "attachments",
+      "locale",
+    ]);
+    expect(PLUGIN_RENDERER_ACTIONS).toEqual([
+      "plugin.call",
+      "composer.replaceDraft",
+      "composer.readDraft",
+      "composer.insertText",
+      "composer.attachPath",
+      "ui.openOverlay",
+      "ui.closeOverlay",
+      "ui.openModal",
+      "ui.closeModal",
+      "ui.toast",
+    ]);
+  });
+
+  it("accepts a full declaration and hands it back unchanged", () => {
+    const dataKeys: PluginRendererDataKey[] = [...PLUGIN_RENDERER_DATA];
+    const actions: PluginRendererActionName[] = [...PLUGIN_RENDERER_ACTIONS];
+    const declared: PluginManifest = {
+      ...base,
+      rendererData: dataKeys,
+      rendererActions: actions,
+    };
+    const result = validateManifest(declared);
+    expect(result.ok).toBe(true);
+    expect(result.manifest?.rendererData).toEqual(dataKeys);
+    expect(result.manifest?.rendererActions).toEqual(actions);
+  });
+
+  it("rejects a declaration that is not an array", () => {
+    expect(validateManifest({ ...base, rendererData: "entry" as never }).error).toBe(
+      "manifest.rendererData must be an array",
+    );
+    expect(validateManifest({ ...base, rendererActions: 7 as never }).error).toBe(
+      "manifest.rendererActions must be an array",
+    );
+  });
+
+  it("rejects a non-string or blank member and names the offending value", () => {
+    expect(validateManifest({ ...base, rendererData: [42] as never }).error).toBe(
+      "manifest.rendererData entry 42 is not a non-empty string",
+    );
+    expect(validateManifest({ ...base, rendererActions: [null] as never }).error).toBe(
+      "manifest.rendererActions entry null is not a non-empty string",
+    );
+    expect(validateManifest({ ...base, rendererData: ["  "] }).error).toBe(
+      'manifest.rendererData entry "  " is not a non-empty string',
+    );
+  });
+
+  it("rejects a member outside the vocabulary and names it", () => {
+    expect(validateManifest({ ...base, rendererData: ["messages"] as never }).error).toBe(
+      'manifest.rendererData has an unknown entry "messages"',
+    );
+    expect(
+      validateManifest({ ...base, rendererActions: ["composer.setDraft"] as never }).error,
+    ).toBe('manifest.rendererActions has an unknown entry "composer.setDraft"');
+  });
+
+  it("rejects a duplicate member", () => {
+    expect(validateManifest({ ...base, rendererData: ["entry", "entry"] }).error).toBe(
+      'manifest.rendererData declares "entry" twice',
+    );
+    expect(
+      validateManifest({ ...base, rendererActions: ["ui.toast", "ui.toast"] }).error,
+    ).toBe('manifest.rendererActions declares "ui.toast" twice');
+  });
+
+  it("caps each list at its own vocabulary size", () => {
+    const tooManyData = Array.from({ length: PLUGIN_RENDERER_DATA.length + 1 }, () => "entry");
+    expect(validateManifest({ ...base, rendererData: tooManyData }).error).toBe(
+      "manifest.rendererData allows at most 8 entries, got 9",
+    );
+    expect(
+      validateManifest({ ...base, rendererActions: [...PLUGIN_RENDERER_ACTIONS, "ui.toast"] })
+        .error,
+    ).toBe(
+      `manifest.rendererActions allows at most ${PLUGIN_RENDERER_ACTIONS.length} entries, got ${PLUGIN_RENDERER_ACTIONS.length + 1}`,
+    );
+  });
+
+  it("does not turn either declaration into an entry", () => {
+    const entryless = { schemaVersion: 1, id: "demo.relay2", name: "R", version: "0.1.0" };
+    const result = validateManifest({
+      ...entryless,
+      rendererData: ["entry"],
+      rendererActions: ["ui.toast"],
+    });
+    expect(result.error).toBe("manifest needs one of main, renderer, or a plugin page");
   });
 });
 
@@ -791,5 +1053,71 @@ describe("manifest i18n", () => {
     expect(validateManifest({ ...base, i18n: { en: { name: 7 } } as never }).error).toMatch(
       /manifest\.i18n\.en\.name must be a string/,
     );
+  });
+});
+
+describe("manifestEntries / pluginHasEntry", () => {
+  const view = { id: "changes", title: "Changes", entry: "views/changes.html" };
+
+  it("reports all four flags for a manifest that declares everything", () => {
+    const full = {
+      main: "main.js",
+      renderer: "renderer/index.js",
+      ui: { panel: "renderer/index.html" },
+      contributes: {
+        views: [view],
+        agentExtensions: ["agent/hooks.ts"],
+      },
+    };
+    expect(manifestEntries(full)).toEqual({ main: true, renderer: true, page: true, agent: true });
+    expect(pluginHasEntry(full)).toBe(true);
+  });
+
+  it("treats every plugin page as an entry, and agent extensions as none", () => {
+    expect(pluginHasEntry({ ui: { panel: "renderer/index.html" } })).toBe(true);
+    expect(pluginHasEntry({ contributes: { views: [view] } })).toBe(true);
+    expect(pluginHasEntry({})).toBe(false);
+    // An empty list is not a page either.
+    expect(pluginHasEntry({ contributes: { views: [] } })).toBe(false);
+    const agentOnly = { contributes: { agentExtensions: ["agent/hooks.ts"] } };
+    expect(manifestEntries(agentOnly)).toEqual({
+      main: false,
+      renderer: false,
+      page: false,
+      agent: true,
+    });
+    expect(pluginHasEntry(agentOnly)).toBe(false);
+  });
+
+  it("does not read a blank path as an entry", () => {
+    expect(manifestEntries({ main: "  ", renderer: "" })).toEqual({
+      main: false,
+      renderer: false,
+      page: false,
+      agent: false,
+    });
+    expect(pluginHasEntry({ main: "main.js" })).toBe(true);
+    expect(pluginHasEntry({ renderer: "renderer/index.js" })).toBe(true);
+  });
+});
+
+describe("PLUGIN_RENDERER_SLOTS", () => {
+  it("lists the documented component slots in their published order", () => {
+    expect(PLUGIN_RENDERER_SLOTS).toEqual([
+      "entry",
+      "toolCard",
+      "codeBlock",
+      "entryExtra",
+      "composerControl",
+      "completionSource",
+      "inlineConfirm",
+      "modal",
+      "overlay",
+      "composerReference",
+    ]);
+  });
+
+  it("serves renderer bundles over a scheme of its own", () => {
+    expect(PLUGIN_RENDERER_SCHEME).toBe("plugin-renderer");
   });
 });

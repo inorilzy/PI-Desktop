@@ -50,7 +50,6 @@ import {
   shouldShowNativeNotification,
 } from "./notification-policy";
 import { PersistenceOutbox } from "./persistence-outbox";
-import { InflightCheckpointer } from "./inflight-checkpoint";
 import { AgentSidecar } from "./agent-sidecar";
 import { Logger, ignoreBrokenStdio } from "./logger";
 import { installMainProcessErrorHandlers } from "./main-process-errors";
@@ -89,14 +88,12 @@ import {
   type PreparedPromptAttachment,
 } from "./prompt-attachments";
 import {
+  InflightCheckpointer,
   executionFromResponse,
   executionListFromResponse,
   planExecutionFromUnknown,
-} from "./plan-execution";
-import {
-  readWindowState,
-  writeWindowState,
-} from "./window-preferences";
+} from "@pi-desktop/host-runtime";
+import { readWindowState, writeWindowState } from "./window-preferences";
 import { createPlanUiProbe } from "./plan-ui-probe";
 import type { McpControlController, McpControlServer } from "./mcp-control";
 import type { AgentHostBridge } from "./agent-host-bridge";
@@ -539,6 +536,23 @@ const agentExtensions = new AgentExtensionBridge({
   },
   onToast: (message) => sendToRenderer(IPC.event.toast, { message }),
   onStatus: (event) => sendToRenderer(IPC.event.extensionsStatus, event),
+  /**
+   * Slot #1 (ADR 0295 rule 5): the runtime hands over a rewrite it performed,
+   * host-core owns `plugin_rewrites` and computes the diff, and the renderer is
+   * told afterwards so the rewritten row can show its badge without waiting for
+   * the next session read. A write that fails rejects here, which the runtime
+   * reports once per session — an un-audited rewrite is never silent.
+   */
+  recordRewrite: async (record) => {
+    if (!host) throw new Error("host unavailable");
+    const stored = await host.call<{ id: number }>("plugin.rewrites.record", record);
+    sendToRenderer(IPC.event.pluginChanged, {
+      reason: "agentExtensionRewrite",
+      pluginId: record.pluginId,
+      sessionId: record.sessionId,
+    });
+    return stored;
+  },
 });
 
 const logger = new Logger(
@@ -675,15 +689,16 @@ const pluginServices = createPluginServices({
 const {
   plugins,
   userMcp,
+  mcpOAuth,
   pluginScopes,
   sessionProjects,
   emitBrowserState,
   pluginPanels,
   pluginViews,
-  pluginSettingsViews,
   browserHost,
   browserPane,
   announceTurnEnded,
+  speech,
 } = pluginServices;
 
 const providerCatalogRuntime = createProviderCatalogRuntime({
@@ -923,7 +938,6 @@ applicationLifecycle = createApplicationLifecycle({
   applyCloseBehavior: applyCloseBehaviorForLifecycle,
   browserPane,
   pluginViews,
-  pluginSettingsViews,
   plugins,
   logger,
   refreshReleaseNotes: () => updater.refreshReleaseNotes(),
@@ -1052,8 +1066,10 @@ const sessionCoordination = createSessionCoordination({
 const {
   turnSettlements,
   activeTurnUsages,
+  activeTurnPluginUsages,
   acquireSessionOperation,
   addActiveTurnUsage,
+  addActiveTurnPluginUsage,
   activeToolCallKey,
   planSubmissionTurnKey,
   waitForTurnSettlement,
@@ -1164,6 +1180,7 @@ const eventPersistence = createEventPersistence({
   inflightCheckpointer,
   persistenceOutbox,
   addActiveTurnUsage,
+  addActiveTurnPluginUsage,
   logger,
   finishTurn,
   isStaleTerminalEvent,
@@ -1254,6 +1271,7 @@ function registerIpc() {
     getHost: () => host,
     getSidecar: () => sidecar,
     getAgentHostBridge: () => agentHostBridge,
+    getBackendRouter: () => startupState.backendRouter,
     getNotificationViewingSessionId: () => notificationViewingSessionId,
     setNotificationViewingSessionId: (sessionId: string | null) => {
       notificationViewingSessionId = sessionId;
@@ -1269,6 +1287,7 @@ function registerIpc() {
     persistenceOutbox,
     logger,
     plugins,
+    speech,
     sessionCapabilityContext,
     enrichSession,
     acquireSessionOperation,
@@ -1321,12 +1340,12 @@ function registerIpc() {
     dispatchExecutionForProposal,
     emitAgentEvent,
     userMcp,
+    mcpOAuth,
     refreshUserMcp,
     describeError,
     activeUserSubagentDocuments,
     disabledBuiltinSubagents,
     pluginViews,
-    pluginSettingsViews,
     pluginScopes,
     rememberPluginScopes,
     pluginPanels,
@@ -1367,6 +1386,7 @@ const startupState: StartupState = {
   set agentHostBridge(value) {
     agentHostBridge = value;
   },
+  backendRouter: null,
   get desktopControl() {
     return desktopControl;
   },
@@ -1480,9 +1500,9 @@ registerShutdownHandlers({
   pluginPanels,
   plugins,
   userMcp,
+  mcpOAuth,
   browserPane,
   pluginViews,
-  pluginSettingsViews,
   updater,
   logger,
   confirmQuitDialog,

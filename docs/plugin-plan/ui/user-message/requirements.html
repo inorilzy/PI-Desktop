@@ -1,0 +1,211 @@
+<!-- status: draft · issue #545 · branch feat/528-plugin-slots -->
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>用户消息卡 · 需求</title>
+<style>
+  :root{
+    --bg:#0e0e0e; --surface:#161616; --line:#2a2a2a; --line-2:#353535;
+    --text:#ededed; --text-2:#b0b0b0; --muted:#7d7d7d; --faint:#5c5c5c;
+    --ok:#40c977; --ok-bg:rgba(64,201,119,.10);
+    --warn:#ff8549; --warn-bg:rgba(255,133,73,.10);
+    --ui:#c27aff; --ui-bg:rgba(194,122,255,.10);
+    --red:#ff6764; --red-bg:rgba(255,103,100,.10);
+    --font:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;
+    --mono:ui-monospace,"SF Mono","Cascadia Code",Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0}
+  body{background:var(--bg);color:var(--text);font-family:var(--font);font-size:14px;line-height:1.65;-webkit-font-smoothing:antialiased}
+  .top{border-bottom:1px solid var(--line);padding:24px 28px 20px;background:linear-gradient(180deg,#141414,#0e0e0e)}
+  .top .crumb{font-family:var(--mono);font-size:11.5px;color:var(--faint);letter-spacing:.06em}
+  .top h1{margin:6px 0 6px;font-size:21px;letter-spacing:-.01em}
+  .top p{margin:0;color:var(--text-2);max-width:80ch}
+  .top .meta{margin-top:8px;color:var(--faint);font-size:12.5px}
+  code{font-family:var(--mono);font-size:12.5px;color:var(--text-2)}
+  main{max-width:920px;margin:0 auto;padding:24px 28px 80px}
+  section{margin:0 0 40px}
+  section > h2{display:flex;align-items:baseline;gap:8px;margin:0 0 10px;font-size:17px;border-top:1px solid var(--line);padding-top:14px}
+  section > h2 .tag{font-family:var(--mono);font-size:11px;padding:1px 6px;border-radius:4px}
+  .tag.decided{color:var(--ok);background:var(--ok-bg)}
+  .tag.proposal{color:var(--warn);background:var(--warn-bg)}
+  .tag.open{color:var(--ui);background:var(--ui-bg)}
+  h3{margin:22px 0 6px;font-size:14.5px;color:var(--text)}
+  p{margin:0 0 10px}
+  ul{margin:0 0 12px;padding-left:1.2em}
+  li{margin:3px 0}
+  table{width:100%;border-collapse:collapse;font-size:13.5px;margin:0 0 14px}
+  th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{color:var(--muted);font-weight:500;font-size:12px;letter-spacing:.03em;text-transform:uppercase}
+  td.id{font-family:var(--mono);font-size:12.5px;color:var(--text-2);white-space:nowrap}
+  .callout{margin:0 0 14px;padding:11px 13px;border-radius:9px;background:var(--surface);color:var(--text-2);font-size:13px}
+  .callout.decided{border-left:2px solid var(--ok)}
+  .callout.warn{border-left:2px solid var(--warn)}
+  .callout.open{border-left:2px solid var(--ui)}
+  .callout b{color:var(--text);font-weight:560}
+  .ba{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin:0 0 14px}
+  .ba > div{padding:11px 13px;border-radius:9px;background:var(--surface);font-size:13px}
+  .ba .was{border-left:2px solid var(--faint)}
+  .ba .now{border-left:2px solid var(--ok)}
+  .ba h4{margin:0 0 6px;font-size:11.5px;font-family:var(--mono);color:var(--muted);letter-spacing:.06em;text-transform:uppercase;font-weight:500}
+  /* 顶部导航：目录内各页互相跳转 */
+  .plan-nav{display:flex;flex-wrap:wrap;align-items:center;gap:4px;padding:10px 28px;background:#0c0c0c;border-bottom:1px solid var(--line);font-size:13px}
+  .plan-nav a{color:var(--text-2);text-decoration:none;padding:3px 8px;border-radius:6px}
+  .plan-nav a:hover{background:var(--surface);color:var(--text)}
+  .plan-nav a[aria-current="page"]{background:var(--surface);color:var(--text);box-shadow:inset 0 0 0 1px var(--line-2)}
+  .plan-nav .sep{color:var(--faint);padding:0 2px}
+  .plan-nav .spacer{flex:1}
+  @media (max-width:720px){.ba{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+
+<nav class="plan-nav">
+  <a href="../../index.html">插件插槽目录</a>
+  <span class="sep">/</span>
+  <a href="index.html">用户消息卡</a>
+  <span class="spacer"></span>
+  <a href="index.html">目录</a>
+  <a href="requirements.html" aria-current="page">需求</a>
+  <a href="demo.html">演示</a>
+  <a href="data-flow.html">数据流</a>
+</nav>
+
+<header class="top">
+  <div class="crumb">docs/plugin-plan · ui/user-message</div>
+  <h1>用户消息卡 · 需求</h1>
+  <p>用户发出去的那一行。两个槽：消息气泡整体 <code>entry</code>、操作栏 <code>entry.actions</code>。槽挂在默认卡上，不另造一张卡。</p>
+  <div class="meta">status: draft · issue #545 第 1 项 · 对照 demo.html / data-flow.html</div>
+</header>
+
+<main>
+<section>
+  <h2>范围 <span class="tag decided">已定</span></h2>
+  <ul>
+    <li>只谈用户那一行（<code>MessageRow</code>，<code>role=user</code>）。</li>
+    <li>用户发出去的只有 <b>附件 + 文字</b>。</li>
+    <li>不谈：助手 Turn、工具卡、Composer、确认卡、全局浮层。</li>
+  </ul>
+</section>
+
+<section>
+  <h2>槽有几个 <span class="tag decided">已定</span></h2>
+  <table>
+    <thead><tr><th>槽</th><th>位置</th><th>插件能做什么</th></tr></thead>
+    <tbody>
+      <tr><td class="id">entry</td><td>消息气泡整体（附件和文字怎么显示）</td><td>改写显示方式；可以用宿主现成的组件，也可以整块自己画</td></tr>
+      <tr><td class="id">entry.actions</td><td>操作栏（气泡下面那一行）</td><td><b>加</b>自己的按钮；<b>去掉</b>宿主的复制 / 编辑 / 删除</td></tr>
+    </tbody>
+  </table>
+  <div class="callout decided"><b>已去掉 <code>entryExtra</code>。</b>行下追加不再单独成槽；要加东西就走 <code>entry</code> 包默认气泡，或走 <code>entry.actions</code> 旁边加控件。</div>
+</section>
+
+<section>
+  <h2>槽必须提供三件套 <span class="tag decided">已定</span></h2>
+  <table>
+    <thead><tr><th>件</th><th>含义</th></tr></thead>
+    <tbody>
+      <tr><td class="id">现成组件</td><td>宿主把默认卡的各部分做成现成组件给插件用，插件在默认卡上加东西，不用从零再画一张</td></tr>
+      <tr><td class="id">完整数据</td><td>显示这条消息需要的数据一次给全，插件不用猜、也不用从页面上扒</td></tr>
+      <tr><td class="id">能调用的操作</td><td>复制 / 编辑 / 删除 / 修订是<b>能直接调用的宿主功能</b>，不是 <code>"copy"|"edit"</code> 这样的名字</td></tr>
+    </tbody>
+  </table>
+  <p>目的：插件把界面画坏了，最多是这条消息不好看；消息怎么存、编辑怎么进行，还是宿主说了算。</p>
+</section>
+
+<section>
+  <h2>默认卡长什么样 <span class="tag decided">已定</span></h2>
+  <h3>最小默认（宿主，无插件）</h3>
+  <ul>
+    <li>右对齐气泡，列宽 ≤600px，右下小圆角</li>
+    <li>附件：图缩略图 / 文件芯片</li>
+    <li>正文</li>
+    <li>操作栏：复制 / 编辑 / 删除</li>
+  </ul>
+  <h3>拓展默认（仍是宿主，不是槽）</h3>
+  <ul>
+    <li>改写徽标（可展开）</li>
+    <li>修订翻页 <code>2/3</code></li>
+  </ul>
+</section>
+
+<section>
+  <h2>插件场景 <span class="tag decided">已定</span></h2>
+  <p>这一轮留下的两件事，以及各自挂在哪。</p>
+  <table>
+    <thead><tr><th>#</th><th>场景</th><th>挂在哪</th></tr></thead>
+    <tbody>
+      <tr><td>1</td><td>去掉消息操作栏上的编辑按钮</td><td><code>entry.actions</code> 拿掉 Edit</td></tr>
+      <tr><td>2</td><td>修改附件的样子</td><td><code>entry</code> 里自己画附件，或包一层宿主附件组件</td></tr>
+    </tbody>
+  </table>
+  <div class="callout warn"><b>本轮移除的两个场景：</b>「分享整段对话为图」和「PDF 点一下就能看」——先不做，需要时另开。</div>
+</section>
+
+<section>
+  <h2>本轮拍板 <span class="tag decided">已定</span></h2>
+  <table>
+    <thead><tr><th>问题</th><th>结论</th></tr></thead>
+    <tbody>
+      <tr><td>谁可以用这两个槽</td><td>任何插件都能渲染这两个槽；对<b>所有</b>用户消息生效，不再按「这条是不是插件产生的」过滤</td></tr>
+      <tr><td>插件能改默认卡的哪一块</td><td>插件能增删的只有<b>操作栏</b>；消息气泡整体是整块替换，不做局部增删</td></tr>
+      <tr><td>复制给什么</td><td>给<b>存着的内容</b>，不是插件画在屏幕上的字</td></tr>
+      <tr><td><code>entryExtra</code></td><td>用户气泡上不再有这个功能；助手气泡下一轮再谈</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<section>
+  <h2>和 #545 原文的差异 <span class="tag decided">产品改口</span></h2>
+  <p>这是产品决定，不是实现漏项。落地时要改 issue / 契约，不能假装原文已经这样写。</p>
+  <div class="ba">
+    <div class="was">
+      <h4>#545 原文</h4>
+      <ul>
+        <li>第 1 项管<b>整条消息</b>；举例是 Slack / 告警 / 周报对象卡</li>
+        <li><code>actions</code> 语义由宿主提供，<b>插件可摆位、不能删</b></li>
+        <li>第 13 项条目追加区挂在条目下方</li>
+      </ul>
+    </div>
+    <div class="now">
+      <h4>本轮决定</h4>
+      <ul>
+        <li>用户卡仍是附件 + 文字；对象卡不是主故事</li>
+        <li>操作栏 <b>可补可删</b></li>
+        <li><code>entryExtra</code> <b>从用户气泡拿掉</b></li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<section>
+  <h2>接口长什么样（建议，还没定） <span class="tag proposal">建议</span></h2>
+  <div class="callout warn">下面是我提议、用来支撑上面三条的东西。<b>不是用户原话</b>；字段名开工时再定。完整版见 <a href="data-flow.html" style="color:var(--text-2)">data-flow.html</a> 的第一节。</div>
+  <ul>
+    <li>现成组件：<code>UserBubble</code> / <code>UserAttachments</code> / <code>UserText</code> / <code>RewriteBadge</code> / <code>ActionBar</code>，想用就用，不是必须套的外壳。</li>
+    <li>能拿到的数据：<code>id / role / text / attachments / command / revision / createdAt / streaming</code>。</li>
+    <li>能调用的操作：<code>copy / edit / delete / setRevision / openAttachment</code>。</li>
+  </ul>
+</section>
+
+<section>
+  <h2>还没定的事 <span class="tag open">待拍板</span></h2>
+  <p>本轮的问题都已拍板。下一轮的题目是助手气泡的槽。</p>
+</section>
+
+<section>
+  <h2>明确不做 <span class="tag decided">已定</span></h2>
+  <ul>
+    <li>用户气泡上不再开第三块槽（没有单独的附件槽、徽标槽、来源条槽）。</li>
+    <li>演示页里不写说明文字和框内描述，只放界面本身。</li>
+    <li>不让插件直接改数据库里的这条消息；改写还是走宿主的编辑。</li>
+    <li>用户气泡不再有行下追加位（<code>entryExtra</code>）；助手气泡的槽下一轮单独谈。</li>
+    <li>消息右键菜单不在本轮范围。</li>
+  </ul>
+</section>
+
+</main>
+</body>
+</html>

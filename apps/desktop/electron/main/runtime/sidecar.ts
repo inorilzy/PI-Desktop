@@ -14,7 +14,7 @@ import { AgentSidecar } from "../agent-sidecar";
 import { OAUTH_AUTH_KIND, type VendorOAuth } from "../oauth";
 import type { AgentExtensionBridge } from "../agent-extensions";
 import type { BrowserHost } from "../browser-host";
-import type { InflightCheckpointer } from "../inflight-checkpoint";
+import type { InflightCheckpointer } from "@pi-desktop/host-runtime";
 import { summarizeToolResult, type Logger } from "../logger";
 import type { ModelsDevCatalog } from "../models-dev-catalog";
 import type { PluginRuntime } from "../plugin-runtime";
@@ -354,6 +354,24 @@ export function createSidecarRuntime({
         Array.isArray(params.reports) ? (params.reports as any[]) : [],
       ),
     requestUi: (params) => agentExtensions.requestUi(params as any),
+    aiComplete: async (params) => {
+      const pluginId = String(params.pluginId ?? "").trim() || "extension";
+      try {
+        return await plugins.invokeAgentModelComplete(pluginId, {
+          messages: (Array.isArray(params.messages) ? params.messages : []) as never,
+          system: typeof params.system === "string" ? params.system : undefined,
+          modelKey: typeof params.modelKey === "string" ? params.modelKey : undefined,
+          purpose: typeof params.purpose === "string" ? params.purpose : undefined,
+          permissions: Array.isArray(params.permissions) ? (params.permissions as string[]) : ["agent.model.complete"],
+        });
+      } catch (error) {
+        return {
+          ok: false,
+          code: (error as { code?: string })?.code || "PROVIDER_ERROR",
+          detail: error instanceof Error ? error.message : String(error),
+        };
+      }
+    },
     configureModel: async (params) => {
       if (!runtimeState.host) throw new Error("host unavailable");
       const sessionId = String(params.sessionId ?? "").trim();
@@ -379,17 +397,54 @@ export function createSidecarRuntime({
       }
       return { ok: Boolean(result.session), session: result.session ?? null };
     },
+    /**
+     * Slot 10 (ADR 0295 rule 9): a plugin's continuation is queued as a real,
+     * durable turn through the same host-owned queue a desktop send uses. The
+     * request names the plugin that asked, and the identity now travels the
+     * whole way — the queue row stores it (schema v22), the drained turn
+     * carries it into the durable user row, and that row's badge says which
+     * plugin asked for the extra turn (ADR 0293).
+     */
     queuePush: async (params) => {
       if (!runtimeState.agentHostBridge) throw new Error("agent host unavailable");
-      return runtimeState.agentHostBridge.queue.push({
+      const pluginId = typeof params.pluginId === "string" ? params.pluginId : "";
+      const pluginLabel = typeof params.pluginLabel === "string" ? params.pluginLabel : "";
+      const result = await runtimeState.agentHostBridge.queue.push({
         sessionId: String(params.sessionId ?? ""),
         content: String(params.content ?? ""),
         ...(typeof params.idempotencyKey === "string" ? { idempotencyKey: params.idempotencyKey } : {}),
+        ...(pluginId ? { pluginId } : {}),
+        ...(pluginLabel ? { pluginLabel } : {}),
       });
+      if (pluginId) {
+        logger.app("plugin", "info", "plugin continuation queued", {
+          sessionId: String(params.sessionId ?? ""),
+          pluginId,
+          data: {
+            pluginLabel,
+            queuedTurnId: result?.id,
+          },
+        });
+      }
+      return result;
     },
     queuePrioritize: async (params) => {
       if (!runtimeState.agentHostBridge) throw new Error("agent host unavailable");
       await runtimeState.agentHostBridge.queue.prioritize(String(params.id ?? ""));
+      return { ok: true };
+    },
+    /**
+     * Slot 3 (ADR 0295): a plugin asked to stop the turn. The user Stop path
+     * cancels this session's plugin tool invocations so the plugin's own
+     * long-running work learns it was cancelled; a plugin-initiated abort takes
+     * the same path. The runtime's own side already aborts the kernel run and
+     * emits the TURN_ABORTED terminal event.
+     */
+    turnAbort: async (params) => {
+      plugins.cancelSessionTools(
+        String(params.sessionId ?? ""),
+        typeof params.reason === "string" && params.reason ? params.reason : "Session turn was aborted",
+      );
       return { ok: true };
     },
   });

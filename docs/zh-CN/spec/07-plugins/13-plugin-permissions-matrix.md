@@ -49,7 +49,23 @@
 | `session.read.own` | 中等 | `pi.session.list`、`pi.session.get`、`pi.session.listMessages` | 安装时确认 | 只能读取本插件导入的会话；不能跨插件访问 |
 | `session.update.own` | 中等 | `pi.session.rename` | 安装时确认 | 只能重命名本插件拥有的活动导入会话 |
 | `session.delete.own` | 高 | `pi.session.delete` | 安装时确认 | 只能回收或清除本插件导入的会话；有频率限制 |
+| `usage.read` | 中等 | `pi.usage.listTurns` | 安装时确认 | 已完成 turn 事实行的只读列举（每回合 token 计数与标识符，keyset 分页）；不含消息正文，无写路径 |
 | `agent.complete` | 高 | `pi.agent.complete` | 安装时确认 | 宿主代发一次性补全；消耗用户额度；`includeSessionContext` 还需要 `session.read` |
+| `agent.model.complete` | 高 | 在用户已配置的模型上运行插件 AI | 安装时确认 | 一次性插件补全（`pi.ai.complete`）；可选 `model` 限定在用户的 provider 目录之内；`system` 不会与会话提示词自动合并。既有的 `agent.complete` 仍然接受。 |
+| `speech.adapter.register` | 高 | `pi.speech.registerAdapter` / `unregisterAdapter` | 安装时确认 | 注册语音协议。handle 留在插件进程；HTTP 计划由宿主用绑定密钥代发且必须同 origin |
+| `renderer.extension` | 高 | 在宿主渲染器内以 ES 模块运行 `manifest.renderer`，把组件注册进宿主持有的槽位 | 显式确认；按层级，绝不逐槽位 | 模块在应用窗口内、宿主自己的 realm 中运行，没有进程隔离。一个权限覆盖全部组件槽位（规格 16 §2A、ADR 0291） |
+| `runtime.request.before` | — | 已撤回 | — | 不提供槽位 6；对模型读到的内容做静默改写不是插件能力面。 |
+| `runtime.send.before` | 高 | 运行时槽位咨询：Before Send | 安装时确认 | 用户按下发送之后、消息进入队列之前被咨询：可以读取它（含附件）、拦下它，或改写模型收到的内容；改写会在消息行上标注。该槽位挂在 `input` 事件上 |
+| `runtime.session.lifecycle` | 高 | 运行时槽位咨询：Session Lifecycle | 安装时确认 | 会话创建 / 切换 / 删除 / fork 与压缩时都会收到通知。销毁性动作只有知情权；它可以取消压缩，并收到即将被压缩掉的片段；会话切换或删除永远不会等待插件（ADR 0295 规则 11） |
+| `runtime.session.read` | 高 | 运行时槽位咨询：Session Read | 安装时确认 | 读取会话内容。读取不会逐次记录；安装审查与插件行就是授权面（ADR 0295 规则 7） |
+| `runtime.tool.extend` | 高 | 运行时槽位咨询：Tool Extend | 安装时确认 | 插件工具可以在运行时引入新工具、上报自己的花费，并请求提前结束这一批；运行时引入的工具会在界面上标注来源。按工具结果逐次门禁，入口是 `TRUSTED_EXTENSION_API_PERMISSIONS.toolResult` |
+| `runtime.tool.gate` | 高 | 运行时槽位咨询：Tool Gate | 安装时确认 | `tool_call` 处理器可以带理由拦下一次调用；`tool_result` 处理器可以替换工具结果。修改调用参数已被永久排除（ADR 0295 规则 4），要不要先问用户是插件自己的事（规则 6） |
+| `runtime.turn.abort` | 高 | 运行时槽位咨询：Abort Turn | 安装时确认 | 请求宿主停止当前轮次；插件自己的长任务会收到同一个取消信号。两半一起交付（ADR 0295 槽位 3） |
+| `runtime.turn.closing` | 高 | 运行时槽位咨询：Turn Closing | 安装时确认 | 在轮次仍在运行时被咨询，可以要求 agent 继续，从而在没有新用户消息的情况下消耗更多 token。续跑会作为带插件来源的可见行落库（ADR 0293） |
+| `runtime.turn.continue` | 高 | 运行时槽位咨询：Turn Continue | 安装时确认 | 在一轮结束后再发起一次续跑。不设数字配额：宿主自己的循环也没有上限，控制手段是可见性与审计留痕（ADR 0295 规则 9） |
+| `runtime.turn.facts` | 低 | 运行时槽位咨询：Turn Facts | 安装时确认 | 一轮的结构化事实：工具调用与结果、token、花费、耗时、改动的文件，不含对话正文。其背后的按轮查询面已交付：host-core 在架构 v21 上直接用自己的表回答 `turn.facts`（`artifacts` 带 `turn_id`；见 04-data-storage §4.16）。插件侧目前还没有读取入口，所以持有该授权的插件还没有可调用的东西 |
+| `runtime.turn.recap` | 高 | 运行时槽位咨询：Turn Recap | 安装时确认 | 读取某一轮的内容，包括对话正文。读取整个会话还需要 `runtime.session.read`（ADR 0295 规则 7） |
+| `runtime.turn.watch` | 中 | 运行时槽位咨询：Turn Watch | 安装时确认 | 实时观察运行中的轮次：内核的消息、工具执行、轮次与 agent 事件，尽力送达、无回执、不补发。它只能看，别的都不能做（ADR 0295 槽位 2） |
 
 ## 2A. 权限是开关，manifest 承载范围
 
@@ -83,6 +99,52 @@ manifest 里的字段负责回答「能做到多远」。两个字段都由主�
 3. **速率刹车。** 每个插件每滚动 60 秒 50 次删除。超过之后问用户一次，
    理由写的是速率而不是路径 —— 因为 `recursive: false` 只能约束单次调用，
    约束不了 `glob` 加一个循环。
+
+## 2C. 信任层级
+
+这里信任层级先于槽位：本节把入口映射到层级，§2 的行就是各入口可以动用的权限。
+信任跟随入口，且各层级正交而非阶梯：声明一个层级不会在另一个层级获得任何东西，
+一个插件也可以任意组合多个层级。
+
+| 入口 | 代码运行位置 | 权限 | 组件槽位 |
+|---|---|---|---|
+| `main` / `ui.panel` / `views[].entry` / `settingsDestinations[].entry` | 插件 `utilityProcess` / 插件 `webContents` | 清单自身声明的权限 | 无 |
+| `renderer` | 宿主渲染器，与宿主 UI 同一 realm | `renderer.extension`（高） | 允许，按层级 |
+| `contributes.agentExtensions` | agent sidecar | `agent.extension`（高） | 无 |
+
+组件槽位绝不逐个授权。`renderer.extension` 是覆盖它们的唯一授权（规格 16 §2A、
+ADR 0291）；没有声明 `renderer` 的插件不能注册槽位，注册尝试会被跳过并作为诊断
+上报，而不是被静默丢弃。§2 中的运行时权限形状不同 —— 每个槽位一个权限名，因为
+各自改变运行中轮次的不同位置。
+
+ADR 0295 要建的每一个运行时槽位都已注册并受门禁。agent sidecar 会在处理器运行前解析
+该事件的槽位权限，插件不持有就跳过处理器，并把跳过作为插件行上的 `permission_denied`
+诊断上报。层级权限只说明代码在哪里运行，绝不隐含任何槽位授权（ADR 0295 规则 2）：
+只持有 `agent.extension` 的插件，所有受槽位门禁的处理器都会被跳过 —— 而且会大声跳过，
+诊断里写明权限名。`TRUSTED_EXTENSION_API_PERMISSIONS` 里命名的非事件调用同样如此：
+`requestTurnAbort` 需要 `runtime.turn.abort`，插件工具的扩展结果需要
+`runtime.tool.extend`。
+
+门禁读的是权限表本身，而不是把它当过滤器：随本次发布上线的十一个 `runtime.*` 名字都在
+`PLUGIN_PERMISSIONS` 里（十个槽位加上 `runtime.session.read`），`@pi-desktop/shared` 的
+`REGISTERED_SLOT_PERMISSIONS` 与它们一一对应，两份清单一旦漂移，桌面端守卫测试就会失败。
+槽位 6（`runtime.request.before`）已撤回，刻意不存在于这两份清单中；`runtime.approval.before`
+是记录明确不建的那个槽位：没有事件映射到它，也没有权限表持有它。修改工具调用的参数不是槽位，
+且已被永久排除（ADR 0295 规则 4）：`tool_call` 处理器只能带理由阻止，别的都不能做。
+
+有些已映射事件挂在桌面尚未触发的钩子点上（`project_trust`、`resources_discover`）。
+它们的权限按映射关系强制执行，因此钩子点一接线门禁就已就位；在那之前没有处理器会运行，
+因为事件根本不会触发。撤回的槽位 6 的六个事件（`before_agent_start`、`context`、
+`before_provider_request`、`before_provider_headers`、`model_select`、
+`thinking_level_select`）没有任何映射：注册的处理器会被静默接受，永远不会被咨询。
+会话生命周期通告正好相反：
+`session_before_switch`、`session_before_fork` 与 `session_lifecycle` 会触发，且为仅告知，
+因此调用方会忽略门禁本会接纳的结果（ADR 0295 规则 11）。
+
+与权限问题无关的另一件事：受信任扩展 sidecar 的结果型事件集合
+（`packages/agent-runtime/src/extensions/runner.ts:116-130`）把 30 秒处理器预算给了结果会被
+忽略的事件：按设计仅告知的生命周期通告（ADR 0295 规则 11），以及 `message_end` —— 桌面的
+转发路径会丢弃其结果。该预算正是防止停滞的处理器一直占用通知循环；不涉及任何权限或信任决定。
 
 ## 3. 权限依赖
 
@@ -144,11 +206,26 @@ Agent，在 Plan 中不可见。主机返回 `PLUGIN_DISABLED_IN_PLAN`
 | `session.read.own` | Read sessions imported by this plugin | 读取此插件导入的会话 |
 | `session.update.own` | Rename sessions imported by this plugin | 重命名此插件导入的会话 |
 | `session.delete.own` | Trash or purge sessions imported by this plugin | 将此插件导入的会话移入回收站或清除 |
+| `usage.read` | Read usage statistics | 读取用量统计 |
 | `agent.complete` | Run a one-shot completion with your models | 用你的模型发起一次补全 |
+| `agent.model.complete` | Use your configured models for one-shot plugin AI | 使用你已配置的模型发起一次性插件 AI |
+| `speech.adapter.register` | Register a speech adapter | 注册语音适配器 |
 | `audio.capture.background` | Use the microphone in the background | 后台使用麦克风 |
 | `audio.playback.background` | Play audio in the background | 后台播放声音 |
 | `keyboard.globalShortcut` | Register system-wide shortcuts | 注册系统级快捷键 |
 | `net.websocket` | Open real-time connections | 建立实时双向连接 |
+| `renderer.extension` | Run plugin UI inside the app window | 在应用窗口内运行插件界面 |
+| `runtime.send.before` | Inspect a message before it is sent | 在消息发送前检查 |
+| `runtime.tool.extend` | Add tools while the agent runs | 在 agent 运行时添加工具 |
+| `runtime.turn.abort` | Stop the running turn | 停止正在运行的轮次 |
+| `runtime.turn.closing` | Act just before a turn ends | 在轮次结束前介入 |
+| `runtime.turn.facts` | Read structured facts about a turn | 读取本轮的结构化事实 |
+| `runtime.session.lifecycle` | Follow session and compaction events | 跟踪会话与压缩事件 |
+| `runtime.session.read` | Read a session's content | 读取会话内容 |
+| `runtime.tool.gate` | Block tool calls and replace tool results | 拦截工具调用并替换工具结果 |
+| `runtime.turn.continue` | Start another turn after one ends | 在轮次结束后再发起一轮 |
+| `runtime.turn.recap` | Read what a turn contained | 读取某一轮的内容 |
+| `runtime.turn.watch` | Watch the running turn | 观察运行中的轮次 |
 
 ## 5. 添加升级权限
 

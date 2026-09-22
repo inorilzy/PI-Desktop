@@ -3,7 +3,6 @@
  * Protocol: NDJSON JSON-RPC on stdio with Electron main.
  * Host access is proxied through main (single host-core process).
  */
-import { createInterface } from "node:readline";
 import { createHash, randomUUID } from "node:crypto";
 import { constants as fsConstants } from "node:fs";
 import { copyFile, mkdir, readFile, realpath, stat } from "node:fs/promises";
@@ -20,7 +19,11 @@ import {
   type RuntimeProviderConfig,
 } from "./runtime.js";
 import type { PluginSkillDef } from "./plugin-skills-prompt.js";
-import type { SessionMessageOrigin, TrustedExtensionSpec } from "@pi-desktop/shared";
+import type {
+  SessionMessageOrigin,
+  TrustedExtensionSessionLifecycleNotice,
+  TrustedExtensionSpec,
+} from "@pi-desktop/shared";
 import type { ProjectInstructions } from "./project-instructions.js";
 import {
   normalizeSupportedThinkingLevels,
@@ -35,6 +38,7 @@ import {
   normalizeMode,
   normalizeNetworkProxy,
   OAUTH_AUTH_KIND,
+  readNdjsonLines,
 } from "@pi-desktop/shared";
 import type {
   AgentEventEnvelope,
@@ -449,6 +453,41 @@ function classifiedRuntimeError(err: unknown) {
   return classifyAgentError(err);
 }
 
+
+/**
+ * Validate one `agent.notifyLifecycle` notice (ADR 0295 slot 11). The desktop
+ * host owns these moments, so the runtime only ever sees a shape it named; an
+ * unknown `change` is rejected instead of guessed, and a `switch` / `fork`
+ * without its own fields falls back to the safe defaults.
+ */
+function parseLifecycleNotice(
+  params: Record<string, unknown>,
+  sessionId: string,
+): TrustedExtensionSessionLifecycleNotice {
+  const change = String(params.change ?? "").trim();
+  if (change === "created" || change === "deleted") return { change, sessionId };
+  if (change === "switch") {
+    const targetSessionId = String(params.targetSessionId ?? "").trim();
+    return {
+      change,
+      sessionId,
+      reason: params.reason === "new" ? "new" : "resume",
+      ...(targetSessionId ? { targetSessionId } : {}),
+    };
+  }
+  if (change === "fork") {
+    const entryId = String(params.entryId ?? "").trim();
+    return {
+      change,
+      sessionId,
+      ...(entryId ? { entryId } : {}),
+      position: params.position === "at" ? "at" : "before",
+    };
+  }
+  throw Object.assign(new Error(`unknown lifecycle change: ${change || "(none)"}`), {
+    errorCode: "INVALID_PARAMS",
+  });
+}
 // Host notifications (permissions.request never reaches us — main forwards
 // it to the renderer directly; re-emitting it here would duplicate the
 // permission dialog delivery).
@@ -510,12 +549,27 @@ async function handle(method: string, params: any): Promise<unknown> {
         typeof params.userMessageId === "string" && params.userMessageId
           ? params.userMessageId
           : undefined;
+      // A `permissionMode` override on `agent.prompt` is the per-turn ceiling
+      // from spec §7.3 (R1 leftover). The sidecar accepts it so callers do not
+      // have to guard the field, but tool-approval enforcement still consults
+      // the session's stored mode inside host-core. Once host-core
+      // `session.beginTurn` accepts a per-turn override, this record will drive
+      // the enforcement gate; until then it stays a documented stub.
+      if (typeof params.permissionMode === "string" && params.permissionMode) {
+        // Log-only stub: observable in the sidecar log without affecting
+        // execution. Deliberately omitted from user-visible events.
+        void params.permissionMode;
+      }
       const prompt: RuntimePrompt = {
         text: content,
         attachments,
         ...(params.sessionMessage ? { sessionMessage: params.sessionMessage as SessionMessageOrigin } : {}),
       };
-      void runtime.prompt(prompt, userMessageId, turnId).catch((err) => {
+      // Await only admission. A handled input rejects the RPC so the existing
+      // composer restores its draft and a queued entry retains its failure.
+      // Provider execution stays asynchronous; the input hook is not run twice.
+      const admitted = await runtime.preparePromptInput(prompt, turnId, userMessageId);
+      void runtime.prompt(admitted, userMessageId, turnId).catch((err) => {
         // Rejected-prompt path (pre-flight/transport failures). Streamed
         // provider errors surface via stopReason "error" and are classified
         // and emitted by the runtime itself.
@@ -539,11 +593,11 @@ async function handle(method: string, params: any): Promise<unknown> {
       }
       const expectedTurnId = String(params.expectedTurnId ?? "");
       if (method === "agent.steeringContext") return runtime.steeringContext(expectedTurnId);
-      return runtime.steer(
+      const prepared = await runtime.prepareSteering(
         { text: String(params.content ?? ""), attachments: params.attachments },
-        expectedTurnId,
-        params.message,
+        expectedTurnId, String(params.message?.id ?? ""),
       );
+      return runtime.steer(prepared, expectedTurnId, params.message);
     }
     case "agent.executeApprovedPlan": {
       const sessionId = String(params.sessionId ?? "");
@@ -638,6 +692,27 @@ async function handle(method: string, params: any): Promise<unknown> {
         },
       };
     }
+    case "agent.notifyLifecycle": {
+      // Session lifecycle notices the desktop host owns (ADR 0295 slot 11,
+      // rule 11). They are fire-and-forget by design: the reply is sent before
+      // any handler finishes, so a plugin that stalls cannot hold up a session
+      // switch, a delete or a fork. `created` is broadcast to the sessions that
+      // are live at that moment, because the created session has no runtime
+      // yet; every other change belongs to one session.
+      const sessionId = String(params.sessionId ?? "").trim();
+      if (!sessionId) {
+        throw Object.assign(new Error("sessionId required"), {
+          errorCode: "INVALID_PARAMS",
+        });
+      }
+      const notice = parseLifecycleNotice(params, sessionId);
+      if (notice.change === "created") {
+        for (const runtime of runtimes.values()) runtime.notifySessionLifecycle(notice);
+      } else {
+        runtimes.get(sessionId)?.notifySessionLifecycle(notice);
+      }
+      return { ok: true, delivered: notice.change === "created" ? runtimes.size : 1 };
+    }
     case "agent.disposeSession": {
       const sessionId = String(params.sessionId);
       if (sessionId.startsWith(NATIVE_PI_SESSION_PREFIX)) {
@@ -658,13 +733,15 @@ async function handle(method: string, params: any): Promise<unknown> {
   }
 }
 
-const rl = createInterface({ input: process.stdin });
-rl.on("line", async (line) => {
+readNdjsonLines(process.stdin, async (line) => {
   if (!line.trim()) return;
   let msg: any;
   try {
     msg = JSON.parse(line);
   } catch {
+    process.stderr.write(
+      `[agent-sidecar] Invalid NDJSON frame (${Buffer.byteLength(line, "utf8")} bytes)\n`,
+    );
     return;
   }
   // Responses to host.proxy requests from parent

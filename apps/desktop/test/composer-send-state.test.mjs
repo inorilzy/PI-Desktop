@@ -67,15 +67,34 @@ test("composer send/stop button follows draft content and the visible session's 
   assert.match(submitSlot, /stopGenerating/);
   assert.match(submitSlot, /onClick=\{\(\) => void abort\(\)\}/);
   assert.doesNotMatch(composerRight, /\{runActive \? \(/);
-  const modelIndex = composerRight.indexOf("<ComposerModelPicker");
-  const enhanceIndex = composerRight.indexOf("composer-enhance-btn");
+  // The three pieces of the region left of the submit slot are built once, in
+  // the order the host draws them: the context display, the model selection,
+  // then the enhancement action. The region draws exactly those, in that order,
+  // ahead of the submit slot — and hands the same elements to a plugin that
+  // occupies it, so neither piece can exist twice.
+  const modelIndex = toolbar.indexOf("<ComposerModelPicker");
+  const enhanceIndex = toolbar.indexOf("composer-enhance-btn");
+  assert.ok(
+    modelIndex >= 0 && modelIndex < enhanceIndex,
+    "The enhancement action should sit after model selection",
+  );
+  assert.equal((toolbar.match(/<ComposerModelPicker/g) ?? []).length, 1);
+  assert.equal((toolbar.match(/composer-enhance-btn/g) ?? []).length, 1);
+  const region =
+    composerRight.match(/<ComposerControlSlot[\s\S]*?<\/ComposerControlSlot>/)?.[0] ?? "";
+  assert.ok(region.length > 0, "the region left of the submit slot was not found");
+  assert.match(
+    region,
+    /\{contextControl\}\s*\{modelControl\}\s*\{enhanceControl\}/,
+    "the region draws the host's own pieces in the host's own order",
+  );
   const submitIndex = Math.max(
     composerRight.indexOf('className="stop-btn"'),
     composerRight.indexOf('className="send-btn"'),
   );
   assert.ok(
-    modelIndex >= 0 && modelIndex < enhanceIndex && enhanceIndex < submitIndex,
-    "The enhancement action should sit between model selection and the submit slot",
+    composerRight.indexOf("</ComposerControlSlot>") < submitIndex,
+    "the region sits left of the submit slot",
   );
   const modelTrigger =
     composer.match(
@@ -281,7 +300,7 @@ test("mode slash prefixes send the trailing prompt and retain failed drafts", ()
   );
   assert.match(
     submit,
-    /const submittedDraft = draft\.draftSnapshot\(text\);\s*draft\.clearDraftForKey\(submittedDraftKey\);\s*const accepted = steering[\s\S]*?await steerPrompt\(inlineContent, submittedDraft\)[\s\S]*?await sendPrompt\(inlineContent, submittedDraft\);\s*if \(!accepted\) draft\.restoreDraftForKey\(submittedDraftKey, submittedDraft\);/,
+    /const submittedDraft = draft\.draftSnapshot\(text\);[\s\S]*?await validateReferenceSend\([\s\S]*?controller\.signal\.throwIfAborted\(\);[\s\S]*?draft\.clearDraftForKey\(submittedDraftKey\);\s*const accepted = steering[\s\S]*?await steerPrompt\(inlineContent, submittedDraft\)[\s\S]*?await sendPrompt\(inlineContent, submittedDraft\);\s*if \(!accepted\) draft\.restoreDraftForKey\(submittedDraftKey, submittedDraft\);/,
   );
   assert.match(store, /draft\?: ComposerDraftSnapshot/);
   const sendPrompt = queueSlice.slice(
@@ -290,8 +309,8 @@ test("mode slash prefixes send the trailing prompt and retain failed drafts", ()
   assert.match(sendPrompt, /return false;/);
   assert.match(
     sendPrompt,
-    // The prompt call ships the expanded snapshot, not the shorthand `content`.
-    /await api\.prompt\(\{[\s\S]*?sessionId,[\s\S]*?content: promptContent,[\s\S]*?attachments:[\s\S]*?promptAttachmentsFromDraft\(draft\.fileReferences\)[\s\S]*?\}\);[\s\S]*?return true/,
+    // The prompt call carries the submitted content and attachment mapping.
+    /await api\.prompt\(\{[\s\S]*?sessionId,[\s\S]*?content,[\s\S]*?attachments:[\s\S]*?promptAttachmentsFromDraft\(draft\.fileReferences\)[\s\S]*?\}\);[\s\S]*?return true/,
   );
 });
 
@@ -327,7 +346,6 @@ test("draft attachment routing keeps image chips structured and file chips textu
       token: "\uE003",
     },
     { path: "src/index.ts", name: "index.ts", kind: "file" },
-    { path: "session:abc", name: "Other chat", kind: "session", token: "\uE004" },
   ]);
   assert.deepEqual(attachments, [
     {

@@ -16,6 +16,15 @@ export type ClassifiedAgentError = {
   details?: Record<string, unknown>;
 };
 
+/**
+ * Code a prompt ends with when a plugin's `input` handler kept it away from the
+ * model (ADR 0295 slot 1). It is declared here because the classifier has to
+ * preserve it: without this branch the generic path would report a provider
+ * failure, and the user would be told the model failed when a plugin stopped
+ * their message.
+ */
+export const PLUGIN_HANDLED_PROMPT_CODE = "PLUGIN_HANDLED_PROMPT";
+
 /** Keep envelopes/persisted rows small; provider bodies can be huge. */
 const MAX_ERROR_MESSAGE_CHARS = 600;
 
@@ -388,6 +397,12 @@ export function classifyAgentError(err: unknown): ClassifiedAgentError {
   }
   if (/CONTEXT_COMPACTION_FAILED/i.test(rawMessage)) {
     return result("CONTEXT_COMPACTION_FAILED", false);
+  }
+  // A prompt a plugin kept away from the model keeps its own code: the message
+  // is the plugin's reason, and calling that a provider failure would blame the
+  // wrong layer (ADR 0295 slot 1).
+  if ((err as { errorCode?: unknown } | null)?.errorCode === PLUGIN_HANDLED_PROMPT_CODE) {
+    return result(PLUGIN_HANDLED_PROMPT_CODE, false);
   }
   // Network failures never carry an HTTP status; probe before status logic so
   // "fetch failed" causes don't fall through to the generic bucket. The cause

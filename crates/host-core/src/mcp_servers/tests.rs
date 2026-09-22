@@ -138,7 +138,12 @@ fn project_server_is_copied_and_state_is_pruned_after_removal() {
 #[test]
 fn a_global_server_moves_into_a_project_with_its_state() {
     let (home, app, project) = scaffolding();
-    let project_path = project.path().to_str().unwrap().to_string();
+    let project_path = project
+        .path()
+        .to_str()
+        .unwrap()
+        .to_string()
+        .replace('\\', "/");
     test_support::with_global_agents(home.path(), || {
         let mut registry = McpServerRegistry::new(app.path());
         let mut input = stdio("files");
@@ -186,7 +191,12 @@ fn a_global_server_moves_into_a_project_with_its_state() {
 #[test]
 fn a_destination_collision_renames_the_arriving_server() {
     let (home, app, project) = scaffolding();
-    let project_path = project.path().to_str().unwrap().to_string();
+    let project_path = project
+        .path()
+        .to_str()
+        .unwrap()
+        .to_string()
+        .replace('\\', "/");
     test_support::with_global_agents(home.path(), || {
         let mut registry = McpServerRegistry::new(app.path());
         let mut global = stdio("files");
@@ -227,7 +237,12 @@ fn a_destination_collision_renames_the_arriving_server() {
 #[test]
 fn a_project_server_moves_to_global_without_leaving_a_project_override() {
     let (home, app, project) = scaffolding();
-    let project_path = project.path().to_str().unwrap().to_string();
+    let project_path = project
+        .path()
+        .to_str()
+        .unwrap()
+        .to_string()
+        .replace('\\', "/");
     test_support::with_global_agents(home.path(), || {
         let mut registry = McpServerRegistry::new(app.path());
         let mut input = stdio("files");
@@ -270,7 +285,12 @@ fn a_project_server_moves_to_global_without_leaving_a_project_override() {
 #[test]
 fn transferring_within_one_directory_changes_nothing() {
     let (home, app, project) = scaffolding();
-    let project_path = project.path().to_str().unwrap().to_string();
+    let project_path = project
+        .path()
+        .to_str()
+        .unwrap()
+        .to_string()
+        .replace('\\', "/");
     test_support::with_global_agents(home.path(), || {
         let mut registry = McpServerRegistry::new(app.path());
         let mut input = stdio("files");
@@ -305,7 +325,12 @@ fn transferring_an_unknown_server_is_an_error() {
 #[test]
 fn a_case_differing_id_at_the_destination_is_not_overwritten() {
     let (home, app, project) = scaffolding();
-    let project_path = project.path().to_str().unwrap().to_string();
+    let project_path = project
+        .path()
+        .to_str()
+        .unwrap()
+        .to_string()
+        .replace('\\', "/");
     test_support::with_global_agents(home.path(), || {
         let mut registry = McpServerRegistry::new(app.path());
         let mut global = stdio("files");
@@ -349,7 +374,12 @@ fn a_case_differing_id_at_the_destination_is_not_overwritten() {
 #[test]
 fn a_rename_never_writes_over_a_file_the_scan_does_not_list() {
     let (home, app, project) = scaffolding();
-    let project_path = project.path().to_str().unwrap().to_string();
+    let project_path = project
+        .path()
+        .to_str()
+        .unwrap()
+        .to_string()
+        .replace('\\', "/");
     test_support::with_global_agents(home.path(), || {
         let mut registry = McpServerRegistry::new(app.path());
         let mut global = stdio("files");

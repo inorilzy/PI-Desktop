@@ -30,6 +30,12 @@ pub struct QueuedTurnInput {
     pub session_message_id: Option<String>,
     pub attachments: Option<Value>,
     pub permission_mode: String,
+    /// Provenance of a plugin-started continuation (ADR 0293 / ADR 0295 rule 9,
+    /// slot #10 `runtime.turn.continue`). The plugin id plus the display name as
+    /// of the request; `None` is a queue entry the user (or the Host) made.
+    /// Both are absent from every pre-v22 row.
+    pub plugin_id: Option<String>,
+    pub plugin_label: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -53,6 +59,14 @@ pub struct QueuedTurn {
     /// order they were clicked. `None` means the entry was never promoted.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub priority: Option<i64>,
+    /// Provenance of a plugin-started continuation (schema v22, ADR 0293 / ADR
+    /// 0295 rule 9): the plugin that asked for this turn, or `None` for a queue
+    /// entry the user or the Host made. Read back verbatim so the row it
+    /// becomes can name it, and absent from every pre-v22 row.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub plugin_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub plugin_label: Option<String>,
     pub created_at: String,
 }
 
@@ -70,12 +84,15 @@ fn row_to_entry(row: &rusqlite::Row<'_>) -> rusqlite::Result<QueuedTurn> {
         permission_mode: row.get(7)?,
         position: row.get(8)?,
         priority: row.get(11)?,
+        plugin_id: row.get(12)?,
+        plugin_label: row.get(13)?,
         created_at: ms_to_ts(row.get::<_, i64>(9)?),
     })
 }
 
 const SELECT: &str = "SELECT id, session_id, principal, idempotency_key, input_hash, content,
-        attachments_json, permission_mode, position, created_at, session_message_id, priority
+        attachments_json, permission_mode, position, created_at, session_message_id, priority,
+        plugin_id, plugin_label
  FROM turn_queue";
 
 /// Delivery order: promoted entries first in click order (ascending
@@ -134,8 +151,9 @@ pub fn push(db: &Database, input: QueuedTurnInput) -> Result<QueuedTurn> {
     tx.execute(
         "INSERT INTO turn_queue (
             id, session_id, principal, idempotency_key, input_hash, content,
-            attachments_json, permission_mode, position, created_at, session_message_id
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            attachments_json, permission_mode, position, created_at, session_message_id,
+            plugin_id, plugin_label
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
         params![
             id,
             input.session_id,
@@ -147,7 +165,9 @@ pub fn push(db: &Database, input: QueuedTurnInput) -> Result<QueuedTurn> {
             input.permission_mode,
             max_position + 1,
             created_at,
-            input.session_message_id
+            input.session_message_id,
+            input.plugin_id,
+            input.plugin_label
         ],
     )?;
     tx.commit()?;
@@ -163,6 +183,8 @@ pub fn push(db: &Database, input: QueuedTurnInput) -> Result<QueuedTurn> {
         permission_mode: input.permission_mode,
         position: max_position + 1,
         priority: None,
+        plugin_id: input.plugin_id,
+        plugin_label: input.plugin_label,
         created_at: ms_to_ts(created_at),
     })
 }
@@ -332,6 +354,8 @@ mod tests {
             session_message_id: None,
             attachments: None,
             permission_mode: "ask".into(),
+            plugin_id: None,
+            plugin_label: None,
         }
     }
 
