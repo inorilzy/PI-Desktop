@@ -1,0 +1,27 @@
+diff --git a/apps/desktop/test/plugin-reference-preflight.test.mjs b/apps/desktop/test/plugin-reference-preflight.test.mjs
+index be0f05996..6daca11b1 100644
+--- a/apps/desktop/test/plugin-reference-preflight.test.mjs
++++ b/apps/desktop/test/plugin-reference-preflight.test.mjs
+@@ -41,3 +41,22 @@ test('ordinary sends without a reference validator stay unchanged', async () =>
+   resetPluginSlots();
+   await validateReferenceSend(input, new AbortController().signal);
+ });
++test('successful reference validations run in order and preserve the original input', async () => {
++  const seen = [];
++  hook(async (value) => { seen.push(value.text); return { ok: true }; });
++  pluginSlots.register('test.second', 'composerReference', () => null, {
++    validateSend: async (value) => { seen.push(value.text); return { ok: true }; },
++  });
++  await validateReferenceSend(input, new AbortController().signal);
++  assert.deepEqual(seen, ['draft', 'draft']);
++  assert.equal(input.text, 'draft');
++});
++test('caller cancellation prevents a late successful response from authorizing a send', async () => {
++  let finish;
++  hook(() => new Promise((resolve) => { finish = resolve; }));
++  const controller = new AbortController();
++  const pending = validateReferenceSend(input, controller.signal);
++  controller.abort(new Error('draft changed'));
++  finish({ ok: true });
++  await assert.rejects(pending, /draft changed/);
++});

@@ -31,6 +31,7 @@ jobs:
           cd "$RUNNER_TEMP/candidate"
           git apply --check "$RUNNER_TEMP/447.patch"
           git apply "$RUNNER_TEMP/447.patch"
+          for patch in "$GITHUB_WORKSPACE"/.github/447-patch/fix*.patch; do git apply --check "$patch"; git apply "$patch"; done
           git add -A
           git diff --cached --check
           git diff --cached --stat > "$RUNNER_TEMP/results/diff-stat.txt"
@@ -41,7 +42,7 @@ jobs:
           git checkout --detach "$candidate"
           echo "$candidate" | tee "$RUNNER_TEMP/results/candidate.sha"
           echo "CANDIDATE=$candidate" >> "$GITHUB_ENV"
-      - name: Install the repository toolchain and locked dependencies
+      - name: Install the locked repository environment
         shell: bash
         run: |
           set -euo pipefail
@@ -49,61 +50,59 @@ jobs:
           cd "$RUNNER_TEMP/candidate"
           pnpm install --frozen-lockfile 2>&1 | tee "$RUNNER_TEMP/results/install.log"
       - name: Compile and test the plugin
-        id: plugin
         shell: bash
         run: |
           set -euo pipefail
           cd "$RUNNER_TEMP/candidate"
           pnpm exec tsc -p examples/plugins/session-mentions/tsconfig.json
           node examples/plugins/session-mentions/test/run.mjs 2>&1 | tee "$RUNNER_TEMP/results/plugin.log"
-      - name: Build JavaScript workspace
-        id: build
-        continue-on-error: true
+      - name: Build the complete JavaScript workspace
         shell: bash
         run: |
           set -euo pipefail
           cd "$RUNNER_TEMP/candidate"
           pnpm build:js 2>&1 | tee "$RUNNER_TEMP/results/build.log"
-      - name: Type-check desktop integration
-        id: desktop
-        continue-on-error: true
+      - name: Type-check the desktop integration
         shell: bash
         run: |
           set -euo pipefail
           cd "$RUNNER_TEMP/candidate"
           pnpm --filter @pi-desktop/desktop typecheck 2>&1 | tee "$RUNNER_TEMP/results/desktop-typecheck.log"
-      - name: Test actual extension runner
-        id: runner
-        continue-on-error: true
+      - name: Test the actual SDK and extension runner
         shell: bash
         run: |
           set -euo pipefail
           cd "$RUNNER_TEMP/candidate"
+          pnpm --filter @pi-desktop/plugin-sdk exec vitest run src/index.test.ts src/renderer-style.test.ts 2>&1 | tee "$RUNNER_TEMP/results/sdk.log"
           pnpm --filter @pi-desktop/agent-runtime exec vitest run src/extensions/runner.test.ts 2>&1 | tee "$RUNNER_TEMP/results/runner.log"
-      - name: Test actual runtime send and session slots
-        id: runtime
-        continue-on-error: true
+      - name: Test the entire runtime regression file
         shell: bash
         run: |
           set -euo pipefail
           cd "$RUNNER_TEMP/candidate"
-          pnpm --filter @pi-desktop/agent-runtime exec vitest run src/runtime.test.ts -t 'send-before and session-lifecycle' 2>&1 | tee "$RUNNER_TEMP/results/runtime.log"
-      - name: Test renderer reference admission
-        id: preflight
-        continue-on-error: true
+          pnpm --filter @pi-desktop/agent-runtime exec vitest run src/runtime.test.ts 2>&1 | tee "$RUNNER_TEMP/results/runtime.log"
+      - name: Test renderer reference admission and real host components
         shell: bash
         run: |
           set -euo pipefail
           cd "$RUNNER_TEMP/candidate"
           node --test apps/desktop/test/plugin-reference-preflight.test.mjs apps/desktop/test/plugin-renderer-composer-slots.test.mjs apps/desktop/test/composer-send-state.test.mjs 2>&1 | tee "$RUNNER_TEMP/results/preflight.log"
-      - name: Publish tested candidate only to a temporary branch
-        if: steps.build.outcome == 'success' && steps.desktop.outcome == 'success' && steps.runner.outcome == 'success' && steps.runtime.outcome == 'success' && steps.preflight.outcome == 'success'
+      - name: Exercise the existing Chromium autocomplete layout fixture
+        id: window
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/candidate"
+          xvfb-run -a pnpm test:e2e:composer-autocomplete 2>&1 | tee "$RUNNER_TEMP/results/window.log"
+      - name: Publish the statically validated candidate to a temporary branch
         shell: bash
         run: |
           set -euo pipefail
           cd "$RUNNER_TEMP/candidate"
           git push origin "$CANDIDATE:refs/heads/work/447-slot-candidate-$GITHUB_RUN_ID"
           echo "work/447-slot-candidate-$GITHUB_RUN_ID" > "$RUNNER_TEMP/results/candidate-branch.txt"
+          echo '${{ steps.window.outcome }}' > "$RUNNER_TEMP/results/window-outcome.txt"
           tar -czf "$RUNNER_TEMP/results/session-mentions-plugin.tar.gz" -C examples/plugins session-mentions
       - name: Upload validation evidence
         if: always()
@@ -112,16 +111,3 @@ jobs:
           name: pr447-slot-migration-validation
           path: ${{ runner.temp }}/results
           retention-days: 3
-      - name: Require all integration gates
-        if: always()
-        env:
-          PLUGIN: ${{ steps.plugin.outcome }}
-          BUILD: ${{ steps.build.outcome }}
-          DESKTOP: ${{ steps.desktop.outcome }}
-          RUNNER: ${{ steps.runner.outcome }}
-          RUNTIME: ${{ steps.runtime.outcome }}
-          PREFLIGHT: ${{ steps.preflight.outcome }}
-        run: |
-          for gate in "$PLUGIN" "$BUILD" "$DESKTOP" "$RUNNER" "$RUNTIME" "$PREFLIGHT"; do
-            test "$gate" = success || exit 1
-          done
