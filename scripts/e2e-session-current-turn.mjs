@@ -68,15 +68,19 @@ const server = createServer(async (req, res) => {
   for await (const chunk of req) body += chunk;
   const payload = JSON.parse(body);
   requests.push(payload);
-  const first = requests.length === 1;
-  const delta = first ? {
+  // Follow the actual ToolSearch activation contract; deferred plugin tools
+  // cannot execute until they are exposed on the following model request.
+  const toolCall = requests.length === 1
+    ? { name: "ToolSearch", arguments: JSON.stringify({ query: toolName }) }
+    : requests.length === 2 ? { name: toolName, arguments: "{}" } : undefined;
+  const delta = toolCall ? {
     role: "assistant", content: "Waiting for worker09.",
-    tool_calls: [{ index: 0, id: "wait09", type: "function", function: { name: toolName, arguments: "{}" } }],
+    tool_calls: [{ index: 0, id: `wait09-${requests.length}`, type: "function", function: toolCall }],
   } : { role: "assistant", content: "Used worker08's result while worker09 continues." };
   const base = { id: crypto.randomUUID(), object: "chat.completion.chunk", created: 1, model: payload.model };
   res.writeHead(200, { "content-type": "text/event-stream" });
   res.write(`data: ${JSON.stringify({ ...base, choices: [{ index: 0, delta, finish_reason: null }] })}\n\n`);
-  res.write(`data: ${JSON.stringify({ ...base, choices: [{ index: 0, delta: {}, finish_reason: first ? "tool_calls" : "stop" }], usage: { prompt_tokens: 20, completion_tokens: 10, total_tokens: 30 } })}\n\n`);
+  res.write(`data: ${JSON.stringify({ ...base, choices: [{ index: 0, delta: {}, finish_reason: toolCall ? "tool_calls" : "stop" }], usage: { prompt_tokens: 20, completion_tokens: 10, total_tokens: 30 } })}\n\n`);
   res.end("data: [DONE]\n\n");
 });
 const ui = (role, content) => ({ id: crypto.randomUUID(), role, content, status: "complete", createdAt: new Date().toISOString() });
@@ -125,10 +129,17 @@ try {
   });
   let waitAborted = false;
   sidecar.setLocalTool(toolName, async ({ signal }) => {
-    signal.addEventListener("abort", () => { waitAborted = true; }, { once: true });
-    entered.resolve();
-    await release.promise;
-    return { ok: true, content: "Worker09 is still running; its status-poll interval ended.", isError: false };
+    const onAbort = () => { waitAborted = true; };
+    signal.addEventListener("abort", onAbort, { once: true });
+    try {
+      entered.resolve();
+      await release.promise;
+      return { ok: true, content: "Worker09 is still running; its status-poll interval ended.", isError: false };
+    } finally {
+      // AgentSidecar aborts its controller during normal cleanup as well.
+      // Count only an interruption while this tool was still executing.
+      signal.removeEventListener("abort", onAbort);
+    }
   });
   let queuedTurns = 0;
   const service = createSessionCollaborationService({
@@ -171,7 +182,7 @@ try {
   const { callback } = await host.call("session.collaboration.settle", { turnId: worker08Turn });
   active.delete(worker08);
   await service.drain();
-  assert.equal(requests.length, 1, "arrival neither interrupts nor starts a model request inside the running tool");
+  assert.equal(requests.length, 2, "arrival neither interrupts nor starts a model request inside the running tool");
   assert.equal(queuedTurns, 0);
   assert.equal(waitAborted, false);
   assert.equal(callback.kind, "completion");
@@ -179,8 +190,8 @@ try {
   await bounded(ended.promise, "parent safe request and completion");
   await outbox;
   assert.deepEqual(events.filter((e) => e.event.type === "error"), [], runtimeStderr);
-  assert.equal(requests.length, 2, JSON.stringify(requests));
-  const secondInputs = requests[1].messages.filter((m) => m.role === "user");
+  assert.equal(requests.length, 3, JSON.stringify(requests));
+  const secondInputs = requests[2].messages.filter((m) => m.role === "user");
   for (const messageId of [delivery.messageId, callback.id]) {
     assert.equal(secondInputs.filter((m) => JSON.stringify(m.content).includes(messageId)).length, 1, "each source ID occurs in one actual next-request input");
     const { message } = await host.call("session.collaboration.message", { messageId });
@@ -197,6 +208,11 @@ try {
   assert.equal(queuedTurns, 0, "accepted messages are not replayed as a later prompt");
   assert.equal((await host.call("session.collaboration.pending", { sessionId: parent })).messages.length, 0);
   console.log("PASS E2E-SESSION-current-turn-collaboration: canonical message and completion received once in the same parent turn; worker09 unaffected");
+} catch (error) {
+  console.error("Current-turn fixture failure", {
+    requests: requests.length, events: events.map((e) => e.event), runtimeStderr,
+  });
+  throw error;
 } finally {
   release.resolve();
   await sidecar?.dispose();

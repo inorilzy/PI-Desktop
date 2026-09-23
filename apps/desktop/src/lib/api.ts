@@ -430,7 +430,7 @@ export function validateSettingsWrite(settings: AppSettings): AppSettings {
   }
   if (Object.prototype.hasOwnProperty.call(value, "sessionMessagesInCurrentTurn") &&
     typeof value.sessionMessagesInCurrentTurn !== "boolean") {
-    throw Object.assign(new Error("sessionMessagesInCurrentTurn is invalid"), { errorCode: ErrorCodes.INVALID_PARAMS });
+    throw Object.assign(new Error("sessionMessagesInCurrentTurn is invalid"), { errorCode: "INVALID_PARAMS" });
   }
   if (
     Object.prototype.hasOwnProperty.call(value, "infiniteProviderRetry") &&

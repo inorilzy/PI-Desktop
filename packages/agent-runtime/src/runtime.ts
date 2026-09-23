@@ -6076,7 +6076,7 @@ Delegation rules:
     const added: AgentMessage[] = [];
     for (const message of received) {
       const agentMessage: AgentMessage = {
-        role: "user", content: formatSessionMessage(message.content, message.sessionMessage!),
+        role: "user", content: formatSessionMessage(message.content, message.sessionMessage),
         timestamp: timestampMs(message.createdAt),
       };
       this.appendLiveEntry(message.id, agentMessage);
@@ -6095,7 +6095,8 @@ Delegation rules:
       // Fresh host inputs must survive a checkpoint or an extension's context
       // rewrite, exactly once. They are not steering and cannot skip tools.
       const messages = includeCurrentTurnMessages(update.context.messages, added);
-      if (this.contextBudget(messages).tokens >= this.contextBudget(messages).hardLimit) {
+      const budget = this.contextBudget(messages);
+      if (budget.tokens >= budget.hardLimit) {
         throw new Error("CONTEXT_LIMIT: current-turn session input exceeds the safe request budget");
       }
       update = { ...update, context: { ...update.context, messages } };
