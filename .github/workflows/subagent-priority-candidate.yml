@@ -1,0 +1,27 @@
+name: Subagent priority candidate
+on:
+  push:
+    branches: [fix/subagent-pinned-model-priority]
+    paths: [.github/workflows/subagent-priority-candidate.yml]
+permissions:
+  contents: read
+jobs:
+  source:
+    if: github.repository == 'inorilzy/PI-Desktop'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Export public source for isolated review
+        run: |
+          git status --short
+          git rev-parse HEAD
+          git archive HEAD -o /tmp/subagent-priority-source.tar
+          grep -n -E 'DesktopAgentRuntime subagents|model override|overrides.*pin|Task.model|const pinned|function createRuntime' packages/agent-runtime/src/runtime.test.ts
+      - uses: actions/upload-artifact@v4
+        with:
+          name: subagent-priority-source
+          path: /tmp/subagent-priority-source.tar
+          retention-days: 1
