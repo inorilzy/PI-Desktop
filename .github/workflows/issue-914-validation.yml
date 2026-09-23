@@ -19,9 +19,13 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
       - name: Prepare integrated candidate
         run: |
           mkdir -p /tmp/issue914
+          original=$(git rev-parse HEAD)
           git config user.name 'Liu Zhiyu'
           git config user.email '30362354+inorilzy@users.noreply.github.com'
           python3 - <<'PY'
@@ -33,21 +37,36 @@ jobs:
           p = Path('docs/adr/README.md')
           if '| session-collaboration-current-turn |' not in p.read_text():
               p.write_text(p.read_text() + '| session-collaboration-current-turn | [Opt-in current-turn session collaboration](session-collaboration-current-turn.md) | Proposed |\n')
+          p = Path('crates/host-core/src/sessions.rs')
+          s = p.read_text()
+          old = '    let collaboration_replay = record\n        .meta\n        .as_ref()\n        .is_some_and(|meta| meta.get("sessionMessage").is_some())'
+          new = '    let collaboration_replay = record.id.starts_with("session-message:")\n        && record\n            .meta\n            .as_ref()\n            .is_some_and(|meta| meta.get("sessionMessage").is_some())'
+          assert old in s or new in s
+          p.write_text(s.replace(old, new))
           PY
-          git add -- docs/adr/session-collaboration-current-turn.md docs/adr/README.md
+          rustfmt --edition 2021 --config skip_children=true crates/host-core/src/sessions.rs
+          git add -- docs/adr/session-collaboration-current-turn.md docs/adr/README.md crates/host-core/src/sessions.rs
           if ! git diff --cached --quiet; then
-            git commit -m 'docs: register current-turn collaboration decision' -m 'Keep the new receipt-channel ADR in the documentation catalog with its compatibility and recovery consequences.' -m 'Refs #914'
+            git commit -m 'fix: scope receipt recovery to current-turn transcript IDs' -m 'Keep ordinary queue transcript appends on their existing path and register the current-turn ADR in the documentation catalog.' -m 'Refs #914'
           fi
-          git fetch https://github.com/vastsa/PI-Desktop.git main:refs/remotes/upstream/main
+          git fetch --no-tags https://github.com/vastsa/PI-Desktop.git main:refs/remotes/upstream/main
           git merge --no-edit upstream/main
           node scripts/check-pr-base-main.mjs --base upstream/main
-          git push origin HEAD:feat/session-collaboration-active-turn-914
           git rev-parse upstream/main | tee /tmp/issue914/base.sha
           git rev-parse HEAD | tee /tmp/issue914/candidate.sha
+          git rev-parse upstream/main:.github/workflows | tee /tmp/issue914/upstream-workflows.sha
           git diff upstream/main HEAD --binary -- . ':!.github/workflows/issue-914-validation.yml' ':!.github/issue914-patch' > /tmp/issue914/candidate.patch
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
+          # The Actions token cannot publish workflow changes inherited from
+          # upstream. Export product-source objects only, leaving the actual
+          # integrated HEAD/worktree intact for every validation step below.
+          export_index="$RUNNER_TEMP/issue914-export-index"
+          GIT_INDEX_FILE="$export_index" git read-tree HEAD
+          GIT_INDEX_FILE="$export_index" git restore --source="$original" --staged -- .github/workflows
+          export_tree=$(GIT_INDEX_FILE="$export_index" git write-tree)
+          export_commit=$(git commit-tree "$export_tree" -p "$original" -m 'test: export integrated issue 914 product source' -m 'Validation runs on the full latest-main integration candidate; publish no workflow changes using the Actions token.' -m 'Refs #914')
+          git diff --exit-code HEAD "$export_commit" -- . ':!.github/workflows'
+          git push origin "$export_commit":feat/session-collaboration-active-turn-914
+          echo "$export_commit" | tee /tmp/issue914/export.sha
       - uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: true
