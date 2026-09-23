@@ -55,10 +55,12 @@ jobs:
           pnpm --filter '@pi-desktop/agent-runtime...' build
       - name: Confirm the old priority fails the new regression tests
         run: |
+          set +e
           set -uo pipefail
           cd "$RUNNER_TEMP/subagent-priority"
           pnpm --filter @pi-desktop/agent-runtime exec vitest run src/runtime.test.ts -t 'keeps the definition pin|does not bypass an unresolved definition pin|still accepts an opted-in' --reporter=json --outputFile="$RUNNER_TEMP/evidence/baseline.json"
           code=$?
+          set -e
           test "$code" -ne 0
           python3 - <<'PY'
           import json, os
