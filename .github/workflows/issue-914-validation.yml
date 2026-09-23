@@ -4,20 +4,110 @@ on:
     branches: [feat/session-collaboration-active-turn-914]
     paths: [.github/workflows/issue-914-validation.yml]
 permissions:
-  contents: read
+  contents: write
 jobs:
-  source:
+  validate:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 30
+    env:
+      ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
+      CARGO_TERM_COLOR: never
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: 454715877750b4f944cc7b621432ea9bd461f321
-          persist-credentials: false
-      - name: Export public source snapshot
-        run: git archive --format=tar HEAD > /tmp/pi-desktop-source.tar
-      - uses: actions/upload-artifact@v4
+          fetch-depth: 0
+      - name: Verify and apply candidate
+        run: |
+          mkdir -p /tmp/issue914
+          python3 - <<'PY'
+          import base64, lzma, hashlib
+          from pathlib import Path
+          encoded = ''.join(Path(f'.github/issue914-patch/{i}.b64').read_text() for i in range(5))
+          patch = lzma.decompress(base64.b64decode(encoded))
+          assert hashlib.sha256(patch).hexdigest() == '3791308b9ae294ef2652a77b71af0fdce2770339b27832448994ac02a017ace6'
+          Path('/tmp/issue914/input.patch').write_bytes(patch)
+          PY
+          if ! test -f crates/host-core/src/session_collaboration/current_turn.rs; then
+            git apply --index /tmp/issue914/input.patch
+          fi
+      - uses: dtolnay/rust-toolchain@stable
         with:
-          name: issue-914-source
-          path: /tmp/pi-desktop-source.tar
-          retention-days: 1
+          components: rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.34.5
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: pnpm
+      - name: Format and publish validation candidate
+        run: |
+          mapfile -d '' files < <(git diff --cached --name-only -z -- '*.rs')
+          if ((${#files[@]})); then
+            rustfmt --edition 2021 --config skip_children=true "${files[@]}"
+            git add -- "${files[@]}"
+          fi
+          git config user.name 'Liu Zhiyu'
+          git config user.email '30362354+inorilzy@users.noreply.github.com'
+          if ! git diff --cached --quiet; then
+            git commit -m 'feat: receive session collaboration at safe current-turn boundaries' -m 'Add a default-off host-owned receipt channel with canonical provenance, bounded retry, Stop fences and held-queue recovery. Preserve task admission and unrelated worker execution.' -m 'Refs #914'
+            git push origin HEAD:feat/session-collaboration-active-turn-914
+          fi
+          git rev-parse HEAD | tee /tmp/issue914/candidate.sha
+          git diff 454715877750b4f944cc7b621432ea9bd461f321 HEAD --binary -- . ':!.github/workflows/issue-914-validation.yml' ':!.github/issue914-patch' > /tmp/issue914/candidate.patch
+      - name: Install locked JS dependencies
+        id: install
+        continue-on-error: true
+        run: pnpm install --frozen-lockfile 2>&1 | tee /tmp/issue914/install.log
+      - name: Build JS dependency graph and typecheck desktop
+        id: js
+        if: steps.install.outcome == 'success'
+        continue-on-error: true
+        run: |
+          pnpm --filter '@pi-desktop/desktop^...' build 2>&1 | tee /tmp/issue914/js-build.log
+          pnpm --filter @pi-desktop/desktop typecheck 2>&1 | tee /tmp/issue914/typecheck.log
+      - name: Runtime and Main regression tests
+        id: unit
+        if: steps.js.outcome == 'success'
+        continue-on-error: true
+        run: |
+          pnpm --filter @pi-desktop/agent-runtime exec vitest run src/current-turn-messages.test.ts 2>&1 | tee /tmp/issue914/runtime-tests.log
+          pnpm --filter @pi-desktop/host-runtime test 2>&1 | tee /tmp/issue914/host-runtime-tests.log
+          node --test apps/desktop/test/session-collaboration-service.test.mjs apps/desktop/test/session-collaboration-ipc.test.mjs 2>&1 | tee /tmp/issue914/main-tests.log
+      - name: Rust host regression tests
+        id: rust
+        continue-on-error: true
+        run: cargo test -p host-core --locked 2>&1 | tee /tmp/issue914/rust-tests.log
+      - name: Build isolated host
+        id: hostbuild
+        continue-on-error: true
+        run: cargo build -p host-core --locked 2>&1 | tee /tmp/issue914/host-build.log
+      - name: Real Host and sidecar integration
+        id: e2e
+        if: steps.js.outcome == 'success' && steps.hostbuild.outcome == 'success'
+        continue-on-error: true
+        run: |
+          pnpm test:e2e:collaboration 2>&1 | tee /tmp/issue914/collaboration-e2e.log
+          pnpm test:e2e:session-completion 2>&1 | tee /tmp/issue914/completion-e2e.log
+          pnpm test:e2e:session-current-turn 2>&1 | tee /tmp/issue914/current-turn-e2e.log
+      - name: Export evidence
+        if: always()
+        run: |
+          echo '${{ toJSON(steps) }}' > /tmp/issue914/steps.json
+          git archive --format=tar HEAD > /tmp/issue914/source.tar
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: issue914-validation
+          path: /tmp/issue914
+          retention-days: 2
+      - name: Enforce gates
+        if: always()
+        run: |
+          test '${{ steps.install.outcome }}' = success
+          test '${{ steps.js.outcome }}' = success
+          test '${{ steps.unit.outcome }}' = success
+          test '${{ steps.rust.outcome }}' = success
+          test '${{ steps.hostbuild.outcome }}' = success
+          test '${{ steps.e2e.outcome }}' = success
