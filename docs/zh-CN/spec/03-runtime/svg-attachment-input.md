@@ -1,5 +1,7 @@
 # SVG 附件输入
 
+> 本页为中文说明；规范以[英文源规格](/spec/03-runtime/svg-attachment-input)为准。
+
 本文针对 issue #946 补充[代理运行时](02-agent-runtime.md)和
 [按模型能力传输图片](../../../adr/0101-model-aware-image-attachments.md)。
 不改变模型能力判定、协议、存储结构或附件根目录权限。
