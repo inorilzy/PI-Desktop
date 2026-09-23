@@ -1,0 +1,23 @@
+name: Issue 914 isolated validation
+on:
+  push:
+    branches: [feat/session-collaboration-active-turn-914]
+    paths: [.github/workflows/issue-914-validation.yml]
+permissions:
+  contents: read
+jobs:
+  source:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 454715877750b4f944cc7b621432ea9bd461f321
+          persist-credentials: false
+      - name: Export public source snapshot
+        run: git archive --format=tar HEAD > /tmp/pi-desktop-source.tar
+      - uses: actions/upload-artifact@v4
+        with:
+          name: issue-914-source
+          path: /tmp/pi-desktop-source.tar
+          retention-days: 1
