@@ -5,6 +5,9 @@ on:
     paths: [.github/workflows/issue-914-validation.yml]
 permissions:
   contents: write
+defaults:
+  run:
+    shell: bash
 jobs:
   validate:
     runs-on: ubuntu-latest
@@ -16,24 +19,84 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: Verify and apply candidate
+      - name: Correct validation findings
         run: |
           mkdir -p /tmp/issue914
           python3 - <<'PY'
-          import base64, lzma, hashlib
           from pathlib import Path
-          encoded = ''.join(Path(f'.github/issue914-patch/{i}.b64').read_text() for i in range(5))
-          patch = lzma.decompress(base64.b64decode(encoded))
-          assert hashlib.sha256(patch).hexdigest() == '3791308b9ae294ef2652a77b71af0fdce2770339b27832448994ac02a017ace6'
-          Path('/tmp/issue914/input.patch').write_bytes(patch)
+          def replace(path, old, new):
+              p = Path(path)
+              text = p.read_text()
+              if old not in text:
+                  assert new in text, path
+                  return
+              assert text.count(old) == 1, (path, text.count(old))
+              p.write_text(text.replace(old, new))
+          replace('apps/desktop/src/lib/api.ts', '{ errorCode: ErrorCodes.INVALID_PARAMS }', '{ errorCode: "INVALID_PARAMS" }')
+          replace('apps/desktop/electron/main/index.ts', 'const eventPersistence = createEventPersistence({', 'const { persistAgentEvent } = createEventPersistence({')
+          p = Path('apps/desktop/electron/main/index.ts')
+          p.write_text(p.read_text().replace('const { persistAgentEvent } = eventPersistence;\n', ''))
+          replace('packages/agent-runtime/src/runtime.ts', 'formatSessionMessage(message.content, message.sessionMessage!)', 'formatSessionMessage(message.content, message.sessionMessage)')
+          replace('packages/agent-runtime/src/runtime.ts', '      if (this.contextBudget(messages).tokens >= this.contextBudget(messages).hardLimit) {', '      const budget = this.contextBudget(messages);\n      if (budget.tokens >= budget.hardLimit) {')
+          replace('scripts/e2e-session-current-turn.mjs', '''  const first = requests.length === 1;
+            const delta = first ? {
+              role: "assistant", content: "Waiting for worker09.",
+              tool_calls: [{ index: 0, id: "wait09", type: "function", function: { name: toolName, arguments: "{}" } }],
+            } : { role: "assistant", content: "Used worker08's result while worker09 continues." };''', '''  // Follow the actual ToolSearch activation contract; deferred plugin tools
+            // cannot execute until they are exposed on the following model request.
+            const toolCall = requests.length === 1
+              ? { name: "ToolSearch", arguments: JSON.stringify({ query: toolName }) }
+              : requests.length === 2 ? { name: toolName, arguments: "{}" } : undefined;
+            const delta = toolCall ? {
+              role: "assistant", content: "Waiting for worker09.",
+              tool_calls: [{ index: 0, id: `wait09-${requests.length}`, type: "function", function: toolCall }],
+            } : { role: "assistant", content: "Used worker08's result while worker09 continues." };''')
+          replace('scripts/e2e-session-current-turn.mjs', 'finish_reason: first ? "tool_calls" : "stop"', 'finish_reason: toolCall ? "tool_calls" : "stop"')
+          replace('scripts/e2e-session-current-turn.mjs', '''  sidecar.setLocalTool(toolName, async ({ signal }) => {
+              signal.addEventListener("abort", () => { waitAborted = true; }, { once: true });
+              entered.resolve();
+              await release.promise;
+              return { ok: true, content: "Worker09 is still running; its status-poll interval ended.", isError: false };
+            });''', '''  sidecar.setLocalTool(toolName, async ({ signal }) => {
+              const onAbort = () => { waitAborted = true; };
+              signal.addEventListener("abort", onAbort, { once: true });
+              try {
+                entered.resolve();
+                await release.promise;
+                return { ok: true, content: "Worker09 is still running; its status-poll interval ended.", isError: false };
+              } finally {
+                // AgentSidecar aborts its controller during normal cleanup as well.
+                // Count only an interruption while this tool was still executing.
+                signal.removeEventListener("abort", onAbort);
+              }
+            });''')
+          replace('scripts/e2e-session-current-turn.mjs', 'assert.equal(requests.length, 1, "arrival neither interrupts', 'assert.equal(requests.length, 2, "arrival neither interrupts')
+          replace('scripts/e2e-session-current-turn.mjs', 'assert.equal(requests.length, 2, JSON.stringify(requests));', 'assert.equal(requests.length, 3, JSON.stringify(requests));')
+          replace('scripts/e2e-session-current-turn.mjs', 'const secondInputs = requests[1].messages.filter', 'const secondInputs = requests[2].messages.filter')
+          replace('scripts/e2e-session-current-turn.mjs', '''} finally {
+            release.resolve();''', '''} catch (error) {
+            console.error("Current-turn fixture failure", {
+              requests: requests.length, events: events.map((e) => e.event), runtimeStderr,
+            });
+            throw error;
+          } finally {
+            release.resolve();''')
           PY
-          if ! test -f crates/host-core/src/session_collaboration/current_turn.rs; then
-            git apply --index /tmp/issue914/input.patch
+          git add -- apps/desktop/src/lib/api.ts apps/desktop/electron/main/index.ts packages/agent-runtime/src/runtime.ts scripts/e2e-session-current-turn.mjs
+          git config user.name 'Liu Zhiyu'
+          git config user.email '30362354+inorilzy@users.noreply.github.com'
+          if ! git diff --cached --quiet; then
+            git commit -m 'test: exercise collaboration with activated on-demand tools' -m 'Fix strict settings validation and keep composition within its architecture limit. Test the real deferred plugin-tool activation contract and distinguish cleanup from interruption.' -m 'Refs #914'
+            git push origin HEAD:feat/session-collaboration-active-turn-914
           fi
+          git rev-parse HEAD | tee /tmp/issue914/candidate.sha
+          git diff 454715877750b4f944cc7b621432ea9bd461f321 HEAD --binary -- . ':!.github/workflows/issue-914-validation.yml' ':!.github/issue914-patch' > /tmp/issue914/candidate.patch
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
       - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
       - uses: pnpm/action-setup@v4
         with:
           version: 10.34.5
@@ -41,38 +104,30 @@ jobs:
         with:
           node-version: '24'
           cache: pnpm
-      - name: Format and publish validation candidate
-        run: |
-          mapfile -d '' files < <(git diff --cached --name-only -z -- '*.rs')
-          if ((${#files[@]})); then
-            rustfmt --edition 2021 --config skip_children=true "${files[@]}"
-            git add -- "${files[@]}"
-          fi
-          git config user.name 'Liu Zhiyu'
-          git config user.email '30362354+inorilzy@users.noreply.github.com'
-          if ! git diff --cached --quiet; then
-            git commit -m 'feat: receive session collaboration at safe current-turn boundaries' -m 'Add a default-off host-owned receipt channel with canonical provenance, bounded retry, Stop fences and held-queue recovery. Preserve task admission and unrelated worker execution.' -m 'Refs #914'
-            git push origin HEAD:feat/session-collaboration-active-turn-914
-          fi
-          git rev-parse HEAD | tee /tmp/issue914/candidate.sha
-          git diff 454715877750b4f944cc7b621432ea9bd461f321 HEAD --binary -- . ':!.github/workflows/issue-914-validation.yml' ':!.github/issue914-patch' > /tmp/issue914/candidate.patch
       - name: Install locked JS dependencies
         id: install
         continue-on-error: true
         run: pnpm install --frozen-lockfile 2>&1 | tee /tmp/issue914/install.log
-      - name: Build JS dependency graph and typecheck desktop
+      - name: Architecture and style gates
+        id: architecture
+        continue-on-error: true
+        run: |
+          node scripts/check-architecture.mjs --base 454715877750b4f944cc7b621432ea9bd461f321 2>&1 | tee /tmp/issue914/architecture.log
+          node scripts/check-style-tokens.mjs 2>&1 | tee /tmp/issue914/style.log
+          git diff --check 454715877750b4f944cc7b621432ea9bd461f321 HEAD
+      - name: Build JS dependencies and typecheck desktop
         id: js
         if: steps.install.outcome == 'success'
         continue-on-error: true
         run: |
           pnpm --filter '@pi-desktop/desktop^...' build 2>&1 | tee /tmp/issue914/js-build.log
           pnpm --filter @pi-desktop/desktop typecheck 2>&1 | tee /tmp/issue914/typecheck.log
-      - name: Runtime and Main regression tests
+      - name: Full runtime and Main regression tests
         id: unit
         if: steps.js.outcome == 'success'
         continue-on-error: true
         run: |
-          pnpm --filter @pi-desktop/agent-runtime exec vitest run src/current-turn-messages.test.ts 2>&1 | tee /tmp/issue914/runtime-tests.log
+          pnpm --filter @pi-desktop/agent-runtime test 2>&1 | tee /tmp/issue914/runtime-tests.log
           pnpm --filter @pi-desktop/host-runtime test 2>&1 | tee /tmp/issue914/host-runtime-tests.log
           node --test apps/desktop/test/session-collaboration-service.test.mjs apps/desktop/test/session-collaboration-ipc.test.mjs 2>&1 | tee /tmp/issue914/main-tests.log
       - name: Rust host regression tests
@@ -106,6 +161,7 @@ jobs:
         if: always()
         run: |
           test '${{ steps.install.outcome }}' = success
+          test '${{ steps.architecture.outcome }}' = success
           test '${{ steps.js.outcome }}' = success
           test '${{ steps.unit.outcome }}' = success
           test '${{ steps.rust.outcome }}' = success
