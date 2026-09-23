@@ -1951,10 +1951,11 @@ fn append_record(
     // File first: the transcript is the source of truth. A crash before the
     // index commit costs one derived row (self-healed by the next rewrite),
     // never message content.
-    let collaboration_replay = record
-        .meta
-        .as_ref()
-        .is_some_and(|meta| meta.get("sessionMessage").is_some())
+    let collaboration_replay = record.id.starts_with("session-message:")
+        && record
+            .meta
+            .as_ref()
+            .is_some_and(|meta| meta.get("sessionMessage").is_some())
         && transcript_contains_id(db, session_id, &record.id)?;
     if !collaboration_replay {
         transcripts::append_message(db.data_dir(), session_id, session_created, record)?;

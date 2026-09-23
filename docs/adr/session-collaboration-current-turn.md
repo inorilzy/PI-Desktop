@@ -1,11 +1,11 @@
-# ADR: Opt-in current-turn session collaboration
+# ADR session-collaboration-current-turn: Opt-in current-turn session collaboration
 
 - Status: Proposed
 - Date: 2026-09-23
 - Issue: #914
 - Extends: ADR 0239, active-turn-steering
 
-## Context and alternatives
+## Context
 
 A worker's ordinary message or completion notice previously always entered
 Agent Host's next-turn queue. A coordinator making further model requests in
@@ -56,7 +56,7 @@ risking a duplicate task. Bounded uncertain-reply retries fail the current
 request instead of claiming definite rejection. Inspectable terminal outcomes
 continue to distinguish interruption from successful completion.
 
-## Compatibility, safety, and consequences
+## Consequences
 
 Schema 20 adds a receipt table after backing up schema 19. Existing messages,
 queue entries, task inputs, default behavior, and plugin sending calls remain
