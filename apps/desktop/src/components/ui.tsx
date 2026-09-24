@@ -749,6 +749,68 @@ export function Checkbox({
   );
 }
 
+
+export function CheckboxGroup<T extends string>({
+  values,
+  onChange,
+  options,
+  label,
+  disabled,
+  className,
+  itemClassName,
+  minSelected = 0,
+}: {
+  /** Currently selected values. */
+  values: readonly T[];
+  /** Called with the full updated selection. */
+  onChange: (values: T[]) => void;
+  options: readonly { readonly value: T; readonly label: ReactNode }[];
+  /** Accessible group label. */
+  label: string;
+  disabled?: boolean;
+  className?: string;
+  itemClassName?: string;
+  /** Prevent unchecking below this count (default 0 = no minimum). */
+  minSelected?: number;
+}) {
+  const toggle = (value: T) => {
+    const on = !values.includes(value);
+    const next = on
+      ? [...values, value]
+      : values.filter((v) => v !== value);
+    if (next.length < minSelected) return;
+    onChange(next);
+  };
+
+  return (
+    <div
+      className={cx("settings-segment", className)}
+      role="group"
+      aria-label={label}
+    >
+      {options.map((option) => {
+        const selected = values.includes(option.value);
+        return (
+          <button
+            key={option.value}
+            type="button"
+            aria-pressed={selected}
+            className={cx(
+              "settings-segment-item",
+              selected && "active",
+              itemClassName,
+            )}
+            disabled={disabled}
+            onClick={() => toggle(option.value)}
+          >
+            {option.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 export function Badge({
   children,
   tone = "neutral",

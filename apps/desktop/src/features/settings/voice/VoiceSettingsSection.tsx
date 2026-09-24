@@ -6,7 +6,7 @@
 import { useCallback, useEffect, useState } from "react";
 import type { TFunction } from "i18next";
 import type { AppSettings } from "@pi-desktop/shared";
-import { Button, Badge, Checkbox, SettingsToggle } from "../../../components/ui";
+import { Button, Badge, CheckboxGroup, SettingsToggle } from "../../../components/ui";
 import { SettingsMenuSelect } from "../../../components/settings/SettingsMenuSelect";
 import { SettingsRow, SettingsCard } from "../primitives";
 import { voiceIpc } from "../../voice/voice-ipc";
@@ -99,7 +99,7 @@ export function VoiceSettingsSection({
   };
 
   return (
-    <div className="settings-stack">
+    <div className="settings-stack voice-settings">
       {/* ---- Enable ---- */}
       <SettingsCard title={t("settings.voice")}>
         <SettingsRow title={t("settings.voiceEnable")}>
@@ -142,23 +142,19 @@ export function VoiceSettingsSection({
         </SettingsRow>
 
         <SettingsRow title={t("settings.voiceLanguages")}>
-          <div className="voice-lang-checks">
-            {(["zh", "en", "ja", "ko"] as const).map((code) => (
-              <Checkbox
-                key={code}
-                className="voice-lang-label"
-                checked={voice.languages.includes(code)}
-                disabled={!voice.enabled}
-                onChange={(e) => {
-                  const langs = e.target.checked
-                    ? [...voice.languages, code]
-                    : voice.languages.filter((l: string) => l !== code);
-                  save({ languages: langs.length > 0 ? langs : [code] });
-                }}
-                label={({ zh: "中文", en: "English", ja: "日本語", ko: "한국어" } as const)[code]}
-              />
-            ))}
-          </div>
+          <CheckboxGroup
+            values={voice.languages}
+            onChange={(langs) => save({ languages: langs })}
+            options={[
+              { value: "zh", label: "中文" },
+              { value: "en", label: "English" },
+              { value: "ja", label: "日本語" },
+              { value: "ko", label: "한국어" },
+            ]}
+            label={t("settings.voiceLanguages")}
+            disabled={!voice.enabled}
+            minSelected={1}
+          />
         </SettingsRow>
 
         <SettingsRow title={t("settings.voiceChineseVariant")}>

@@ -23,6 +23,7 @@ of any shared primitive is a spec violation.
 | Boolean toggle (switch) | `SettingsToggle` | `components/ui.tsx` |
 | Multi-option segment | `SegmentedControl` | `components/ui.tsx` |
 | Checkbox | `Checkbox` | `components/ui.tsx` |
+| Checkbox group (array multi-select) | `CheckboxGroup` | `components/ui.tsx` |
 | Native dropdown (non-Settings) | `Select` | `components/ui.tsx` |
 | Settings dropdown | `SettingsMenuSelect` | `components/settings/SettingsMenuSelect.tsx` |
 | Status badge | `Badge` | `components/ui.tsx` |
