@@ -578,6 +578,9 @@ export const fr = {
     "dismiss": "Ignorer"
   },
   "settings": {
+    "power": "Alimentation",
+    "keepAwakeWhileRunning": "Garder l'ordinateur éveillé",
+    "keepAwakeWhileRunningDesc": "Empêche la veille due à l'inactivité pendant l'exécution de PI-Desktop. L'écran peut s'éteindre ; la veille manuelle et la fermeture du capot restent possibles.",
     "imageModel": "Modèle de génération d’images",
     "imageModelUnset": "Non configuré",
     "imageModelUnavailable": "Indisponible pour le moment",
@@ -1722,7 +1725,7 @@ sklm: {
     "subagent": "Sous-agent",
     "subagentTask": "Tâche",
     "subagentTaskEmpty": "Aucune description de tâche.",
-    "subagentClose": "Fermer les détails du sous-agent",
+    "subagentReadOnly": "Les sous-agents sont pilotés par l'agent principal — la saisie est indisponible.",
     "subagentEmpty": "Les détails du sous-agent ne sont plus disponibles.",
     "resize": "Redimensionner le panneau de travail",
     "maximize": "Expand work panel",
@@ -1738,7 +1741,8 @@ sklm: {
       "review": "Réviser",
       "browser": "Navigateur",
       "file": "Fichiers",
-      "plugin": "Vue du plugin"
+      "plugin": "Vue du plugin",
+      "subagent": "Sous-agent"
     },
     "pluginView": {
       "failed": "Cette vue n'a pas pu être chargée. Rechargez le plugin et réessayez."
@@ -2184,6 +2188,11 @@ sklm: {
       "idHint": "Préfixe ses noms d'outils ; je ne peux pas changer plus tard.",
       "command": "Commande",
       "commandHint": "Un exécutable sur votre PATH, ou un chemin absolu.",
+      "commandHintNpx": "Utilise Node.js depuis PATH, l'installation officielle, fnm, nvm ou Volta.",
+      "commandHintUvx": "Utilise uv depuis PATH ou l'emplacement d'installation par défaut.",
+      "launcherCustom": "Personnalisé",
+      "commandPath": "Exécutable",
+      "commandPlaceholder": "npx ou un chemin absolu",
       "args": "Arguments",
       "argsHint": "Une ligne, telle qu'imprimée dans le README. Les citations sont respectées.",
       "env": "Variables d'environnement",

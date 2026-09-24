@@ -578,6 +578,9 @@ export const de = {
     "dismiss": "Verwerfen"
   },
   "settings": {
+    "power": "Energie",
+    "keepAwakeWhileRunning": "Computer wach halten",
+    "keepAwakeWhileRunningDesc": "Verhindert den Ruhezustand bei Inaktivität, solange PI-Desktop läuft. Der Bildschirm kann sich ausschalten; manuelles Schlafen und Zuklappen bleiben möglich.",
     "imageModel": "Bildgenerierungsmodell",
     "imageModelUnset": "Nicht konfiguriert",
     "imageModelUnavailable": "Derzeit nicht verfügbar",
@@ -1722,7 +1725,7 @@ sklm: {
     "subagent": "Unteragent",
     "subagentTask": "Aufgabe",
     "subagentTaskEmpty": "Keine Aufgabenbeschreibung.",
-    "subagentClose": "Unteragent-Details schließen",
+    "subagentReadOnly": "Unteragenten werden vom Haupt-Agenten gesteuert — eine Eingabe ist nicht möglich.",
     "subagentEmpty": "Die Unteragent-Details sind nicht mehr verfügbar.",
     "resize": "Größe des Arbeitsfensters ändern",
     "maximize": "Expand work panel",
@@ -1738,7 +1741,8 @@ sklm: {
       "review": "Überprüfen",
       "browser": "Browser",
       "file": "Dateien",
-      "plugin": "Plugin-Ansicht"
+      "plugin": "Plugin-Ansicht",
+      "subagent": "Subagent"
     },
     "pluginView": {
       "failed": "Diese Ansicht konnte nicht geladen werden. Laden Sie das Plugin neu und versuchen Sie es erneut."
@@ -2184,6 +2188,11 @@ sklm: {
       "idHint": "Präfixe seiner Werkzeugnamen; kann später nicht mehr geändert werden.",
       "command": "Befehl",
       "commandHint": "Eine ausführbare Datei in Ihrem PATH oder ein absoluter Pfad.",
+      "commandHintNpx": "Verwendet Node.js aus PATH, der offiziellen Installation, fnm, nvm oder Volta.",
+      "commandHintUvx": "Verwendet uv aus PATH oder dem Standard-Installationsort.",
+      "launcherCustom": "Benutzerdefiniert",
+      "commandPath": "Programmdatei",
+      "commandPlaceholder": "npx oder ein absoluter Pfad",
       "args": "Argumente",
       "argsHint": "Eine Zeile, wie in der README-Datei abgedruckt. Zitate werden respektiert.",
       "env": "Umgebungsvariablen",

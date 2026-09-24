@@ -578,6 +578,9 @@ export const es = {
     "dismiss": "Descartar"
   },
   "settings": {
+    "power": "Energía",
+    "keepAwakeWhileRunning": "Mantener el equipo activo",
+    "keepAwakeWhileRunningDesc": "Evita la suspensión por inactividad mientras PI-Desktop esté abierto. La pantalla puede apagarse; la suspensión manual y al cerrar la tapa siguen funcionando.",
     "imageModel": "Modelo de imágenes",
     "imageModelUnset": "Sin configurar",
     "imageModelUnavailable": "No disponible por ahora",
@@ -1722,7 +1725,7 @@ sklm: {
     "subagent": "Subagente",
     "subagentTask": "Tarea",
     "subagentTaskEmpty": "No hay descripción de la tarea.",
-    "subagentClose": "Cerrar detalles del subagente",
+    "subagentReadOnly": "Los subagentes son dirigidos por el agente principal; no se puede escribir aquí.",
     "subagentEmpty": "Los detalles del subagente ya no están disponibles.",
     "resize": "Cambiar tamaño del panel de trabajo",
     "maximize": "Expand work panel",
@@ -1738,7 +1741,8 @@ sklm: {
       "review": "Revisar",
       "browser": "Navegador",
       "file": "Archivos",
-      "plugin": "Vista de complemento"
+      "plugin": "Vista de complemento",
+      "subagent": "Subagente"
     },
     "pluginView": {
       "failed": "Esta vista no se pudo cargar. Vuelva a cargar el complemento e inténtelo de nuevo."
@@ -2184,6 +2188,11 @@ sklm: {
       "idHint": "Prefija los nombres de sus herramientas; No puedo cambiar más tarde.",
       "command": "Comando",
       "commandHint": "Un ejecutable en su RUTA, o una ruta absoluta.",
+      "commandHintNpx": "Usa Node.js de PATH, la instalación oficial, fnm, nvm o Volta.",
+      "commandHintUvx": "Usa uv de PATH o de la ubicación de instalación predeterminada.",
+      "launcherCustom": "Personalizado",
+      "commandPath": "Ejecutable",
+      "commandPlaceholder": "npx o una ruta absoluta",
       "args": "Argumentos",
       "argsHint": "Una línea, tal como está impresa en el archivo README. Se respetan las cotizaciones.",
       "env": "Variables de entorno",
