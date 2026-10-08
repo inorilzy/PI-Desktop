@@ -1,0 +1,60 @@
+name: PR 1000 Windows test package
+on:
+  push:
+    branches: ['test/pr1000-windows-20261008']
+permissions:
+  contents: read
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: pnpm
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install locked dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Build native host
+        run: cargo build --release --locked -p host-core
+      - name: Build workspace
+        run: pnpm build:js
+      - name: Validate desktop
+        run: |
+          pnpm --filter @pi-desktop/desktop typecheck
+          pnpm --filter @pi-desktop/desktop lint
+          node --test apps/desktop/test/subagent-fallback-label.test.mjs apps/desktop/test/composer-menu-style-tokens.test.mjs
+      - name: Package Windows installers
+        run: pnpm --filter @pi-desktop/desktop run dist:win -- --x64
+      - name: Record provenance and hashes
+        run: |
+          node --input-type=module - <<'NODE'
+          import fs from 'node:fs';
+          import crypto from 'node:crypto';
+          const root='apps/desktop/release';
+          const files=fs.readdirSync(root).filter(x=>/\.(exe|zip)$/.test(x));
+          if (!files.some(x=>x.startsWith('PI-Desktop-Setup-'))) throw Error('Missing Setup executable');
+          if (!files.some(x=>x.endsWith('.zip'))) throw Error('Missing portable ZIP');
+          fs.writeFileSync(root+'/SHA256SUMS.txt',files.map(x=>crypto.createHash('sha256').update(fs.readFileSync(root+'/'+x)).digest('hex')+'  '+x).join('\n')+'\n');
+          fs.writeFileSync(root+'/BUILD-MANIFEST.json',JSON.stringify({candidateCommit:'442c7f64effdf2117d405d3e577bf214fb6df227',candidateTree:'e7502944d8cad80ab25020cec7955be025693f59',baseMain:'b8341a9c72656918370c25e007012b1e4c5b97e6',prHead:'e48351990199b7f053928f6e1e72d4a0f4cd7f9b',workflowCommit:process.env.GITHUB_SHA,runId:process.env.GITHUB_RUN_ID,unsigned:true,uiValidated:false},null,2));
+          NODE
+      - uses: actions/upload-artifact@v7
+        with:
+          name: pr1000-windows-test
+          retention-days: 7
+          compression-level: 0
+          if-no-files-found: error
+          path: |
+            apps/desktop/release/*.exe
+            apps/desktop/release/*.zip
+            apps/desktop/release/SHA256SUMS.txt
+            apps/desktop/release/BUILD-MANIFEST.json
