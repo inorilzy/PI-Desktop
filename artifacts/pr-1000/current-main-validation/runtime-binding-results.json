@@ -1,0 +1,50 @@
+{
+  "result": "PASS",
+  "implementation": "packages/agent-runtime/dist/subagent-definitions.js:resolveSubagentProviders",
+  "networkCalls": 0,
+  "credentialsRead": 0,
+  "checks": [
+    {
+      "case": "save-reopen-single-provider",
+      "result": "PASS",
+      "bindings": [
+        {
+          "pin": "366a8e78-b33a-4a1c-b59a-672240b3c8c8/fixture-model",
+          "resolvedProviderId": "366a8e78-b33a-4a1c-b59a-672240b3c8c8",
+          "modelId": "fixture-model",
+          "baseUrl": "http://127.0.0.1:9/v1"
+        }
+      ]
+    },
+    {
+      "case": "move-save-reopen",
+      "result": "PASS",
+      "bindings": [
+        {
+          "pin": "04d070c8-32dc-4598-9546-bc70862c2c39/fixture-model",
+          "resolvedProviderId": "04d070c8-32dc-4598-9546-bc70862c2c39",
+          "modelId": "fixture-model",
+          "baseUrl": "http://127.0.0.1:9/v1"
+        },
+        {
+          "pin": "366a8e78-b33a-4a1c-b59a-672240b3c8c8/fixture-model",
+          "resolvedProviderId": "366a8e78-b33a-4a1c-b59a-672240b3c8c8",
+          "modelId": "fixture-model",
+          "baseUrl": "http://127.0.0.1:9/v1"
+        }
+      ]
+    },
+    {
+      "case": "remove-disabled-save-reopen",
+      "result": "PASS",
+      "bindings": [
+        {
+          "pin": "04d070c8-32dc-4598-9546-bc70862c2c39/fixture-model",
+          "resolvedProviderId": "04d070c8-32dc-4598-9546-bc70862c2c39",
+          "modelId": "fixture-model",
+          "baseUrl": "http://127.0.0.1:9/v1"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,281 @@
+{
+  "result": "PASS",
+  "candidate": "d1656d5c8c3151a8bf6c7fa37bfacf4d53898d7b",
+  "baseMain": "71ca7003460b134c632772caa90b4d722ad876ff",
+  "tree": "26e7f5db6c6cb8bab260d5f4f1240f039250327e",
+  "observedAt": "2026-10-09T01:14:30.277Z",
+  "environment": "Windows 11 x64; packaged PI-Desktop 0.17.0 ZIP; zh-CN; dark; isolated synthetic profile",
+  "method": "Native Windows UI input; original screenshots; read-only live DOM aria-label and production IPC persistence inspection. No provider requests or agent execution.",
+  "providerA": "366a8e78-b33a-4a1c-b59a-672240b3c8c8",
+  "providerB": "04d070c8-32dc-4598-9546-bc70862c2c39",
+  "cases": [
+    {
+      "case": "save-reopen-single-provider",
+      "result": "PASS",
+      "labels": [
+        {
+          "label": "上移 PR1000 Shared Provider/fixture-model",
+          "disabled": true
+        },
+        {
+          "label": "下移 PR1000 Shared Provider/fixture-model",
+          "disabled": true
+        },
+        {
+          "label": "移除 PR1000 Shared Provider/fixture-model",
+          "disabled": false
+        }
+      ],
+      "visibleText": "编辑子智能体\n名称\n何时委派给它\n可用工具\n继承主会话工具\nRead\nGlob\nGrep\nBrowserPreview\nBash\nEdit\nWrite\n指令\n0 / 32 KB\n高级\n模型\n与会话一致\n推理强度\n与会话一致\n备用模型\n1. PR1000 Shared Provider/fixture-model\n↑\n↓\n×\n添加备用模型\n输出上限\n作用范围\n全局级 · 所有项目生效\n在文件夹中显示\n取消\n保存",
+      "persisted": {
+        "body": "You are pr1000-current-main-4b, working on one task for another agent.\n\n## What to do\nDescribe the job in the imperative: what to look at, in what order, when to stop.\n\n## What to report back\nSay exactly what the answer should look like — the parent agent only sees your\nfinal message, not your steps.\n\n## Limits\nAnything you must not do.",
+        "subagent": {
+          "createdAt": "2026-10-09T01:11:37.543066800+00:00",
+          "description": "Synthetic UI validation only. Never execute this agent.",
+          "enabled": true,
+          "fallbackModels": [
+            "366a8e78-b33a-4a1c-b59a-672240b3c8c8/fixture-model"
+          ],
+          "id": "pr1000-current-main-4b",
+          "level": "global",
+          "name": "pr1000-current-main-4b",
+          "path": "<isolated-test-agents>/subagents/pr1000-current-main-4b.md",
+          "scope": {
+            "mode": "global",
+            "projects": []
+          },
+          "sizeBytes": 543,
+          "tools": [
+            "Read",
+            "Glob",
+            "Grep"
+          ],
+          "updatedAt": "2026-10-09T01:11:37.543066800+00:00"
+        }
+      }
+    },
+    {
+      "case": "same-name-provider-disambiguation",
+      "result": "PASS",
+      "labels": [
+        {
+          "label": "上移 PR1000 Shared Provider/fixture-model (366a8e78-b33a-4a1c-b59a-672240b3c8c8)",
+          "disabled": true
+        },
+        {
+          "label": "下移 PR1000 Shared Provider/fixture-model (366a8e78-b33a-4a1c-b59a-672240b3c8c8)",
+          "disabled": false
+        },
+        {
+          "label": "移除 PR1000 Shared Provider/fixture-model (366a8e78-b33a-4a1c-b59a-672240b3c8c8)",
+          "disabled": false
+        },
+        {
+          "label": "上移 PR1000 Shared Provider/fixture-model (04d070c8-32dc-4598-9546-bc70862c2c39)",
+          "disabled": false
+        },
+        {
+          "label": "下移 PR1000 Shared Provider/fixture-model (04d070c8-32dc-4598-9546-bc70862c2c39)",
+          "disabled": true
+        },
+        {
+          "label": "移除 PR1000 Shared Provider/fixture-model (04d070c8-32dc-4598-9546-bc70862c2c39)",
+          "disabled": false
+        }
+      ],
+      "visibleText": "编辑子智能体\n名称\n何时委派给它\n可用工具\n继承主会话工具\nRead\nGlob\nGrep\nBrowserPreview\nBash\nEdit\nWrite\n指令\n0 / 32 KB\n高级\n模型\n与会话一致\n推理强度\n与会话一致\n备用模型\n1. PR1000 Shared Provider/fixture-model (366a8e78-b33a-4a1c-b59a-672240b3c8c8)\n↑\n↓\n×\n2. PR1000 Shared Provider/fixture-model (04d070c8-32dc-4598-9546-bc70862c2c39)\n↑\n↓\n×\n添加备用模型\n输出上限\n作用范围\n全局级 · 所有项目生效\n在文件夹中显示\n取消\n保存"
+    },
+    {
+      "case": "move-save-reopen",
+      "result": "PASS",
+      "labels": [
+        {
+          "label": "上移 PR1000 Shared Provider/fixture-model (04d070c8-32dc-4598-9546-bc70862c2c39)",
+          "disabled": true
+        },
+        {
+          "label": "下移 PR1000 Shared Provider/fixture-model (04d070c8-32dc-4598-9546-bc70862c2c39)",
+          "disabled": false
+        },
+        {
+          "label": "移除 PR1000 Shared Provider/fixture-model (04d070c8-32dc-4598-9546-bc70862c2c39)",
+          "disabled": false
+        },
+        {
+          "label": "上移 PR1000 Shared Provider/fixture-model (366a8e78-b33a-4a1c-b59a-672240b3c8c8)",
+          "disabled": false
+        },
+        {
+          "label": "下移 PR1000 Shared Provider/fixture-model (366a8e78-b33a-4a1c-b59a-672240b3c8c8)",
+          "disabled": true
+        },
+        {
+          "label": "移除 PR1000 Shared Provider/fixture-model (366a8e78-b33a-4a1c-b59a-672240b3c8c8)",
+          "disabled": false
+        }
+      ],
+      "visibleText": "编辑子智能体\n名称\n何时委派给它\n可用工具\n继承主会话工具\nRead\nGlob\nGrep\nBrowserPreview\nBash\nEdit\nWrite\n指令\n0 / 32 KB\n高级\n模型\n与会话一致\n推理强度\n与会话一致\n备用模型\n1. PR1000 Shared Provider/fixture-model (04d070c8-32dc-4598-9546-bc70862c2c39)\n↑\n↓\n×\n2. PR1000 Shared Provider/fixture-model (366a8e78-b33a-4a1c-b59a-672240b3c8c8)\n↑\n↓\n×\n添加备用模型\n输出上限\n作用范围\n全局级 · 所有项目生效\n在文件夹中显示\n取消\n保存",
+      "persisted": {
+        "body": "You are pr1000-current-main-4b, working on one task for another agent.\n\n## What to do\nDescribe the job in the imperative: what to look at, in what order, when to stop.\n\n## What to report back\nSay exactly what the answer should look like — the parent agent only sees your\nfinal message, not your steps.\n\n## Limits\nAnything you must not do.",
+        "subagent": {
+          "createdAt": "2026-10-09T01:12:23.498244900+00:00",
+          "description": "Synthetic UI validation only. Never execute this agent.",
+          "enabled": true,
+          "fallbackModels": [
+            "04d070c8-32dc-4598-9546-bc70862c2c39/fixture-model",
+            "366a8e78-b33a-4a1c-b59a-672240b3c8c8/fixture-model"
+          ],
+          "id": "pr1000-current-main-4b",
+          "level": "global",
+          "name": "pr1000-current-main-4b",
+          "path": "<isolated-test-agents>/subagents/pr1000-current-main-4b.md",
+          "scope": {
+            "mode": "global",
+            "projects": []
+          },
+          "sizeBytes": 595,
+          "tools": [
+            "Read",
+            "Glob",
+            "Grep"
+          ],
+          "updatedAt": "2026-10-09T01:12:23.498244900+00:00"
+        }
+      }
+    },
+    {
+      "case": "disabled-provider-retained",
+      "result": "PASS",
+      "labels": [
+        {
+          "label": "上移 PR1000 Shared Provider/fixture-model",
+          "disabled": true
+        },
+        {
+          "label": "下移 PR1000 Shared Provider/fixture-model",
+          "disabled": false
+        },
+        {
+          "label": "移除 PR1000 Shared Provider/fixture-model",
+          "disabled": false
+        },
+        {
+          "label": "上移 366a8e78-b33a-4a1c-b59a-672240b3c8c8/fixture-model",
+          "disabled": false
+        },
+        {
+          "label": "下移 366a8e78-b33a-4a1c-b59a-672240b3c8c8/fixture-model",
+          "disabled": true
+        },
+        {
+          "label": "移除 366a8e78-b33a-4a1c-b59a-672240b3c8c8/fixture-model",
+          "disabled": false
+        }
+      ],
+      "visibleText": "编辑子智能体\n名称\n何时委派给它\n可用工具\n继承主会话工具\nRead\nGlob\nGrep\nBrowserPreview\nBash\nEdit\nWrite\n指令\n0 / 32 KB\n高级\n模型\n与会话一致\n推理强度\n与会话一致\n备用模型\n1. PR1000 Shared Provider/fixture-model\n↑\n↓\n×\n2. 366a8e78-b33a-4a1c-b59a-672240b3c8c8/fixture-model\n↑\n↓\n×\n添加备用模型\n输出上限\n作用范围\n全局级 · 所有项目生效\n在文件夹中显示\n取消\n保存",
+      "persisted": {
+        "body": "You are pr1000-current-main-4b, working on one task for another agent.\n\n## What to do\nDescribe the job in the imperative: what to look at, in what order, when to stop.\n\n## What to report back\nSay exactly what the answer should look like — the parent agent only sees your\nfinal message, not your steps.\n\n## Limits\nAnything you must not do.",
+        "subagent": {
+          "createdAt": "2026-10-09T01:12:23.498244900+00:00",
+          "description": "Synthetic UI validation only. Never execute this agent.",
+          "enabled": true,
+          "fallbackModels": [
+            "04d070c8-32dc-4598-9546-bc70862c2c39/fixture-model",
+            "366a8e78-b33a-4a1c-b59a-672240b3c8c8/fixture-model"
+          ],
+          "id": "pr1000-current-main-4b",
+          "level": "global",
+          "name": "pr1000-current-main-4b",
+          "path": "<isolated-test-agents>/subagents/pr1000-current-main-4b.md",
+          "scope": {
+            "mode": "global",
+            "projects": []
+          },
+          "sizeBytes": 595,
+          "tools": [
+            "Read",
+            "Glob",
+            "Grep"
+          ],
+          "updatedAt": "2026-10-09T01:12:23.498244900+00:00"
+        }
+      }
+    },
+    {
+      "case": "move-disabled",
+      "result": "PASS",
+      "labels": [
+        {
+          "label": "上移 366a8e78-b33a-4a1c-b59a-672240b3c8c8/fixture-model",
+          "disabled": true
+        },
+        {
+          "label": "下移 366a8e78-b33a-4a1c-b59a-672240b3c8c8/fixture-model",
+          "disabled": false
+        },
+        {
+          "label": "移除 366a8e78-b33a-4a1c-b59a-672240b3c8c8/fixture-model",
+          "disabled": false
+        },
+        {
+          "label": "上移 PR1000 Shared Provider/fixture-model",
+          "disabled": false
+        },
+        {
+          "label": "下移 PR1000 Shared Provider/fixture-model",
+          "disabled": true
+        },
+        {
+          "label": "移除 PR1000 Shared Provider/fixture-model",
+          "disabled": false
+        }
+      ],
+      "visibleText": "编辑子智能体\n名称\n何时委派给它\n可用工具\n继承主会话工具\nRead\nGlob\nGrep\nBrowserPreview\nBash\nEdit\nWrite\n指令\n0 / 32 KB\n高级\n模型\n与会话一致\n推理强度\n与会话一致\n备用模型\n1. 366a8e78-b33a-4a1c-b59a-672240b3c8c8/fixture-model\n↑\n↓\n×\n2. PR1000 Shared Provider/fixture-model\n↑\n↓\n×\n添加备用模型\n输出上限\n作用范围\n全局级 · 所有项目生效\n在文件夹中显示\n取消\n保存"
+    },
+    {
+      "case": "remove-disabled-save-reopen",
+      "result": "PASS",
+      "labels": [
+        {
+          "label": "上移 PR1000 Shared Provider/fixture-model",
+          "disabled": true
+        },
+        {
+          "label": "下移 PR1000 Shared Provider/fixture-model",
+          "disabled": true
+        },
+        {
+          "label": "移除 PR1000 Shared Provider/fixture-model",
+          "disabled": false
+        }
+      ],
+      "visibleText": "编辑子智能体\n名称\n何时委派给它\n可用工具\n继承主会话工具\nRead\nGlob\nGrep\nBrowserPreview\nBash\nEdit\nWrite\n指令\n0 / 32 KB\n高级\n模型\n与会话一致\n推理强度\n与会话一致\n备用模型\n1. PR1000 Shared Provider/fixture-model\n↑\n↓\n×\n添加备用模型\n输出上限\n作用范围\n全局级 · 所有项目生效\n在文件夹中显示\n取消\n保存",
+      "persisted": {
+        "body": "You are pr1000-current-main-4b, working on one task for another agent.\n\n## What to do\nDescribe the job in the imperative: what to look at, in what order, when to stop.\n\n## What to report back\nSay exactly what the answer should look like — the parent agent only sees your\nfinal message, not your steps.\n\n## Limits\nAnything you must not do.",
+        "subagent": {
+          "createdAt": "2026-10-09T01:13:38.668749800+00:00",
+          "description": "Synthetic UI validation only. Never execute this agent.",
+          "enabled": true,
+          "fallbackModels": [
+            "04d070c8-32dc-4598-9546-bc70862c2c39/fixture-model"
+          ],
+          "id": "pr1000-current-main-4b",
+          "level": "global",
+          "name": "pr1000-current-main-4b",
+          "path": "<isolated-test-agents>/subagents/pr1000-current-main-4b.md",
+          "scope": {
+            "mode": "global",
+            "projects": []
+          },
+          "sizeBytes": 543,
+          "tools": [
+            "Read",
+            "Glob",
+            "Grep"
+          ],
+          "updatedAt": "2026-10-09T01:13:38.668749800+00:00"
+        }
+      }
+    }
+  ]
+}
