@@ -11,6 +11,8 @@ import {
   PLUGIN_TRIGGER_TIMEOUT_MS,
   composerTriggerKey,
   type PluginComposerTrigger,
+  type PluginTriggerContext,
+  type PluginTriggerQuery,
 } from "@pi-desktop/plugin-sdk";
 
 export type PluginTriggerMatch = {
@@ -52,6 +54,37 @@ export function detectPluginTrigger(
   const query = value.slice(start + 1, cursor);
   if (RESERVED_CHARS.test(query)) return null;
   return { trigger, query, tokenStart: start, tokenEnd: cursor };
+}
+
+/** What a trigger is told about the draft besides its query. */
+export type PluginTriggerScope = {
+  readonly sessionId?: string;
+  readonly context?: PluginTriggerContext;
+};
+
+/**
+ * The draft's scope as a trigger sees it: the session id when there is one,
+ * and its context use when the composer's ring has a positive window to show.
+ */
+export function pluginTriggerScope(
+  sessionId: string | null | undefined,
+  context: { usedTokens: number; contextWindow: number } | null | undefined,
+): PluginTriggerScope {
+  const scope: { sessionId?: string; context?: PluginTriggerContext } = {};
+  if (sessionId) scope.sessionId = sessionId;
+  if (
+    context &&
+    Number.isFinite(context.usedTokens) &&
+    context.usedTokens >= 0 &&
+    Number.isFinite(context.contextWindow) &&
+    context.contextWindow > 0
+  ) {
+    scope.context = {
+      usedTokens: Math.round(context.usedTokens),
+      contextWindow: Math.round(context.contextWindow),
+    };
+  }
+  return scope;
 }
 
 function utf8Bytes(text: string): number {
@@ -96,14 +129,16 @@ export function sanitizeTriggerItems(answer: unknown): PluginTriggerRow[] | null
 /**
  * Ask a trigger for its items. Resolves with the kept rows, or `null` when
  * the provider throws, rejects, answers with no array or not within
- * `timeoutMs`; never rejects. A failure is logged, since the group it
+ * `timeoutMs`; never rejects. `scope` rides along on the query (see
+ * `pluginTriggerScope`). A failure is logged, since the group it
  * collapses is the only trace the user sees.
  */
 export function askPluginTrigger(
-  provider: (query: { trigger: PluginComposerTrigger; query: string }) => unknown,
+  provider: (query: PluginTriggerQuery) => unknown,
   match: Pick<PluginTriggerMatch, "trigger" | "query">,
   label: string,
   timeoutMs = PLUGIN_TRIGGER_TIMEOUT_MS,
+  scope: PluginTriggerScope = {},
 ): Promise<PluginTriggerRow[] | null> {
   return new Promise((resolve) => {
     let settled = false;
@@ -119,7 +154,8 @@ export function askPluginTrigger(
       timeoutMs,
     );
     try {
-      Promise.resolve(provider({ trigger: match.trigger, query: match.query })).then(
+      const query: PluginTriggerQuery = { trigger: match.trigger, query: match.query, ...scope };
+      Promise.resolve(provider(query)).then(
         (answer) => {
           try {
             const rows = sanitizeTriggerItems(answer);

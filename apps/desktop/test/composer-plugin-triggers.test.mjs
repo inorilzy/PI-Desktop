@@ -15,7 +15,7 @@ const {
   PLUGIN_TRIGGER_DETAIL_MAX_CHARS,
   PLUGIN_TRIGGER_MAX_ITEMS,
 } = await import("@pi-desktop/plugin-sdk");
-const { askPluginTrigger, detectPluginTrigger, sanitizeTriggerItems } = await import(
+const { askPluginTrigger, detectPluginTrigger, pluginTriggerScope, sanitizeTriggerItems } = await import(
   "../src/features/chat/composer/plugins/plugin-triggers.ts"
 );
 
@@ -160,4 +160,49 @@ test("an answer after the timeout is ignored", async () => {
   assert.equal(value, null);
   answer([{ label: "late" }]);
   await new Promise((resolve) => setTimeout(resolve, 0));
+});
+
+test("a trigger is told the draft's session and context use, when the host knows them", async () => {
+  assert.deepEqual(pluginTriggerScope("s-1", { usedTokens: 1200.4, contextWindow: 200000 }), {
+    sessionId: "s-1",
+    context: { usedTokens: 1200, contextWindow: 200000 },
+  });
+  // A draft without a session, or before its first answered turn, says less.
+  assert.deepEqual(pluginTriggerScope("", null), {});
+  assert.deepEqual(pluginTriggerScope(null, { usedTokens: 5, contextWindow: 100 }), {
+    context: { usedTokens: 5, contextWindow: 100 },
+  });
+  // Figures the ring could not show are not reported.
+  for (const bad of [
+    { usedTokens: 5, contextWindow: 0 },
+    { usedTokens: -1, contextWindow: 100 },
+    { usedTokens: Number.NaN, contextWindow: 100 },
+  ]) {
+    assert.deepEqual(pluginTriggerScope("s-1", bad), { sessionId: "s-1" });
+  }
+
+  const asked = [];
+  await askPluginTrigger(
+    (query) => {
+      asked.push(query);
+      return [];
+    },
+    { trigger: "@", query: "al", tokenStart: 0, tokenEnd: 3 },
+    "demo.lab",
+    undefined,
+    pluginTriggerScope("s-1", { usedTokens: 10, contextWindow: 100 }),
+  );
+  assert.deepEqual(asked, [
+    { trigger: "@", query: "al", sessionId: "s-1", context: { usedTokens: 10, contextWindow: 100 } },
+  ]);
+});
+
+test("the composer tells triggers its session and the context ring's figures", async () => {
+  const { readComposerSource } = await import("./helpers/composer-source.mjs");
+  const source = await readComposerSource();
+  assert.match(source, /usedTokens: contextOccupancyTokens\(composerContextUsage\.usage\)/);
+  assert.match(source, /contextWindow: composerContextUsage\.contextWindow/);
+  assert.match(source, /triggerContext: composerTriggerContext/);
+  assert.match(source, /pluginTriggerScope\(referenceSessionId, triggerContext\)/);
+  assert.match(source, /askPluginTrigger\(entry\.items, match, entry\.pluginId, undefined, scopeRef\.current\)/);
 });

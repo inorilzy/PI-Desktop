@@ -153,6 +153,47 @@ test("Browser declares plan-safe actions for Plan-mode URL inspection (ADR 0211)
 });
 
 
+test("Session Mentions ships as an ordinary plugin on the public slot API", () => {
+  const dir = "resources/plugins/pi.session-mentions";
+  const sessionManifest = JSON.parse(read(`${dir}/manifest.json`));
+  const sessionMain = read(`${dir}/main.js`);
+  const sessionService = read(`${dir}/service.js`);
+  const sessionRenderer = read(`${dir}/renderer.js`);
+  assert.equal(sessionManifest.id, "pi.session-mentions");
+  assert.equal(sessionManifest.author, "PI-Desktop");
+  // On by default like the other bundled plugins; the user can still disable it.
+  assert.equal(sessionManifest.enabledByDefault, undefined);
+  assert.deepEqual(sessionManifest.activationEvents, ["onStartup"]);
+  // Exactly what a third party would declare for the same feature.
+  assert.deepEqual(
+    [...sessionManifest.permissions].sort(),
+    ["desktop.control", "renderer.extension"],
+  );
+  assert.deepEqual(sessionManifest.rendererActions, ["plugin.call"]);
+  assert.deepEqual(sessionManifest.rendererCallMethods, ["sessions.items", "sessions.snapshots"]);
+  assert.equal(typeof sessionManifest.i18n.en.name, "string");
+  assert.equal(typeof sessionManifest.i18n["zh-CN"].name, "string");
+  // Plain modules, nothing to build: every relative import resolves in place.
+  const files = ["main.js", "service.js", "renderer.js"];
+  for (const file of ["prompt", "qa", "reader", "references", "snapshot"]) files.push(`lib/${file}.js`);
+  for (const file of files) {
+    const source = read(`${dir}/${file}`);
+    for (const [, target] of source.matchAll(/from ["'](\.[^"']+)["']/g)) {
+      assert.ok(
+        existsSync(resolve(dir, file, "..", target)),
+        `${file} imports ${target}, which must ship next to it`,
+      );
+    }
+    assert.doesNotMatch(source, /require\(|ipcRenderer|from ["'](?:electron|node:)/);
+  }
+  assert.equal(JSON.parse(read(`${dir}/package.json`)).type, "module");
+  // Sessions are read only through the reviewed desktop-control read operations.
+  const operations = [...sessionService.matchAll(/invoke\(["'](\w+\/\w+)["']/g)].map((m) => m[1]);
+  assert.deepEqual([...new Set(operations)].sort(), ["session/get", "session/list"]);
+  assert.match(sessionMain, /onRendererCall/);
+  assert.match(sessionRenderer, /slot: ["']composerTrigger["'], trigger: ["']@["']/);
+});
+
 test("Advisor is temporarily not bundled", () => {
   assert.equal(existsSync(resolve("resources/plugins/pi.advisor")), false);
 });

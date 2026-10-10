@@ -31,6 +31,7 @@ import { placePluginMark } from "../plugins/plugin-marks";
 import {
   askPluginTrigger,
   detectPluginTrigger,
+  pluginTriggerScope,
   type PluginTriggerMatch,
   type PluginTriggerRow,
 } from "../plugins/plugin-triggers";
@@ -68,6 +69,7 @@ export function useComposerCompletions({
   composing,
   enabled,
   referenceSessionId,
+  triggerContext,
   fileReferencesRef,
   applyEditorDraft,
   handleInput,
@@ -78,6 +80,8 @@ export function useComposerCompletions({
   composing: boolean;
   enabled: boolean;
   referenceSessionId: string;
+  /** The session's context use as the composer's ring shows it, told to triggers. */
+  triggerContext?: { usedTokens: number; contextWindow: number } | null;
   fileReferencesRef: RefObject<ComposerFileReference[]>;
   applyEditorDraft: (text: string, references: ComposerFileReference[], caret: number) => void;
   handleInput: (source: string, caret: number) => string;
@@ -95,6 +99,9 @@ export function useComposerCompletions({
   const [dismissedKey, setDismissedKey] = useState<string | null>(null);
   const [highlight, setHighlight] = useState(0);
   const frozenRef = useRef<PluginTriggerMatch | null>(null);
+  // Read when a trigger is asked, so a context change alone asks nothing.
+  const scopeRef = useRef(pluginTriggerScope(referenceSessionId, triggerContext));
+  scopeRef.current = pluginTriggerScope(referenceSessionId, triggerContext);
 
   const liveMatch = useMemo(
     () =>
@@ -120,7 +127,7 @@ export function useComposerCompletions({
   useEffect(() => {
     if (!entry || !match || !requestKey || dismissed) return;
     let current = true;
-    void askPluginTrigger(entry.items, match, entry.pluginId).then((rows) => {
+    void askPluginTrigger(entry.items, match, entry.pluginId, undefined, scopeRef.current).then((rows) => {
       if (current) setAnswer({ key: requestKey, rows });
     });
     return () => {

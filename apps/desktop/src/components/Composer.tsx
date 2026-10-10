@@ -20,6 +20,7 @@ import {
 } from "@pi-desktop/shared";
 import { useAppStore } from "../stores/app-store";
 import { latestTurnContextInspector } from "../lib/latest-turn-context";
+import { contextOccupancyTokens } from "../lib/context-usage";
 import { isActivePlanExecution } from "../lib/plan-mode-state";
 import { headAsk, queuedAskCount } from "../lib/pending-asks";
 import type { QueuedPrompt } from "../lib/queued-prompts";
@@ -123,6 +124,17 @@ export function Composer({
         sessionCompactions,
       ),
     [liveMessages, providerModels, providers, sessionCompactions],
+  );
+  // What a plugin's composer trigger is told about this session's context.
+  const composerTriggerContext = useMemo(
+    () =>
+      composerContextUsage
+        ? {
+            usedTokens: contextOccupancyTokens(composerContextUsage.usage),
+            contextWindow: composerContextUsage.contextWindow,
+          }
+        : null,
+    [composerContextUsage],
   );
   const configureActiveSession = useAppStore((s) => s.configureActiveSession);
   const showToast = useAppStore((s) => s.showToast);
@@ -474,6 +486,7 @@ export function Composer({
     composing,
     enabled: !inputBlocked,
     referenceSessionId,
+    triggerContext: composerTriggerContext,
     fileReferencesRef,
     applyEditorDraft,
     handleInput,

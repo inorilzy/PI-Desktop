@@ -2460,6 +2460,7 @@ export {
   composerTriggerKey,
   type PluginComposerTrigger,
   type PluginTriggerQuery,
+  type PluginTriggerContext,
   type PluginTriggerItem,
   type PluginComposerTriggerRegistration,
   type PluginDraftMark,

@@ -59,10 +59,27 @@ export const PLUGIN_ATTACHMENT_MAX_BYTES = 16 * 1024 * 1024;
 /** Attachments one plugin may hold in one draft. */
 export const PLUGIN_ATTACHMENTS_MAX = 20;
 
-/** What a trigger is asked for: the text typed after its symbol. */
+/**
+ * The context use of the session a draft belongs to, as the composer's
+ * context ring shows it: what the newest answered turn occupied, and the
+ * model's window. A read-only estimate, not a reservation.
+ */
+export type PluginTriggerContext = {
+  readonly usedTokens: number;
+  readonly contextWindow: number;
+};
+
+/**
+ * What a trigger is asked for: the text typed after its symbol, and, when the
+ * host knows them, the session the draft belongs to and that session's
+ * context use. Both are absent for a draft without a session yet, and
+ * `context` also before the session's first answered turn.
+ */
 export type PluginTriggerQuery = {
   readonly trigger: PluginComposerTrigger;
   readonly query: string;
+  readonly sessionId?: string;
+  readonly context?: PluginTriggerContext;
 };
 
 /**
