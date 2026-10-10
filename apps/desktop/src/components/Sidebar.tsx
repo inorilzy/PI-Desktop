@@ -16,6 +16,10 @@ import { TooltipButton, cx } from "./ui";
 /** Default number of most-recent sessions shown per project group before the rest fold. */
 const MAX_VISIBLE_SESSIONS = 10;
 import { portalToBody } from "../lib/portal-visibility";
+import {
+  clampSidebarFloatingMenuTop,
+  SIDEBAR_MENU_VIEWPORT_PADDING,
+} from "../lib/sidebar-floating-menu";
 import { useTranslation } from "react-i18next";
 import { api } from "../lib/api";
 import { SessionHoverCard } from "../features/sessions/SessionHoverCard";
@@ -28,6 +32,7 @@ import {
   sessionArchived,
   sessionPinned,
 } from "../lib/sidebar-session-groups";
+import { listableSessions } from "../lib/session-origin";
 import {
   composerDropItems,
   hasComposerFileDrag,
@@ -42,7 +47,7 @@ import {
   sidebarSessionStatus,
   type SidebarSessionStatus,
 } from "../lib/sidebar-session-status";
-import { ErrorCodes } from "@pi-desktop/shared";
+import { ErrorCodes, formatSessionLink } from "@pi-desktop/shared";
 import type { SessionSummary } from "@pi-desktop/shared";
 import type {
   ProjectMeta,
@@ -100,8 +105,6 @@ type ProjectEntry = {
   /** Best-effort git branch from the project workspace, if known. */
   branch?: string;
 };
-
-const VIEWPORT_PADDING = 8;
 
 /** Private MIME so a sidebar session drag is never mistaken for an OS file drop. */
 const SESSION_DRAG_MIME = "application/x-pi-desktop-session";
@@ -496,11 +499,8 @@ export function Sidebar({
   const placeMenu = useCallback((event: ReactMouseEvent<HTMLButtonElement>) => {
     const rect = event.currentTarget.getBoundingClientRect();
     setMenuPosition({
-      top: Math.max(
-        VIEWPORT_PADDING,
-        Math.min(rect.bottom + 4, window.innerHeight - 220),
-      ),
-      left: Math.max(VIEWPORT_PADDING, rect.right + 4),
+      top: clampSidebarFloatingMenuTop(rect.bottom + 4, window.innerHeight),
+      left: Math.max(SIDEBAR_MENU_VIEWPORT_PADDING, rect.right + 4),
     });
   }, []);
 
@@ -508,11 +508,8 @@ export function Sidebar({
   // of the trigger or pointer; they never flip to the left at the viewport edge.
   const placeMenuAtPoint = useCallback((x: number, y: number) => {
     setMenuPosition({
-      top: Math.max(
-        VIEWPORT_PADDING,
-        Math.min(y + 4, window.innerHeight - 220),
-      ),
-      left: Math.max(VIEWPORT_PADDING, x + 4),
+      top: clampSidebarFloatingMenuTop(y + 4, window.innerHeight),
+      left: Math.max(SIDEBAR_MENU_VIEWPORT_PADDING, x + 4),
     });
   }, []);
 
@@ -631,11 +628,13 @@ export function Sidebar({
   }, [t]);
 
   const filtered = useMemo(() => {
-    const candidates = showArchived
-      ? sessions
-      : sessions.filter(
-          (session) => !sessionArchived(session, sessionMeta[session.id]),
-        );
+    // A scheduled run's transcript belongs to the Scheduled page, not to the
+    // project groups: that page's task column and run history are its entry
+    // point (issue #1291). The session stays in the store so the chat surface
+    // can still resolve its title, source, and capabilities when it is opened
+    // from there.
+    const candidates = listableSessions(sessions)
+      .filter((session) => showArchived || !sessionArchived(session, sessionMeta[session.id]));
     // Empty sessions are durable sidebar rows now. Their message count, not
     // their title, controls New Task reuse, so a manual rename never changes
     // the empty-slot behavior.
@@ -1163,7 +1162,10 @@ export function Sidebar({
       // session that really exists.
       const known = useAppStore.getState().sessions.some((session) => session.id === sessionId);
       if (!known) {
-        const detail = await api.getSession(sessionId);
+        // Only presence is read from this reply, so ask for the smallest window
+        // the host accepts. The uncapped read moved every message of the
+        // session over IPC to answer one boolean.
+        const detail = await api.getSession(sessionId, { messageLimit: 1 });
         if (!detail.session) {
           reportError(new Error(t("sessionCollaboration.sessionMissing")));
           return;
@@ -1429,6 +1431,20 @@ export function Sidebar({
   const copyConversationId = async (session: SessionSummary) => {
     try {
       await navigator.clipboard.writeText(session.id);
+      showToast(t("chat.copied"));
+    } catch (error) {
+      reportError(error);
+    }
+    closeMenus();
+  };
+
+  /**
+   * The link another conversation references: pasting it into a Composer draft
+   * carries a bounded excerpt of this conversation into that turn (issue #1324).
+   */
+  const copySessionLink = async (session: SessionSummary) => {
+    try {
+      await navigator.clipboard.writeText(formatSessionLink(session.id));
       showToast(t("chat.copied"));
     } catch (error) {
       reportError(error);
@@ -2175,6 +2191,15 @@ export function Sidebar({
                 {t("nav.createBranch")}
               </button>
             ) : null}
+            <button
+              type="button"
+              role="menuitem"
+              data-action="copy-session-link"
+              onClick={() => void copySessionLink(session)}
+            >
+              <IconCopy size={14} />
+              {t("nav.copySessionLink")}
+            </button>
             {settings?.developerMode === true ? (
               <>
                 <button

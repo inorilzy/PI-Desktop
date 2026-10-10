@@ -21,12 +21,14 @@ test("theme changes synchronize the native non-macOS window background", () => {
   );
   assert.match(
     apiSource,
-    /setWindowBackgroundColor:\s*\(theme:\s*"light" \| "dark",\s*color\?:\s*string\)[\s\S]*?IPC\.invoke\.windowSetBackgroundColor/,
+    /setWindowBackgroundColor:\s*\(theme:\s*"light" \| "dark",\s*color\?:\s*string,\s*cornerRadius\?:\s*number\)[\s\S]*?IPC\.invoke\.windowSetBackgroundColor/,
   );
   assert.match(
     mainSource,
-    /handle\(IPC\.invoke\.windowSetBackgroundColor,[\s\S]*?!isWindowBackgroundColor\(requested\)[\s\S]*?mainWindow\.setBackgroundColor\(color\)/,
+    /handleWithEvent\(IPC\.invoke\.windowSetBackgroundColor,[\s\S]*?registrar\.assertMainWindowSender\(event\)[\s\S]*?!isWindowBackgroundColor\(requested\)[\s\S]*?applyMainWindowBackground\(mainWindow, process\.platform, color\)/,
   );
+  assert.match(mainSource, /mainWindowBackgroundOptions\(process\.platform, initialWindowBackground\)/);
+  assert.match(mainSource, /applyMainWindowBackground\(window, process\.platform, initialWindowBackground\)/);
   // A malformed colour is refused; an omitted one falls back to the host
   // palette, which is what restores the default after a theme switch.
   assert.match(mainSource, /isWindowBackgroundColor\(requested\)\s*\n?\s*\? requested/);
@@ -53,7 +55,7 @@ test("theme changes synchronize the native non-macOS window background", () => {
   );
   assert.ok(
     appSource.includes(
-      "setWindowBackgroundColor(resolvedTheme, pluginTheme?.windowBackground?.[resolvedTheme])",
+      "pluginTheme?.windowCornerRadius",
     ),
   );
 });
