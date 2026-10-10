@@ -4,8 +4,9 @@ A bundled first-party plugin: it ships with the app and is on by default
 (**Extensions** lists it as bundled; it can be disabled there but not
 uninstalled). Type `@` in the composer to reference another local session.
 The plugin owns the `@` composer trigger (`composerTrigger`,
-`docs/plugin-plan/ui/composer/`). The host still lists its own file rows
-first, and this plugin's **Session Mentions** group follows them. Picking a
+`docs/plugin-plan/ui/composer/`) with `placement: "first"`: its **Session
+Mentions** group leads the list, its first session is highlighted (Enter picks
+it), and the host's file rows follow under their own heading. Picking a
 session puts a mark chip labelled with the session title into the draft. When
 the message is sent, the chip is replaced by a `<referenced-chat>` block
 holding that session's most recent complete Q&A.

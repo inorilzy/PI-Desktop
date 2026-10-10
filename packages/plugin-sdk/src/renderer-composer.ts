@@ -59,6 +59,9 @@ export const PLUGIN_ATTACHMENT_MAX_BYTES = 16 * 1024 * 1024;
 /** Attachments one plugin may hold in one draft. */
 export const PLUGIN_ATTACHMENTS_MAX = 20;
 
+/** Where a trigger's group sits relative to the host's rows for its symbol. */
+export type PluginTriggerPlacement = "first" | "last";
+
 /**
  * The context use of the session a draft belongs to, as the composer's
  * context ring shows it: what the newest answered turn occupied, and the
@@ -99,10 +102,16 @@ export type PluginTriggerItem = {
  * the start of a line or after whitespace, never during IME composition and
  * never for text a program wrote. A throw, a rejection or no answer within
  * `PLUGIN_TRIGGER_TIMEOUT_MS` collapses only this plugin's group.
+ *
+ * `placement` puts the group before (`"first"`) or after (`"last"`, the
+ * default) the host's own rows for the symbol (its `/` commands, its `@`
+ * files). The list's first row is the default highlight, so a `"first"`
+ * group's top item is what Enter picks; arrow keys run across both groups.
  */
 export type PluginComposerTriggerRegistration = {
   readonly slot: "composerTrigger";
   readonly trigger: string;
+  readonly placement?: PluginTriggerPlacement;
   readonly items: (
     query: PluginTriggerQuery,
   ) => readonly PluginTriggerItem[] | Promise<readonly PluginTriggerItem[]>;

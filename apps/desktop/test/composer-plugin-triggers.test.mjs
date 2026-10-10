@@ -15,7 +15,7 @@ const {
   PLUGIN_TRIGGER_DETAIL_MAX_CHARS,
   PLUGIN_TRIGGER_MAX_ITEMS,
 } = await import("@pi-desktop/plugin-sdk");
-const { askPluginTrigger, detectPluginTrigger, pluginTriggerScope, sanitizeTriggerItems } = await import(
+const { askPluginTrigger, detectPluginTrigger, orderTriggerGroups, pluginTriggerScope, sanitizeTriggerItems } = await import(
   "../src/features/chat/composer/plugins/plugin-triggers.ts"
 );
 
@@ -205,4 +205,52 @@ test("the composer tells triggers its session and the context ring's figures", a
   assert.match(source, /triggerContext: composerTriggerContext/);
   assert.match(source, /pluginTriggerScope\(referenceSessionId, triggerContext\)/);
   assert.match(source, /askPluginTrigger\(entry\.items, match, entry\.pluginId, undefined, scopeRef\.current\)/);
+});
+
+test("a trigger's group follows the host's rows, or leads them when placed first", async () => {
+  const host = [{ kind: "path", entry: { path: "a.ts" } }, { kind: "path", entry: { path: "b.ts" } }];
+  const plugin = [{ kind: "plugin", pluginId: "demo.lab", pluginName: "Lab", row: { label: "S1", send: "s1" } }];
+  assert.deepEqual(orderTriggerGroups(host, plugin, "last"), [...host, ...plugin]);
+  assert.deepEqual(orderTriggerGroups(host, plugin, "first"), [...plugin, ...host]);
+  assert.deepEqual(orderTriggerGroups(host, [], "first"), host);
+
+  // Headings follow the order: the plugin's name first, then the files under
+  // their own heading so they don't read as part of the plugin's group.
+  const { completionGroupHeadings } = await import(
+    "../src/features/chat/composer/completion-groups.ts"
+  );
+  const first = orderTriggerGroups(host, [...plugin, { ...plugin[0], row: { label: "S2", send: "s2" } }], "first");
+  assert.deepEqual([...completionGroupHeadings(first)], [
+    [0, { kind: "plugin", pluginId: "demo.lab", name: "Lab" }],
+    [2, { kind: "files" }],
+  ]);
+  // Placed last, files lead without a heading, as before.
+  assert.deepEqual([...completionGroupHeadings(orderTriggerGroups(host, plugin, "last"))], [
+    [2, { kind: "plugin", pluginId: "demo.lab", name: "Lab" }],
+  ]);
+  const commands = [
+    { kind: "command", command: { kind: "builtin", name: "compact" } },
+    { kind: "command", command: { kind: "skill", name: "x" } },
+  ];
+  assert.deepEqual([...completionGroupHeadings(orderTriggerGroups(commands, plugin, "first"))].map(([i, h]) => [i, h.kind]), [
+    [0, "plugin"],
+    [1, "command"],
+    [2, "command"],
+  ]);
+});
+
+test("the completion hook lists, highlights and accepts in the placed order", async () => {
+  const { readComposerSource } = await import("./helpers/composer-source.mjs");
+  const source = await readComposerSource();
+  // One ordered list feeds the panel, the arrow keys and Enter alike.
+  assert.match(source, /orderTriggerGroups<CompletionItem, CompletionItem>\(hostItems, pluginItems, placement\)/);
+  assert.match(source, /const placement = entry\?\.placement \?\? "last"/);
+  // A leading group's late answer moves the default highlight onto its first row.
+  assert.match(source, /const leads = placement === "first" && pluginItems\.length > 0/);
+  assert.match(source, /const itemsKey = `\$\{host\.mode\}:\$\{host\.query\}\|\$\{requestKey\}\|\$\{leads\}`/);
+  // Accepting goes by the picked row, not by an offset into the host's rows.
+  assert.match(source, /const picked = items\[index\]/);
+  assert.match(source, /host\.accept\(hostItems\.indexOf\(picked\)\)/);
+  // Arrow keys step through that one list and wrap; the panel scrolls the row in.
+  assert.match(source, /composerAc\.setHighlight\(\s*\(composerAc\.highlight \+ delta \+ count\) % count/);
 });

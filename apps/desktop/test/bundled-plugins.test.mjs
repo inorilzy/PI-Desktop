@@ -191,7 +191,11 @@ test("Session Mentions ships as an ordinary plugin on the public slot API", () =
   const operations = [...sessionService.matchAll(/invoke\(["'](\w+\/\w+)["']/g)].map((m) => m[1]);
   assert.deepEqual([...new Set(operations)].sort(), ["session/get", "session/list"]);
   assert.match(sessionMain, /onRendererCall/);
-  assert.match(sessionRenderer, /slot: ["']composerTrigger["'], trigger: ["']@["']/);
+  assert.match(
+    sessionRenderer,
+    /slot: ["']composerTrigger["'], trigger: ["']@["'], placement: ["']first["']/,
+    "its group leads the @ list",
+  );
 });
 
 test("Advisor is temporarily not bundled", () => {

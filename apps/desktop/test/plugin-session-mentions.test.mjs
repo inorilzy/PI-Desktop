@@ -146,6 +146,7 @@ test("the manifest asks only for the renderer and desktop control", () => {
 test("@ lists recent sessions, and a pick sends the session's recent Q&A", async (t) => {
   const win = await pluginWindow(t);
   assert.equal(win.registry.triggerFor("@")?.pluginId, PLUGIN, "the plugin owns @");
+  assert.equal(win.registry.triggerFor("@")?.placement, "first", "its group leads the file rows");
   const { askPluginTrigger } = await win.load("/src/features/chat/composer/plugins/plugin-triggers.ts");
   const { placePluginMark } = await win.load("/src/features/chat/composer/plugins/plugin-marks.ts");
   const { items } = win.registry.triggerFor("@");
@@ -170,6 +171,20 @@ test("@ lists recent sessions, and a pick sends the session's recent Q&A", async
     assert.ok(Buffer.byteLength(row.send, "utf8") <= PLUGIN_MARK_SEND_MAX_BYTES, "the host kept the row");
     assert.doesNotMatch(row.send, /SECRET_/);
   }
+  // The list the composer draws: sessions on top, files after them under their
+  // own heading; index 0 (the default highlight, what Enter picks) is the newest session.
+  const { orderTriggerGroups } = await win.load("/src/features/chat/composer/plugins/plugin-triggers.ts");
+  const { completionGroupHeadings } = await win.load("/src/features/chat/composer/completion-groups.ts");
+  const files = [{ kind: "path", entry: { path: "README.md", kind: "file" }, match: { ranges: [] } }];
+  const sessions = rows.map((row) => ({ kind: "plugin", pluginId: PLUGIN, pluginName: "Session Mentions", row }));
+  const list = orderTriggerGroups(files, sessions, win.registry.triggerFor("@").placement);
+  assert.equal(list[0].kind, "plugin");
+  assert.equal(list[0].row.label, "Beta 发布 计划");
+  assert.equal(list.at(-1).kind, "path");
+  assert.deepEqual([...completionGroupHeadings(list).entries()].map(([index, heading]) => [index, heading.kind]), [
+    [0, "plugin"],
+    [rows.length, "files"],
+  ]);
   assert.deepEqual((await ask("alpha")).map((row) => row.label), ["Alpha migration"]);
   assert.ok(win.calls.every((operation) => operation === "session/list" || operation === "session/get"));
 

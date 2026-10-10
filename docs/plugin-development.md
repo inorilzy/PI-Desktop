@@ -876,7 +876,10 @@ export function onLoad(pi) {
   symbols: `{ slot: "composerTrigger", trigger: "#", items }`, and the host draws
   the list. `items` gets `{ trigger, query }` plus, when the host knows them,
   the draft's `sessionId` and `context: { usedTokens, contextWindow }` (what
-  the composer's context ring shows)
+  the composer's context ring shows). Your group follows the host's own rows
+  for the symbol (its `/` commands, its `@` files); `placement: "first"` puts
+  it before them instead, so its first item is highlighted and Enter picks
+  it. Arrow keys run across both groups either way
 - `userAction` / `assistantAction` — items on a message's action bar
 - `entryExtra` — a block below an assistant reply
 - `toolCard` — the card for calls of one of your own Agent tools; `toolName`

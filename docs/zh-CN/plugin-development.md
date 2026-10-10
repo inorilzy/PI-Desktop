@@ -733,7 +733,7 @@ export function onLoad(pi) {
 ```
 
 - `composerControl` —— 输入区工具栏上的控件；`positions: ["left"]` 或 `["right"]` 选择一侧，省略即两侧
-- `composerTrigger` —— 输入区某个触发符背后的条目列表：`{ slot: "composerTrigger", trigger: "#", items }`，列表由宿主绘制
+- `composerTrigger` —— 输入区某个触发符背后的条目列表：`{ slot: "composerTrigger", trigger: "#", items }`，列表由宿主绘制。`items` 收到 `{ trigger, query }`，宿主知道时还带上草稿所属会话的 `sessionId` 和 `context: { usedTokens, contextWindow }`（即输入框上下文圆环显示的数值）。插件分组默认排在宿主自己的条目（`/` 指令、`@` 文件）之后；`placement: "first"` 让它排在前面，首条默认高亮、回车即选中。方向键在两组之间连续移动
 - `userAction` / `assistantAction` —— 消息操作栏上的条目
 - `entryExtra` —— 助手回复下方的区块
 - `toolCard` —— 自有 Agent 工具调用的卡片；用 `toolName` 指定工具

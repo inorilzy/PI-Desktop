@@ -12,6 +12,7 @@ import {
   composerTriggerKey,
   type PluginComposerTrigger,
   type PluginTriggerContext,
+  type PluginTriggerPlacement,
   type PluginTriggerQuery,
 } from "@pi-desktop/plugin-sdk";
 
@@ -54,6 +55,19 @@ export function detectPluginTrigger(
   const query = value.slice(start + 1, cursor);
   if (RESERVED_CHARS.test(query)) return null;
   return { trigger, query, tokenStart: start, tokenEnd: cursor };
+}
+
+/**
+ * One completion list from the host's rows and the owning plugin's group:
+ * the group before the host's rows when it registered `placement: "first"`,
+ * after them otherwise. Highlight and arrow keys follow this order.
+ */
+export function orderTriggerGroups<Host, Plugin>(
+  host: readonly Host[],
+  plugin: readonly Plugin[],
+  placement: PluginTriggerPlacement,
+): Array<Host | Plugin> {
+  return placement === "first" ? [...plugin, ...host] : [...host, ...plugin];
 }
 
 /** What a trigger is told about the draft besides its query. */

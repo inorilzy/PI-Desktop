@@ -2461,6 +2461,7 @@ export {
   type PluginComposerTrigger,
   type PluginTriggerQuery,
   type PluginTriggerContext,
+  type PluginTriggerPlacement,
   type PluginTriggerItem,
   type PluginComposerTriggerRegistration,
   type PluginDraftMark,

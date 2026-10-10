@@ -63,6 +63,7 @@ test('onLoad claims @ and warms the cache', async () => {
   assert.equal(registrations.length, 1);
   assert.equal(registrations[0].slot, 'composerTrigger');
   assert.equal(registrations[0].trigger, '@');
+  assert.equal(registrations[0].placement, 'first', 'sessions lead the list, files follow');
   assert.equal(typeof registrations[0].items, 'function');
   await new Promise((resolve) => setImmediate(resolve));
   assert.deepEqual(calls[0], { method: 'sessions.items', args: { query: '', cached: [] } });

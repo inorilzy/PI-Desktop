@@ -1,8 +1,9 @@
 /**
  * The composer's completion list: the host's own `/` commands and `@` files
- * (`useComposerAutocomplete`) followed by the group of the plugin owning the
- * typed symbol (`composerTrigger`, `docs/plugin-plan/ui/composer/`), and
- * what accepting a row does to the draft.
+ * (`useComposerAutocomplete`) and the group of the plugin owning the typed
+ * symbol (`composerTrigger`, `docs/plugin-plan/ui/composer/`) — after the
+ * host's rows, or before them for a `placement: "first"` trigger — and what
+ * accepting a row does to the draft.
  *
  * A plugin trigger only answers the user's typing: it is off while an IME
  * composes (the list freezes like the host's), while the input is blocked,
@@ -31,6 +32,7 @@ import { placePluginMark } from "../plugins/plugin-marks";
 import {
   askPluginTrigger,
   detectPluginTrigger,
+  orderTriggerGroups,
   pluginTriggerScope,
   type PluginTriggerMatch,
   type PluginTriggerRow,
@@ -149,13 +151,17 @@ export function useComposerCompletions({
   }, [entry, dismissed, answer, requestKey, plugins]);
 
   const hostItems = host.open ? host.items : NO_ITEMS;
+  const placement = entry?.placement ?? "last";
   const items = useMemo<CompletionItem[]>(
-    () => [...hostItems, ...pluginItems],
-    [hostItems, pluginItems],
+    () => orderTriggerGroups<CompletionItem, CompletionItem>(hostItems, pluginItems, placement),
+    [hostItems, pluginItems, placement],
   );
 
-  // A new query restarts keyboard navigation at the top hit.
-  const itemsKey = `${host.mode}:${host.query}|${requestKey}`;
+  // A new query restarts keyboard navigation at the top hit. A leading group
+  // answers after the host's rows are drawn, so its arrival restarts it too:
+  // its first row, not the file that briefly sat on top, is the default.
+  const leads = placement === "first" && pluginItems.length > 0;
+  const itemsKey = `${host.mode}:${host.query}|${requestKey}|${leads}`;
   useEffect(() => {
     setHighlight(0);
   }, [itemsKey]);
@@ -180,9 +186,11 @@ export function useComposerCompletions({
   };
 
   const acceptCompletion = (index: number) => {
-    if (index >= hostItems.length) {
-      const item = pluginItems[index - hostItems.length];
-      if (!item || !match) return;
+    const picked = items[index];
+    if (!picked) return;
+    if (picked.kind === "plugin") {
+      const item = picked;
+      if (!match) return;
       invalidateComposerTransforms();
       const text = value.slice(0, match.tokenStart) + value.slice(match.tokenEnd);
       const placed = placePluginMark(
@@ -199,7 +207,7 @@ export function useComposerCompletions({
       );
       return;
     }
-    const result = host.accept(index);
+    const result = host.accept(hostItems.indexOf(picked));
     if (!result) return;
     invalidateComposerTransforms();
     // File accept strips the @ token (empty insert) and used to store a

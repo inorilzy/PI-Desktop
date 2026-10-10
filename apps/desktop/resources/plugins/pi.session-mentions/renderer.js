@@ -1,8 +1,9 @@
 /**
  * Session Mentions — bundled first-party plugin (`pi.session-mentions`), renderer entry.
  *
- * Owns the composer's `@` trigger. The host lists its own file rows first and
- * this plugin's Sessions group after them. Picking a session puts a mark in
+ * Owns the composer's `@` trigger with `placement: 'first'`: this plugin's
+ * Sessions group leads the list and its first session is the default pick;
+ * the host's file rows follow. Picking a session puts a mark in
  * the draft that shows the session title and, on send, is replaced by that
  * session's recent complete Q&A (built by the headless entry).
  *
@@ -97,7 +98,7 @@ export function createSessionTrigger(dispatch, {
 
 export function onLoad(pi) {
   const trigger = createSessionTrigger(pi.dispatch);
-  pi.slots.register({ slot: 'composerTrigger', trigger: '@', items: trigger.items });
+  pi.slots.register({ slot: 'composerTrigger', trigger: '@', placement: 'first', items: trigger.items });
   // Warm the cache for the most recent sessions, so the first `@` has rows.
   void pi.dispatch('plugin.call', { method: 'sessions.items', args: { query: '', cached: [] } })
     .then((answer) => {
