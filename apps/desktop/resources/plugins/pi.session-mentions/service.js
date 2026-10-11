@@ -3,7 +3,8 @@ import { ownTypedText } from './lib/prompt.js';
 import { pairCompletedQaTurns } from './lib/qa.js';
 import { readSessionReferenceSource } from './lib/reader.js';
 import {
-  buildSessionSnapshot, contextBytesFromTokens, DEFAULT_MAX_TURNS, MARK_SEND_MAX_BYTES,
+  budgetPercent, buildSessionSnapshot, DEFAULT_BUDGET_PERCENT, DEFAULT_MAX_TURNS, MARK_SEND_MAX_BYTES,
+  referenceBudget,
 } from './lib/snapshot.js';
 
 /** Rows one `@` list offers; also the host's mark limit per draft. */
@@ -22,8 +23,8 @@ const LABEL_MAX_CHARS = 64;
 const DETAIL_MAX_CHARS = 256;
 /** Characters of the first question shown on a row. */
 export const SNIPPET_MAX_CHARS = 40;
-/** Rows read from the start of a long session to find its first question. */
-const FIRST_PAGE_LIMIT = 8;
+/** Rows read from the start of a long session to find its first turn and question. */
+export const FIRST_PAGE_LIMIT = 48;
 
 const now = () => Date.now();
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -96,12 +97,19 @@ export function questionSnippet(text) {
 
 function words(locale) {
   return String(locale ?? '').toLowerCase().startsWith('zh') ? {
-    turns: (n) => `${n} 轮问答`, omitted: (n) => `省略 ${n} 轮更早的`, unread: '更早的未读取', clipped: '已截断',
-    contextFull: '上下文快满了，先 /compact 压缩再引用',
+    turns: (n) => `${n} 轮问答`, first: (n) => n > 1 ? `首轮 + 最近 ${n - 1} 轮` : '仅首轮',
+    omitted: (n) => `省略 ${n} 轮更早的`, between: (n) => `中间省略 ${n} 轮`,
+    unread: '更早的未读取', betweenUnread: '中间部分未读取', clipped: '已截断',
+    contextFull: (raise) => raise ? '上下文剩余不足：先 /compact 压缩，或在扩展设置里调高引用预算'
+      : '上下文快满了，先 /compact 压缩再引用',
   } : {
-    turns: (n) => `${n} Q&A turn${n === 1 ? '' : 's'}`, omitted: (n) => `${n} older omitted`,
-    unread: 'older history not read', clipped: 'clipped',
-    contextFull: 'Context is nearly full: run /compact first, then reference this session again',
+    turns: (n) => `${n} Q&A turn${n === 1 ? '' : 's'}`,
+    first: (n) => n > 1 ? `first + ${n - 1} most recent turn${n === 2 ? '' : 's'}` : 'first turn only',
+    omitted: (n) => `${n} older omitted`, between: (n) => `${n} between omitted`,
+    unread: 'older history not read', betweenUnread: 'some turns between not read', clipped: 'clipped',
+    contextFull: (raise) => raise
+      ? 'Not enough context left: run /compact, or raise the reference budget in the Extensions settings'
+      : 'Context is nearly full: run /compact first, then reference this session again',
   };
 }
 
@@ -114,15 +122,24 @@ export function contextFullNote(title) {
   return `[Session "${name}" was not attached: the current context is nearly full. Run /compact, then reference it again.]`;
 }
 
-export function contextFullDetail(locale) {
-  return words(locale).contextFull;
+/** The row hint for a context-full session; suggests a larger budget unless it is already 100%. */
+export function contextFullDetail(locale, percent = DEFAULT_BUDGET_PERCENT) {
+  return words(locale).contextFull(budgetPercent(percent) < 100);
 }
 
 export function snapshotDetail(snapshot, locale, snippet = '') {
   const w = words(locale);
-  const parts = [...(snippet ? [snippet] : []), w.turns(snapshot.includedTurns)];
-  if (snapshot.omittedKnown > 0) parts.push(w.omitted(snapshot.omittedKnown));
-  if (snapshot.olderUnread) parts.push(w.unread);
+  const parts = [...(snippet ? [snippet] : [])];
+  const partial = snapshot.omittedKnown > 0 || snapshot.unread;
+  if (snapshot.firstTurn && partial) {
+    parts.push(w.first(snapshot.includedTurns));
+    if (snapshot.omittedKnown > 0) parts.push(w.between(snapshot.omittedKnown));
+    if (snapshot.unread) parts.push(w.betweenUnread);
+  } else {
+    parts.push(w.turns(snapshot.includedTurns));
+    if (snapshot.omittedKnown > 0) parts.push(w.omitted(snapshot.omittedKnown));
+    if (snapshot.unread) parts.push(w.unread);
+  }
   if (snapshot.clipped) parts.push(w.clipped);
   return Array.from(parts.join(' · ')).slice(0, DETAIL_MAX_CHARS).join('');
 }
@@ -160,9 +177,15 @@ export function referencePage(value, expectedId) {
  * `session/get`; no file-system, database or renderer-store access.
  *
  * A trigger row has to carry its mark text up front, so snapshots are built
- * ahead of the pick and cached by `id@updatedAt`. An answer holds as many
- * snapshots as fit its size and time budget; the rest are reported pending
- * and keep building, so the renderer can ask again.
+ * ahead of the pick. Transcripts are cached by `id@updatedAt`; a snapshot's
+ * key adds the byte budget it was built for (`id@updatedAt#bytes`), so the
+ * renderer's copies stay valid exactly as long as the session and the budget
+ * do. An answer holds as many snapshots as fit its size and time budget; the
+ * rest are reported pending and keep building, so the renderer can ask again.
+ *
+ * The budget is the `budgetPercent` setting's share of the current session's
+ * remaining context (the trigger query's `context`, passed on by the
+ * renderer), capped at the 32 KB mark limit; see `referenceBudget`.
  */
 export function createSessionMentionService(host, options = {}) {
   const maxBytes = options.maxBytes ?? MARK_SEND_MAX_BYTES;
@@ -170,6 +193,16 @@ export function createSessionMentionService(host, options = {}) {
   let disposed = false;
   let list = null;
   let locale;
+  let percent;
+  // The Extensions settings page posts every edit; the next `@` uses it.
+  host.events?.on?.('plugin:settingsChanged', (next) => { percent = budgetPercent(next?.budgetPercent); });
+  const currentPercent = async () => {
+    if (percent === undefined) {
+      const settings = await Promise.resolve(host.plugin?.getSettings?.()).catch(() => undefined);
+      percent = budgetPercent(settings?.budgetPercent);
+    }
+    return percent;
+  };
   const sources = new Map();
   const building = new Map();
   const controller = new AbortController();
@@ -218,24 +251,35 @@ export function createSessionMentionService(host, options = {}) {
   };
 
   /**
-   * The session's first parent question with words the user typed (a message
-   * that only carried referenced chats falls through to the next one): from
-   * the rows already read when they reach the start, else from one short read
-   * of the first rows, else the oldest rows read. Best effort; '' omits it.
+   * The session's start, when the transcript read does not reach it (the
+   * reader pages backwards from the newest rows): one read of its first rows
+   * gives the first complete Q&A turn (only once a later question closes it,
+   * or the read covers the whole session) and the first question with words
+   * the user typed (a message that only carried referenced chats falls
+   * through to the next one) for the row's second line. Best effort: either
+   * may be missing, and the reference then starts at the newest turns.
    */
-  const firstQuestion = async (id, source) => {
+  const startOf = async (id, source) => {
     const fromRows = (messages) => messages.find((message) => message.role === 'user' &&
       !message.parentToolCallId && questionSnippet(message.content))?.content;
-    if (!source.hasMoreBefore) return fromRows(source.messages) ?? '';
+    if (!source.hasMoreBefore) return { firstQuestion: fromRows(source.messages) ?? '' };
     try {
       const answer = await invoke('session/get', [{ id, messageBefore: FIRST_PAGE_LIMIT,
-        messageLimit: FIRST_PAGE_LIMIT, contentLimit: 400 }]);
-      const first = fromRows(Array.isArray(answer?.session?.messages) ? answer.session.messages : []);
-      if (first) return first;
+        messageLimit: FIRST_PAGE_LIMIT, contentLimit: CONTENT_LIMIT }]);
+      if (answer?.session) {
+        const page = referencePage(answer.session, id);
+        const turns = pairCompletedQaTurns(page.messages);
+        const closed = turns.length > 1 || page.messages.at(-1)?.role === 'user'
+          || answer.session.messages.length < FIRST_PAGE_LIMIT;
+        return {
+          ...(closed && turns.length ? { firstTurn: turns[0] } : {}),
+          firstQuestion: fromRows(page.messages) ?? fromRows(source.messages) ?? '',
+        };
+      }
     } catch {
       // fall back to what was read
     }
-    return fromRows(source.messages) ?? '';
+    return { firstQuestion: fromRows(source.messages) ?? '' };
   };
 
   /** Read (once) the transcript of one row; failures are cached as `null` until the session changes. */
@@ -250,7 +294,7 @@ export function createSessionMentionService(host, options = {}) {
           maxPages: MAX_PAGES, signal: controller.signal,
         });
         if (!source) return null;
-        return { ...source, title: source.title || row.title, firstQuestion: await firstQuestion(row.id, source) };
+        return { ...source, title: source.title || row.title, ...await startOf(row.id, source) };
       } catch (error) {
         if (disposed) throw error;
         return null;
@@ -263,8 +307,9 @@ export function createSessionMentionService(host, options = {}) {
     return work;
   };
 
-  /** The row's mark text for this answer's context budget; pure, from the cached transcript. */
-  const snapshotOf = (source, contextBytes) => {
+  /** The row's mark text for this answer's budget; pure, from the cached transcript. */
+  const snapshotOf = (source, budget) => {
+    const contextBytes = budget.contextBound ? budget.bytes : undefined;
     let snapshot = buildSessionSnapshot(source, { maxBytes, contextBytes });
     // JSON escaping must not push one snapshot past the answer budget.
     for (let limit = maxBytes; snapshot.status === 'ready' && jsonBytes(snapshot.send) > answerMaxBytes - 1024 && limit > 2048;) {
@@ -273,6 +318,7 @@ export function createSessionMentionService(host, options = {}) {
     }
     return snapshot;
   };
+  const keyOf = (row, budget) => `${row.key}#${budget.bytes}`;
 
   /** No complete Q&A turn to reference (a new or unanswered session, often the current one). */
   const empty = (source) => pairCompletedQaTurns(source.messages).length === 0;
@@ -280,7 +326,7 @@ export function createSessionMentionService(host, options = {}) {
   const hidden = (row) => sources.has(row.key) && (!sources.get(row.key) || empty(sources.get(row.key)));
 
   /** As many ready snapshots of `rows` as fit; the rest pending. */
-  const pack = async (rows, deadlineMs, contextBytes) => {
+  const pack = async (rows, deadlineMs, budget) => {
     const until = now() + deadlineMs;
     const lang = await currentLocale();
     const all = Promise.all(rows.map((row) => read(row).catch(() => null)));
@@ -289,16 +335,17 @@ export function createSessionMentionService(host, options = {}) {
     const pending = [];
     let used = 1024;
     for (const row of rows) {
-      if (!sources.has(row.key)) { pending.push(row.key); continue; }
+      const key = keyOf(row, budget);
+      if (!sources.has(row.key)) { pending.push(key); continue; }
       const source = sources.get(row.key);
       if (!source || empty(source)) continue;
       let snapshot;
-      try { snapshot = snapshotOf(source, contextBytes); } catch { continue; }
+      try { snapshot = snapshotOf(source, budget); } catch { continue; }
       const entry = snapshot.status === 'context-full'
-        ? { key: row.key, send: contextFullNote(source.title), detail: contextFullDetail(lang), contextFull: true }
-        : { key: row.key, send: snapshot.send, detail: snapshotDetail(snapshot, lang, questionSnippet(source.firstQuestion)) };
+        ? { key, send: contextFullNote(source.title), detail: contextFullDetail(lang, budget.percent), contextFull: true }
+        : { key, send: snapshot.send, detail: snapshotDetail(snapshot, lang, questionSnippet(source.firstQuestion)) };
       const size = jsonBytes(entry);
-      if (used + size > answerMaxBytes) { pending.push(row.key); continue; }
+      if (used + size > answerMaxBytes) { pending.push(key); continue; }
       used += size;
       ready.push(entry);
     }
@@ -310,14 +357,14 @@ export function createSessionMentionService(host, options = {}) {
     return Number.isFinite(value) ? Math.min(MAX_CALL_DEADLINE_MS, Math.max(0, value)) : MAX_CALL_DEADLINE_MS;
   };
   /**
-   * The current session's remaining context tokens, when the renderer passes
-   * them: only while they bound a snapshot more tightly than the 32 KB mark
-   * limit (see `bindingContextTokens` in renderer.js).
+   * This answer's byte budget: the setting's share of the remaining context
+   * the renderer passed on (`args.context`, the trigger query's figures), or
+   * the mark limit when there are none.
    */
-  const contextOf = (args) => {
-    const tokens = Number(args.contextRemainingTokens);
-    return args.contextRemainingTokens === undefined || !Number.isFinite(tokens) ? undefined
-      : contextBytesFromTokens(Math.max(0, tokens));
+  const budgetOf = async (args) => {
+    const pct = await currentPercent();
+    const context = args.context && typeof args.context === 'object' ? args.context : undefined;
+    return { ...referenceBudget(context, pct, maxBytes), percent: pct };
   };
   const keysOf = (value) => new Set(Array.isArray(value)
     ? value.filter((key) => typeof key === 'string' && key.length <= 128).slice(0, 64) : []);
@@ -340,23 +387,22 @@ export function createSessionMentionService(host, options = {}) {
         const rows = (await summaries())
           .filter((row) => row.id !== exclude && !hidden(row) && `${row.title}\n${row.id}`.toLowerCase().includes(query))
           .slice(0, MAX_ROWS);
-        const context = contextOf(args);
-        // A context budget changes every snapshot, so the renderer's copies do not apply.
-        const packed = await pack(context === undefined ? rows.filter((row) => !cached.has(row.key)) : rows,
-          deadlineOf(args), context);
+        const budget = await budgetOf(args);
+        const packed = await pack(rows.filter((row) => !cached.has(keyOf(row, budget))), deadlineOf(args), budget);
         const lang = await currentLocale();
         // Sessions found empty while packing leave the list before labels are disambiguated.
         const visible = rows.filter((row) => !hidden(row));
         const labels = rowLabels(visible);
         return {
-          rows: visible.map((row, i) => ({ key: row.key, label: labels[i], when: relativeTime(row.updatedAt, lang) })),
+          rows: visible.map((row, i) => ({ key: keyOf(row, budget), label: labels[i], when: relativeTime(row.updatedAt, lang) })),
           ...packed,
         };
       }
       if (method === 'sessions.snapshots') {
         const wanted = keysOf(args.keys);
-        const rows = (await summaries()).filter((row) => wanted.has(row.key));
-        return pack(rows, deadlineOf(args), contextOf(args));
+        const budget = await budgetOf(args);
+        const rows = (await summaries()).filter((row) => wanted.has(keyOf(row, budget)));
+        return pack(rows, deadlineOf(args), budget);
       }
       throw new Error(`Unknown Session Mentions method: ${method}`);
     },

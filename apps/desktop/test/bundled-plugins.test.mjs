@@ -173,8 +173,14 @@ test("Session Mentions ships as an ordinary plugin on the public slot API", () =
   assert.deepEqual(sessionManifest.rendererCallMethods, ["sessions.items", "sessions.snapshots"]);
   assert.equal(typeof sessionManifest.i18n.en.name, "string");
   assert.equal(typeof sessionManifest.i18n["zh-CN"].name, "string");
+  // Its one setting: the reference budget, a share of the remaining context.
+  assert.deepEqual(
+    sessionManifest.contributes.settings.map((setting) => [setting.key, setting.type, setting.default,
+      setting.enum.map((choice) => choice.value)]),
+    [["budgetPercent", "select", 25, [10, 25, 50, 100]]],
+  );
   // Plain modules, nothing to build: every relative import resolves in place.
-  const files = ["main.js", "service.js", "renderer.js"];
+  const files = ["main.js", "service.js", "renderer.js", "card.js"];
   for (const file of ["prompt", "qa", "reader", "references", "snapshot"]) files.push(`lib/${file}.js`);
   for (const file of files) {
     const source = read(`${dir}/${file}`);
@@ -195,6 +201,11 @@ test("Session Mentions ships as an ordinary plugin on the public slot API", () =
     sessionRenderer,
     /slot: ["']composerTrigger["'], trigger: ["']@["'], placement: ["']first["']/,
     "its group leads the @ list",
+  );
+  assert.match(
+    sessionRenderer,
+    /slot: ["']blockRenderer["'], language: REFERENCE_FENCE_LANGUAGE/,
+    "a sent reference is drawn as its card",
   );
 });
 

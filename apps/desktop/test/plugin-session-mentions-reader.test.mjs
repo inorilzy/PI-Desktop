@@ -24,7 +24,7 @@ test('duplicate message IDs keep latest revision without duplicating answers', a
   const result = await readSessionReferenceSource(A, async (_id, before) => before === undefined
     ? page(A, [assistant('Latest', { id: 'a' })], { messageStart: 10, hasMoreBefore: true })
     : page(A, [user('Q', { id: 'u' }), assistant('Old', { id: 'a' })], { messageEnd: 10 }), { budgetTokens });
-  assert.deepEqual(pairCompletedQaTurns(result.messages), [{ question: 'Q', answer: 'Latest' }]);
+  assert.deepEqual(pairCompletedQaTurns(result.messages), [{ question: 'Q', answer: 'Latest', id: 'u' }]);
 });
 
 test('projection removes reasoning, tool payloads and actual attachment objects', async () => {

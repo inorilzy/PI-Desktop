@@ -8,6 +8,7 @@ import test from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { PLUGIN_MARK_SEND_MAX_BYTES, validateManifest } from "@pi-desktop/plugin-sdk";
 import { serializeComposerFileReferences } from "@pi-desktop/shared";
+import { createElement } from "react";
 import { slotSsr } from "./helpers/slot-ssr.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -143,6 +144,21 @@ test("the manifest asks only for the renderer and desktop control", () => {
   assert.deepEqual(manifest.rendererCallMethods, ["sessions.items", "sessions.snapshots"]);
 });
 
+test("the reference budget is a plugin setting: 10/25/50/100% of the remaining context, 25% by default", async (t) => {
+  assert.deepEqual(manifest.contributes.settings.map(({ key, type, default: value }) => ({ key, type, value })),
+    [{ key: "budgetPercent", type: "select", value: 25 }]);
+  assert.deepEqual(manifest.contributes.settings[0].enum, [
+    { label: "10%", value: 10 }, { label: "25%", value: 25 }, { label: "50%", value: 50 }, { label: "100%", value: 100 },
+  ]);
+  const { BUDGET_PERCENTS, DEFAULT_BUDGET_PERCENT } = await import(pathToFileURL(join(PLUGIN_DIR, "lib/snapshot.js")).href);
+  assert.deepEqual(manifest.contributes.settings[0].enum.map((choice) => choice.value), BUDGET_PERCENTS);
+  assert.equal(manifest.contributes.settings[0].default, DEFAULT_BUDGET_PERCENT);
+  // The runtime hands the plugin the manifest default before any edit.
+  const win = await pluginWindow(t);
+  const view = await win.runtime.getPluginSettings(PLUGIN);
+  assert.deepEqual(view.map(({ key, value }) => ({ key, value })), [{ key: "budgetPercent", value: 25 }]);
+});
+
 test("@ lists recent sessions, and a pick sends the session's recent Q&A", async (t) => {
   const win = await pluginWindow(t);
   assert.equal(win.registry.triggerFor("@")?.pluginId, PLUGIN, "the plugin owns @");
@@ -161,8 +177,8 @@ test("@ lists recent sessions, and a pick sends the session's recent Q&A", async
     `new task · ${shortStamp(SESSIONS[4].updatedAt)}`,
   ], "newest first, one line, the unanswered current session left out, equal titles told apart");
   assert.deepEqual(rows.map((row) => row.detail.replace(/^.+? · (?=“)/, "")), [
-    "“Question 0” · 1 Q&A turn · 2 older omitted",
-    "“Question 0” · 10 Q&A turns · 2 older omitted",
+    "“Question 0” · first turn only · 2 between omitted",
+    "“Question 0” · first + 9 most recent turns · 2 between omitted",
     "“Fix the login bug” · 1 Q&A turn",
     "“Draft the release notes” · 1 Q&A turn",
   ], "after the update time: the first question, then the coverage");
@@ -194,9 +210,23 @@ test("@ lists recent sessions, and a pick sends the session's recent Q&A", async
   const text = draft.slice(0, tokenStart);
   const placed = placePluginMark([], text, { pluginId: PLUGIN, label: alpha.label, send: alpha.send }, SESSION);
   const sent = serializeComposerFileReferences(`${text}${placed.token} please`, placed.references);
-  assert.match(sent, /^Compare with \n<referenced-chat id="aaaaaaaa-[^"]+" title="Alpha migration" turns="10" omitted="2"/);
-  assert.match(sent, /Q: Question 11\nA: Answer 11 z+\n<\/referenced-chat>\n please$/);
-  assert.doesNotMatch(sent, /Question 1\n/, "turns older than the newest ten are omitted");
+  assert.match(sent, /^Compare with \n```pi\.session-mentions:chat\n<referenced-chat id="aaaaaaaa-[^"]+" title="Alpha migration" turns="10" first-turn="true" omitted="2"/);
+  assert.match(sent, /Q: Question 0\nA: Answer 0 z+\n\n\[… 2 turns omitted here\]\n\nQ: Question 3\n/, "the first turn, then the newest");
+  assert.match(sent, /Q: Question 11\nA: Answer 11 z+\n<\/referenced-chat>\n```\n please$/);
+  assert.doesNotMatch(sent, /Question [12]\n/, "the turns between are omitted");
+
+  // The sent message in the transcript: the plugin's blockRenderer draws the
+  // fence as a closed card; the words around it stay text.
+  const { UserMessageText } = await win.load("/src/features/chat/transcript/UserMessageText.tsx");
+  const html = win.render(createElement(UserMessageText, { text: sent }));
+  assert.match(html, /^<span data-source-start="0" data-source-end="13">Compare with <\/span>/);
+  assert.match(html, /<div class="pi-plugin-block-renderer" style="max-height:4000px" data-source-start="13" data-source-end="\d+"><div class="pi-plugin-slot" data-pi-plugin="pi\.session-mentions" data-pi-slot="blockRenderer"><div class="psm-card" data-psm-open="false" data-session-id="aaaaaaaa-/);
+  assert.match(html, /<span class="psm-title">Alpha migration<\/span>/);
+  assert.match(html, /first \+ 9 recent turns · 2 between omitted · ~\d/);
+  assert.doesNotMatch(html, /Question 11|referenced-chat/, "the Q&A is not drawn until the card is opened");
+  assert.match(html, /<span data-source-start="\d+" data-source-end="\d+"> please<\/span>$/);
+  const end = Number(/class="pi-plugin-block-renderer"[^>]* data-source-end="(\d+)"/.exec(html)[1]);
+  assert.equal(sent.slice(end), " please", "the card stands for the whole fence, line breaks included");
 });
 
 test("the host's session and context reach the trigger: itself left out, a full context flagged", async (t) => {
@@ -210,11 +240,11 @@ test("the host's session and context reach the trigger: itself left out, a full 
   assert.deepEqual(roomy.map((row) => row.label).filter((label) => label.startsWith("Alpha")), []);
   assert.ok(roomy.some((row) => row.label === "Beta 发布 计划"));
 
-  // Nearly full: Beta's newest turn (30 000 z) cannot fit, Task 1's small one can.
+  // Nearly full: 25% of 2000 tokens. Beta's first turn (30 000 z) cannot fit, Task 1's small one can.
   const full = await ask("", pluginTriggerScope(ALPHA, { usedTokens: 200_000 - 8_192 - 2_000, contextWindow: 200_000 }));
   const beta = full.find((row) => row.label.endsWith("Beta 发布 计划"));
   assert.equal(beta.label, "⚠ Beta 发布 计划");
-  assert.match(beta.detail, /run \/compact first|先 \/compact/);
+  assert.match(beta.detail, /\/compact/);
   assert.doesNotMatch(beta.send, /<referenced-chat/, "no clipped snapshot");
   const task = full.find((row) => row.label.startsWith("new task"));
   assert.match(task.send, /<referenced-chat id="dddddddd-/);

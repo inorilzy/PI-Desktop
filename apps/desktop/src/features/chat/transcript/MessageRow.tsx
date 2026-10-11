@@ -36,6 +36,7 @@ import {
   useTranscriptMenu,
 } from "./TranscriptMenu";
 import { getExtraMessageAttachments } from "./extra-attachments";
+import { UserMessageText } from "./UserMessageText";
 
 function SkillInvocationText({ message }: { message: UiMessage }) {
   const command = message.command ?? "";
@@ -128,7 +129,7 @@ export const MessageRow = memo(function MessageRow({
     keyPrefix: string,
   ) =>
     part.kind === "text" ? (
-      <LinkifiedText
+      <UserMessageText
         key={`${keyPrefix}-${index}`}
         text={part.text}
         attachments={message.attachments}

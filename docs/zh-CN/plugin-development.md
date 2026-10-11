@@ -737,7 +737,10 @@ export function onLoad(pi) {
 - `userAction` / `assistantAction` —— 消息操作栏上的条目
 - `entryExtra` —— 助手回复下方的区块
 - `toolCard` —— 自有 Agent 工具调用的卡片；用 `toolName` 指定工具
-- `blockRenderer` —— 形如 `<你的插件id>:<lang>` 的代码块渲染器；`language` 指定标签
+- `blockRenderer` —— 形如 `<你的插件id>:<lang>` 的代码块渲染器；`language` 指定标签。
+  它作用于助手回复（Markdown），也作用于用户消息（其余部分按纯文本显示）：用户消息里只有独占行、
+  已闭合且标签被你声明的代码块会交给你绘制（连同前后换行），其他代码块仍显示为文本。消息原文不变，
+  复制和编辑得到的仍是完整代码块
 
 自绘弹窗不是插槽：`pi.ui.openLayer()` 交给你一个可以渲染的层，组件在其中绘制。样式通过
 `pi.ui.injectStyle` 注入；`react` / `react-dom` 会通过窗口的 import map 解析到应用自带的副本，

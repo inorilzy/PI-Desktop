@@ -8,9 +8,16 @@
  * session's recent complete Q&A (built by the headless entry).
  *
  * A row has to carry its mark text when the list is drawn, so snapshots are
- * fetched with the list and kept here by `id@updatedAt`; only rows whose
- * snapshot is ready are offered. Plain ES module, no build step of its own.
+ * fetched with the list and kept here by `id@updatedAt#budget`; only rows
+ * whose snapshot is ready are offered. Plain ES module, no build step of its own.
+ *
+ * The mark sends its `<referenced-chat>` block inside a fence tagged
+ * `pi.session-mentions:chat`; this plugin's `blockRenderer` draws that fence
+ * in the transcript as a collapsed card (`card.js`). The model reads the same
+ * text either way.
  */
+import { REFERENCE_FENCE_LANGUAGE } from './lib/prompt.js';
+import { REFERENCE_CARD_CSS, ReferenceCard } from './card.js';
 
 /** The host waits 2s for a trigger answer; keep a margin for the relay. */
 export const TRIGGER_BUDGET_MS = 1_700;
@@ -22,22 +29,18 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /** Shown before a session that does not fit the current context. */
 export const CONTEXT_FULL_PREFIX = '⚠ ';
-/** `lib/snapshot.js`: the mark limit, the reply reserve and UTF-8/3 per token. */
-export const MARK_SEND_MAX_BYTES = 32 * 1024;
-export const CONTEXT_RESERVE_TOKENS = 8192;
 
 /**
- * The tokens the current session can still take, from what the host tells a
- * trigger (`query.context`: the composer ring's figures), when that bounds a
- * snapshot more tightly than the mark limit; otherwise `undefined`, and the
- * 32 KB mark limit is the only budget (and cached snapshots stay usable).
+ * The trigger query's context figures, passed on to the headless entry,
+ * which turns them into the reference budget; `undefined` when the host gave
+ * none (no usage yet, an older host): the 32 KB mark limit is the budget then.
  */
-export function bindingContextTokens(context) {
-  const used = Number(context?.usedTokens);
-  const window = Number(context?.contextWindow);
-  if (!Number.isFinite(used) || !Number.isFinite(window) || window <= 0) return undefined;
-  const remaining = Math.max(0, Math.floor(window - used));
-  return (remaining - CONTEXT_RESERVE_TOKENS) * 3 < MARK_SEND_MAX_BYTES ? remaining : undefined;
+export function triggerContext(context) {
+  const usedTokens = Number(context?.usedTokens);
+  const contextWindow = Number(context?.contextWindow);
+  if (context?.usedTokens == null || context?.contextWindow == null) return undefined;
+  return Number.isFinite(usedTokens) && Number.isFinite(contextWindow) && contextWindow > 0
+    ? { usedTokens, contextWindow } : undefined;
 }
 
 /**
@@ -69,21 +72,20 @@ export function createSessionTrigger(dispatch, {
     // A newer keystroke owns the list; the host drops this answer anyway.
     if (turn !== latest) return [];
     const left = () => budgetMs - (Date.now() - started);
-    const context = bindingContextTokens(usage);
-    const budgeted = context !== undefined;
-    // A context-budgeted snapshot is only good for this answer.
-    const held = budgeted ? new Map() : cache;
-    const extra = budgeted ? { contextRemainingTokens: context } : {};
+    // Snapshot keys name the budget they were built for, so the cache stays
+    // valid across context changes: a new budget is a new key.
+    const context = triggerContext(usage);
+    const extra = context ? { context } : {};
     const exclude = typeof sessionId === 'string' && sessionId ? { exclude: sessionId } : {};
     const listed = await call('sessions.items', {
-      query, cached: budgeted ? [] : [...cache.keys()], deadlineMs: left() - 250, ...exclude, ...extra,
+      query, cached: [...cache.keys()], deadlineMs: left() - 250, ...exclude, ...extra,
     });
-    let pending = store(listed, held);
+    let pending = store(listed, cache);
     while (pending.length && turn === latest && left() > 400) {
-      pending = store(await call('sessions.snapshots', { keys: pending, deadlineMs: left() - 250, ...extra }), held);
+      pending = store(await call('sessions.snapshots', { keys: pending, deadlineMs: left() - 250, ...extra }), cache);
     }
     return (listed?.rows ?? []).flatMap((row) => {
-      const ready = held.get(row.key);
+      const ready = cache.get(row.key);
       if (!ready) return [];
       const label = ready.contextFull
         ? Array.from(`${CONTEXT_FULL_PREFIX}${row.label}`).slice(0, 64).join('') : row.label;
@@ -99,6 +101,9 @@ export function createSessionTrigger(dispatch, {
 export function onLoad(pi) {
   const trigger = createSessionTrigger(pi.dispatch);
   pi.slots.register({ slot: 'composerTrigger', trigger: '@', placement: 'first', items: trigger.items });
+  // A sent reference is a fenced block; the transcript draws it as a collapsed card.
+  pi.slots.register({ slot: 'blockRenderer', language: REFERENCE_FENCE_LANGUAGE, component: ReferenceCard });
+  pi.ui?.injectStyle?.(REFERENCE_CARD_CSS);
   // Warm the cache for the most recent sessions, so the first `@` has rows.
   void pi.dispatch('plugin.call', { method: 'sessions.items', args: { query: '', cached: [] } })
     .then((answer) => {

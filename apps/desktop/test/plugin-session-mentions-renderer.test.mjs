@@ -1,9 +1,15 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { createElement } from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
 import {
-  bindingContextTokens, createSessionTrigger, onLoad, CONTEXT_FULL_PREFIX, CONTEXT_RESERVE_TOKENS, MARK_SEND_MAX_BYTES,
+  createSessionTrigger, onLoad, triggerContext, CONTEXT_FULL_PREFIX,
 } from '../resources/plugins/pi.session-mentions/renderer.js';
-import * as snapshot from '../resources/plugins/pi.session-mentions/lib/snapshot.js';
+import {
+  parseReference, referenceFacts, ReferenceCard, ReferenceCardView, REFERENCE_CARD_CSS,
+} from '../resources/plugins/pi.session-mentions/card.js';
+import { buildSessionSnapshot } from '../resources/plugins/pi.session-mentions/lib/snapshot.js';
+import { A, source } from './helpers/session-mentions.mjs';
 
 const KEY = (n) => `k${n}`;
 
@@ -56,37 +62,46 @@ test('pending snapshots stop being chased when the budget runs out', async () =>
   assert.ok(calls.length >= 2);
 });
 
-test('onLoad claims @ and warms the cache', async () => {
+test('onLoad claims @, the reference fence, and warms the cache', async () => {
   const registrations = [];
+  const styles = [];
   const { dispatch, calls } = fakeDispatch(() => ({ rows: [], snapshots: [{ key: KEY(9), send: 'S9', detail: 'd' }], pending: [] }));
-  onLoad({ dispatch, slots: { register: (registration) => registrations.push(registration) } });
-  assert.equal(registrations.length, 1);
+  onLoad({ dispatch, slots: { register: (registration) => registrations.push(registration) },
+    ui: { injectStyle: (css) => styles.push(css) } });
+  assert.equal(registrations.length, 2);
   assert.equal(registrations[0].slot, 'composerTrigger');
   assert.equal(registrations[0].trigger, '@');
   assert.equal(registrations[0].placement, 'first', 'sessions lead the list, files follow');
   assert.equal(typeof registrations[0].items, 'function');
+  assert.equal(registrations[1].slot, 'blockRenderer');
+  assert.equal(registrations[1].language, 'pi.session-mentions:chat');
+  assert.equal(registrations[1].component, ReferenceCard);
+  assert.deepEqual(styles, [REFERENCE_CARD_CSS]);
   await new Promise((resolve) => setImmediate(resolve));
   assert.deepEqual(calls[0], { method: 'sessions.items', args: { query: '', cached: [] } });
 });
 
-test('a binding remaining context is passed on, and a session that does not fit is flagged', async () => {
+
+test('the query context is passed on as is, and a session that does not fit is flagged', async () => {
+  const hint = '上下文剩余不足：先 /compact 压缩，或在扩展设置里调高引用预算';
   const { dispatch, calls } = fakeDispatch(() => ({
-    rows: [{ key: KEY(1), label: 'Big' }, { key: KEY(2), label: 'Small' }],
+    rows: [{ key: `${KEY(1)}#0`, label: 'Big' }, { key: `${KEY(2)}#0`, label: 'Small' }],
     snapshots: [
-      { key: KEY(1), send: 'note', detail: '上下文快满了，先 /compact 压缩再引用', contextFull: true },
-      { key: KEY(2), send: 'S2', detail: 'd2' },
+      { key: `${KEY(1)}#0`, send: 'note', detail: hint, contextFull: true },
+      { key: `${KEY(2)}#0`, send: 'S2', detail: 'd2' },
     ],
     pending: [],
   }));
-  const trigger = createSessionTrigger(dispatch, { debounceMs: 0 });
-  const context = { usedTokens: 191_000, contextWindow: 200_000 };
-  assert.deepEqual(await trigger.items({ query: '', context }), [
-    { label: `${CONTEXT_FULL_PREFIX}Big`, send: 'note', detail: '上下文快满了，先 /compact 压缩再引用' },
+  const sessionTrigger = createSessionTrigger(dispatch, { debounceMs: 0 });
+  const context = { usedTokens: 191_000, contextWindow: 200_000, extra: 'dropped' };
+  assert.deepEqual(await sessionTrigger.items({ query: '', context }), [
+    { label: `${CONTEXT_FULL_PREFIX}Big`, send: 'note', detail: hint },
     { label: 'Small', send: 'S2', detail: 'd2' },
   ]);
-  assert.equal(calls[0].args.contextRemainingTokens, 9000);
-  assert.deepEqual(calls[0].args.cached, []);
-  assert.equal(trigger.cache.size, 0, 'budgeted snapshots are not kept');
+  assert.deepEqual(calls[0].args.context, { usedTokens: 191_000, contextWindow: 200_000 });
+  assert.equal(sessionTrigger.cache.size, 2, 'snapshot keys name their budget, so they stay cached');
+  await sessionTrigger.items({ query: '', context });
+  assert.deepEqual(calls[1].args.cached, [`${KEY(1)}#0`, `${KEY(2)}#0`]);
 });
 
 test('the row detail leads with the list\'s fresh update time', async () => {
@@ -95,34 +110,63 @@ test('the row detail leads with the list\'s fresh update time', async () => {
     snapshots: [{ key: KEY(1), send: 'S1', detail: '“Fix it” · 1 Q&A turn' }, { key: KEY(2), send: 'S2', detail: 'd2' }],
     pending: [],
   }));
-  const trigger = createSessionTrigger(dispatch, { debounceMs: 0 });
-  assert.deepEqual(await trigger.items({ query: '' }), [
+  const sessionTrigger = createSessionTrigger(dispatch, { debounceMs: 0 });
+  assert.deepEqual(await sessionTrigger.items({ query: '' }), [
     { label: 'new task · 10-09 21:17', send: 'S1', detail: '5 min ago · “Fix it” · 1 Q&A turn' },
     { label: 'Other', send: 'S2', detail: 'd2' },
   ]);
 });
 
-test('the host\'s session is left out, and roomy context keeps the cache', async () => {
+test('the host\'s session is left out; no context figures, no context', async () => {
   const { dispatch, calls } = fakeDispatch(() => ({
     rows: [{ key: KEY(1), label: 'One' }], snapshots: [{ key: KEY(1), send: 'S1', detail: 'd1' }], pending: [],
   }));
-  const trigger = createSessionTrigger(dispatch, { debounceMs: 0 });
+  const sessionTrigger = createSessionTrigger(dispatch, { debounceMs: 0 });
   const sessionId = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
-  await trigger.items({ query: '', sessionId, context: { usedTokens: 20_000, contextWindow: 200_000 } });
+  await sessionTrigger.items({ query: '', sessionId });
   assert.equal(calls[0].args.exclude, sessionId);
-  assert.equal(calls[0].args.contextRemainingTokens, undefined, 'room for a full mark: no context budget');
-  assert.equal(trigger.cache.size, 1);
-  await trigger.items({ query: '' });
+  assert.equal(calls[0].args.context, undefined);
+  await sessionTrigger.items({ query: '' });
   assert.equal(calls[1].args.exclude, undefined, 'an older host tells no session');
 });
 
-test('the context only binds below a full mark plus the reply reserve', () => {
-  assert.equal(MARK_SEND_MAX_BYTES, snapshot.MARK_SEND_MAX_BYTES);
-  assert.equal(CONTEXT_RESERVE_TOKENS, snapshot.CONTEXT_RESERVE_TOKENS);
-  const roomy = CONTEXT_RESERVE_TOKENS + Math.ceil(MARK_SEND_MAX_BYTES / 3);
-  assert.equal(bindingContextTokens({ usedTokens: 100_000 - roomy, contextWindow: 100_000 }), undefined);
-  assert.equal(bindingContextTokens({ usedTokens: 100_000 - roomy + 1, contextWindow: 100_000 }), roomy - 1);
-  assert.equal(bindingContextTokens({ usedTokens: 120_000, contextWindow: 100_000 }), 0);
-  assert.equal(bindingContextTokens(undefined), undefined);
-  assert.equal(bindingContextTokens({ usedTokens: 5, contextWindow: 0 }), undefined);
+test('only finite context figures with a window are passed on', () => {
+  assert.deepEqual(triggerContext({ usedTokens: 5, contextWindow: 10 }), { usedTokens: 5, contextWindow: 10 });
+  for (const context of [undefined, null, {}, { usedTokens: 5 }, { usedTokens: 5, contextWindow: 0 },
+    { usedTokens: 'x', contextWindow: 10 }]) {
+    assert.equal(triggerContext(context), undefined, JSON.stringify(context));
+  }
+});
+
+const fenceBody = (send) => send.replace(/^\n`+pi\.session-mentions:chat\n/, '').replace(/\n`+\n$/, '');
+const pairs = (n, size = 10) => Array.from({ length: n }, (_, i) => [`Q${i}`, `A${i} ${'x'.repeat(size)}`]);
+
+test('the card reads its head from the block: title, turns, omitted, size', () => {
+  const sent = buildSessionSnapshot({ ...source(A, pairs(14, 200)), title: 'Fix "the" <build>' }).send;
+  const body = fenceBody(sent);
+  const info = parseReference(body);
+  assert.deepEqual({ ...info, bytes: undefined }, {
+    id: A, title: 'Fix "the" <build>', turns: 10, firstTurn: true, omitted: 4, unread: false, clipped: false, bytes: undefined,
+  });
+  assert.equal(info.bytes, Buffer.byteLength(body, 'utf8'));
+  assert.equal(referenceFacts(info, 'zh-CN'), `首轮 + 最近 9 轮 · 中间省略 4 轮 · 约 ${(info.bytes / 1024).toFixed(1)} KB`);
+  assert.equal(referenceFacts(info, 'en'), `first + 9 recent turns · 4 between omitted · ~${(info.bytes / 1024).toFixed(1)} KB`);
+  const whole = parseReference(fenceBody(buildSessionSnapshot(source(A, pairs(2))).send));
+  assert.match(referenceFacts(whole, 'en'), /^2 Q&A turns · ~\d+ B$/);
+  assert.equal(parseReference('not a block'), null);
+});
+
+test('the card is closed at first and shows the full text when opened', () => {
+  const body = fenceBody(buildSessionSnapshot(source(A, pairs(3))).send);
+  const closed = renderToStaticMarkup(createElement(ReferenceCard, { source: body, language: 'pi.session-mentions:chat' }));
+  assert.match(closed, /^<div class="psm-card" data-psm-open="false" data-session-id="aaaaaaaa-/);
+  assert.match(closed, /<button type="button" class="psm-head" aria-expanded="false"/);
+  assert.match(closed, /<span class="psm-title">Alpha<\/span>/);
+  assert.doesNotMatch(closed, /Q: Q1|referenced-chat/, 'the Q&A stays out of the chat window until opened');
+  const open = renderToStaticMarkup(createElement(ReferenceCardView, { source: body, open: true, onToggle() {}, lang: 'zh-CN' }));
+  assert.match(open, /aria-expanded="true"/);
+  assert.match(open, /<span class="psm-kind">引用会话<\/span>/);
+  assert.match(open, /<pre class="psm-body">&lt;referenced-chat [^<]*Q: Q0\nA: A0 x+\n\nQ: Q1/);
+  // A fence it did not write is shown as text.
+  assert.equal(renderToStaticMarkup(createElement(ReferenceCard, { source: 'hello' })), '<pre class="psm-raw">hello</pre>');
 });

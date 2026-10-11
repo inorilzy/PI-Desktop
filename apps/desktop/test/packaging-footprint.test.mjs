@@ -230,6 +230,7 @@ test("the bundled Session Mentions plugin ships only its runtime files", () => {
     .sort();
   assert.deepEqual(shipped, [
     "README.md",
+    "card.js",
     "lib/prompt.js",
     "lib/qa.js",
     "lib/reader.js",

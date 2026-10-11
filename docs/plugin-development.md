@@ -885,7 +885,11 @@ export function onLoad(pi) {
 - `toolCard` — the card for calls of one of your own Agent tools; `toolName`
   names it
 - `blockRenderer` — a fenced block tagged `<your-plugin-id>:<lang>`; `language`
-  names the tag
+  names the tag. It applies in answers (Markdown) and in user messages, which
+  are otherwise plain text: there only a closed fence on its own lines whose
+  tag you claimed is drawn by you, the line breaks around it included; every
+  other fence stays text. The message text is unchanged, so copy and edit
+  still give the full fence
 
 A dialog you draw yourself is not a slot: `pi.ui.openLayer()` hands you a layer
 to render into, and the component draws inside it. Styles go through

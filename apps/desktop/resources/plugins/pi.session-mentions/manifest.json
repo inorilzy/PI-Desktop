@@ -3,25 +3,64 @@
   "id": "pi.session-mentions",
   "name": "Session Mentions",
   "version": "1.0.0",
-  "description": "Type @ in the composer to reference the recent complete Q&A of another local session.",
+  "description": "Type @ in the composer to reference another local session: its first and most recent complete Q&A.",
   "i18n": {
     "en": {
       "name": "Session Mentions",
-      "description": "Type @ in the composer to reference the recent complete Q&A of another local session."
+      "description": "Type @ in the composer to reference another local session: its first and most recent complete Q&A."
     },
     "zh-CN": {
       "name": "会话引用",
-      "description": "在输入框输入 @，引用其他本地会话最近的完整问答。"
+      "description": "在输入框输入 @，引用其他本地会话：首轮和最近的完整问答。"
     }
   },
   "author": "PI-Desktop",
   "main": "main.js",
   "renderer": "renderer.js",
-  "rendererActions": ["plugin.call"],
-  "rendererCallMethods": ["sessions.items", "sessions.snapshots"],
-  "permissions": ["renderer.extension", "desktop.control"],
+  "rendererActions": [
+    "plugin.call"
+  ],
+  "rendererCallMethods": [
+    "sessions.items",
+    "sessions.snapshots"
+  ],
+  "permissions": [
+    "renderer.extension",
+    "desktop.control"
+  ],
   "engines": {
     "piDesktop": ">=0.16.0"
   },
-  "activationEvents": ["onStartup"]
+  "activationEvents": [
+    "onStartup"
+  ],
+  "contributes": {
+    "settings": [
+      {
+        "key": "budgetPercent",
+        "title": "Reference budget (% of remaining context)",
+        "description": "Share of the current chat's remaining context (after a reply reserve) one @ session reference may use; never more than 32 KB. The session's first complete turn is always kept, then the most recent ones.",
+        "type": "select",
+        "default": 25,
+        "enum": [
+          {
+            "label": "10%",
+            "value": 10
+          },
+          {
+            "label": "25%",
+            "value": 25
+          },
+          {
+            "label": "50%",
+            "value": 50
+          },
+          {
+            "label": "100%",
+            "value": 100
+          }
+        ]
+      }
+    ]
+  }
 }
