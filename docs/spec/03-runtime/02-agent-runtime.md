@@ -45,6 +45,9 @@ The Node runtime normalizes text and image content from host tool results,
 including MCP `content` blocks and bare plugin content-block arrays. Well-formed
 image blocks are passed to vision-capable models and retained when tool history
 is restored; malformed image entries are ignored without failing the tool call.
+Embedded MCP text resources contribute their `resource.text`, and MCP resource
+links contribute a one-line `[resource link]` reference, to the model-visible
+text alongside sibling text blocks; binary resources are not inlined.
 
 ## 4. Runtime API (package-level)
 
@@ -770,7 +773,10 @@ criterion-by-criterion report of what was met and the evidence observed.
   deltas every 16ms, and flushes before tool/terminal/abort/error/retry
   boundaries. `message_end` is the authoritative snapshot (D412).
 - Restored assistant history reconstructs separate text and thinking blocks
-  before the next turn.
+  before the next turn. Assistant transport identity is `model.provider` /
+  `model.id` (same as live requests), not the account row id — including when
+  `seedDelegateMessages` rebuilds a Task(resume) history — so same-model
+  Completions reasoning stays in `reasoning_content` under a vendorKey binding.
 - Restored history also reconstructs tool call/result pairs from persisted
   tool rows (`toolCallId`/`toolArgs`/`toolResult`), so a recreated runtime
   keeps its full working context — file contents read, command output —
@@ -934,6 +940,13 @@ core set rather than the on-demand catalog of §7.1:
 - `TaskStop(delegationIds?)` — stops running delegations (defaults to all);
   waits for each abort to settle, then persists `status: "stopped"` with
   `completedAt` on `details.stopped[]`. Stopped delegations read as `stopped`.
+
+**Explicit desktop cancellation.** A running delegate can be stopped from its
+card or detail panel. The subagent group header also offers session-wide stop-all.
+These controls call the same cancellation routine as `TaskStop` without a model
+round trip. Cancellation is cooperative: the UI shows a pending state until
+termination is confirmed, preserving partial output and existing parent Stop
+semantics. A completed delegate is not relabeled by a late stop request.
 
 **Live settlement.** When a delegate settles, the runtime refreshes its original
 `Task` transcript row with the terminal delegation summary (`status`,
@@ -1138,7 +1151,9 @@ When a summary cannot be generated or installed below the hard limit, the run
 degrades: it keeps the original task brief plus the most recent message(s),
 discards the rest of its history, continues, and records that it was degraded,
 so the report and lifecycle details say the delegate lost history rather than
-presenting a complete answer. When even that does not fit, the run fails with
+presenting a complete answer. Empty or whitespace-only extracted summary text
+(including a thinking-only or output-limited reply with no text blocks) counts
+as "cannot be generated" — it must not install an empty successful checkpoint. When even that does not fit, the run fails with
 `SUBAGENT_CONTEXT_OVERFLOW` (not retriable) naming what the parent can change —
 narrow the task, delegate to a model with a larger window, read less at once —
 instead of forwarding the provider's overflow text.
@@ -1373,7 +1388,9 @@ model's provider identity and retain recorded model IDs. A different recorded
 account or model remains distinct. Legacy rows without identity retain the
 current-model fallback. Same-model Completions reasoning stays in its native
 reasoning field, never appended to visible answer text because of an account
-UUID/vendor-name mismatch.
+UUID/vendor-name mismatch. The same rule applies when `seedDelegateMessages`
+rebuilds a Task(resume) history: tag restored assistants and synthetic
+tool-call carriers with `model.provider` / `model.id`, not the account row id.
 
 ### 7.0.1 User custom system prompt files (issue #542)
 

@@ -8273,7 +8273,37 @@ describe("DesktopAgentRuntime subagents", () => {
     await runtime.dispose();
   });
 
-  it("returns a pending cancellation instead of hanging when a delegate ignores abort", async () => {
+  it("scopes direct cancellation to selected IDs and the owning session", async () => {
+    const runtime = createRuntime({ subagents: [explorer] });
+    const other = createRuntime({ subagents: [explorer] });
+    subagentRuns.deferred = true;
+    subagentRuns.instances.length = 0;
+    try {
+      const start = async (owner: typeof runtime, callId: string) => {
+        const result = await taskTool(owner).execute(callId, { agent: "explorer", task: callId });
+        return String(result.details.delegationId);
+      };
+      const first = await start(runtime, "direct-A");
+      const second = await start(runtime, "direct-B");
+      const foreign = await start(other, "other-session");
+      const stopped = await runtime.stopSubagents([first, first, foreign]);
+      expect(stopped.details.stopped).toMatchObject([{ delegationId: first, status: "stopped" }]);
+      expect((await runtime.stopSubagents([first])).details.stopped).toEqual([]);
+      // Both remaining delegates must still be running to be selected by stop-all.
+      expect((await runtime.stopSubagents()).details.stopped).toMatchObject([
+        { delegationId: second, status: "stopped" },
+      ]);
+      expect((await other.stopSubagents()).details.stopped).toMatchObject([
+        { delegationId: foreign, status: "stopped" },
+      ]);
+    } finally {
+      subagentRuns.deferred = false;
+      await runtime.dispose();
+      await other.dispose();
+    }
+  });
+
+  it.each(["tool", "desktop"])("returns pending cancellation when a delegate ignores %s stop", async (entry) => {
     const runtime = createRuntime({ subagents: [explorer] });
     subagentRuns.calls.length = 0;
     subagentRuns.instances.length = 0;
@@ -8292,9 +8322,9 @@ describe("DesktopAgentRuntime subagents", () => {
 
     vi.useFakeTimers();
     try {
-      const stopping = stop.execute("stop-unresponsive", {
-        delegationIds: [delegationId],
-      });
+      const stopping = entry === "desktop"
+        ? runtime.stopSubagents([delegationId])
+        : stop.execute("stop-unresponsive", { delegationIds: [delegationId] });
       await vi.advanceTimersByTimeAsync(5_000);
       const result = await stopping;
       expect(result.content[0].text).toContain("remain running");
@@ -11414,6 +11444,51 @@ describe("toolResultFromUi image restoration (issue #1073)", () => {
     );
     expect(restored.content).toEqual(expected);
     await runtime.dispose();
+  });
+
+  it("keeps embedded MCP text resources and resource links next to a status text block", async () => {
+    // github-mcp-server `get_file_contents` answers with a status line plus the
+    // file body as an embedded resource, and with a resource link for large files.
+    const rawContent = {
+      content: [
+        { type: "text", text: "successfully downloaded text file (SHA: abc123)" },
+        {
+          type: "resource",
+          resource: {
+            uri: "repo://acme/app/contents/src/index.ts",
+            mimeType: "text/plain",
+            text: "export const answer = 42;\n",
+          },
+        },
+        {
+          type: "resource_link",
+          uri: "https://raw.githubusercontent.com/acme/app/main/big.json",
+          name: "big.json",
+        },
+      ],
+      isError: false,
+    };
+    const host = {
+      call: vi.fn().mockImplementation((method: string) =>
+        Promise.resolve(
+          method === "project.instructions.resolve"
+            ? { entries: [] }
+            : { ok: true, content: rawContent },
+        ),
+      ),
+    };
+    const runtime = createRuntime({ host });
+    try {
+      const read = (runtime as any).toolCatalog.get("Read");
+      const result = await read.execute("resource-result", { path: "src/index.ts" });
+      expect(result.content).toHaveLength(1);
+      const text = result.content[0].text as string;
+      expect(text).toContain("successfully downloaded text file (SHA: abc123)");
+      expect(text).toContain("export const answer = 42;");
+      expect(text).toContain("https://raw.githubusercontent.com/acme/app/main/big.json");
+    } finally {
+      await runtime.dispose();
+    }
   });
 });
 

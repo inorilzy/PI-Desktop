@@ -1502,6 +1502,33 @@ function selectRetainedUserMessages(
   return selected.reverse();
 }
 
+/**
+ * Model-visible text for one host tool content block. Besides plain `text`
+ * blocks, MCP servers return file bodies as embedded text resources and large
+ * payloads as resource links (github-mcp-server `get_file_contents` sends a
+ * status line plus one of these), so dropping them next to a sibling text
+ * block hides the actual result from the model. Binary resources and other
+ * block kinds have no text to show and stay out of the text channel.
+ */
+function hostContentBlockText(block: unknown): string | undefined {
+  if (!isRecord(block)) return undefined;
+  if (block.type === "text" && typeof block.text === "string") return block.text;
+  if (
+    block.type === "resource" &&
+    isRecord(block.resource) &&
+    typeof block.resource.text === "string"
+  ) {
+    return block.resource.text;
+  }
+  if (block.type === "resource_link" && typeof block.uri === "string") {
+    const name = typeof block.name === "string" && block.name.trim()
+      ? `${block.name.trim()}: `
+      : "";
+    return `[resource link] ${name}${block.uri}`;
+  }
+  return undefined;
+}
+
 /** Rebuild a pi-ai tool result from a persisted tool row. Rows that never
  * finished (app quit / abort mid-tool) restore as errored results so the
  * model knows the call produced nothing. Exported for tests. */
@@ -3545,9 +3572,8 @@ Do not invent objections or turn speculative risks into blockers. Stop when the 
           // and hand images to the model instead of stringifying (#1360).
           const textParts: string[] = [];
           for (const block of rawContent) {
-            if (isRecord(block) && block.type === "text" && typeof block.text === "string") {
-              textParts.push(block.text);
-            }
+            const blockText = hostContentBlockText(block);
+            if (blockText !== undefined) textParts.push(blockText);
           }
           collectImageBlocks(rawContent);
           text = textParts.join("\n") || JSON.stringify(rawContent, null, 2);
@@ -3557,9 +3583,8 @@ Do not invent objections or turn speculative risks into blockers. Stop when the 
           const contentBlocks = rawContent.content;
           const textParts: string[] = [];
           for (const block of contentBlocks) {
-            if (isRecord(block) && block.type === "text" && typeof block.text === "string") {
-              textParts.push(block.text);
-            }
+            const blockText = hostContentBlockText(block);
+            if (blockText !== undefined) textParts.push(blockText);
           }
           collectImageBlocks(contentBlocks);
           text = textParts.join("\n") || JSON.stringify(rawContent, null, 2);
@@ -5433,6 +5458,58 @@ Do not invent objections or turn speculative risks into blockers. Stop when the 
     };
   }
 
+  /** Shared cancellation path for TaskStop and explicit desktop controls. */
+  async stopSubagents(ids: string[] = []) {
+    const targets = ids.length
+      ? [...new Set(ids)]
+          .map((id) => this.delegations.get(id))
+          .filter(
+            (record): record is DelegationRecord =>
+              record !== undefined && record.status === "running",
+          )
+      : this.runningDelegations();
+    for (const record of targets) {
+      record.stopRequested = true;
+      record.abort();
+    }
+    // Cancellation is cooperative: bound the wait so a worker that ignores
+    // abort cannot wedge the caller. Still-running workers are
+    // explicitly returned as pending, never mislabeled as stopped.
+    let stopTimeout: ReturnType<typeof setTimeout> | undefined;
+    await Promise.race([
+      Promise.all(targets.map((record) => record.completion)),
+      new Promise<void>((resolve) => {
+        stopTimeout = setTimeout(resolve, 5_000);
+      }),
+    ]);
+    if (stopTimeout !== undefined) clearTimeout(stopTimeout);
+    const pending = targets.filter((record) => record.status === "running");
+    const stopped = targets.filter((record) => record.status === "stopped");
+    const settled = targets.filter(
+      (record) => record.status !== "running" && record.status !== "stopped",
+    );
+    const text =
+      targets.length === 0
+        ? "No matching running subagents to stop."
+        : pending.length > 0
+          ? `Cancellation requested for ${targets.length} subagent${targets.length === 1 ? "" : "s"}; ${pending.length} have not confirmed termination and remain running.`
+          : settled.length > 0
+            ? `Cancellation settled for ${targets.length} subagent${targets.length === 1 ? "" : "s"}: ${stopped.length} stopped and ${settled.length} had already finished.`
+            : `Stopped ${stopped.length} subagent${stopped.length === 1 ? "" : "s"}.`;
+    return {
+      content: [{ type: "text" as const, text }],
+      details: {
+        stopped: stopped.map(delegationSummary),
+        ...(pending.length > 0
+          ? { stopPending: pending.map(delegationSummary) }
+          : {}),
+        ...(settled.length > 0
+          ? { settled: settled.map(delegationSummary) }
+          : {}),
+      },
+    };
+  }
+
   /** `TaskStop`: stop running delegations (ADR 0089). */
   private buildSubagentStopTool(): AgentTool {
     return {
@@ -5454,54 +5531,7 @@ Do not invent objections or turn speculative risks into blockers. Stop when the 
           isRecord(params) && Array.isArray(params.delegationIds)
             ? params.delegationIds.map(String)
             : [];
-        const targets = ids.length
-          ? ids
-              .map((id) => this.delegations.get(id))
-              .filter(
-                (record): record is DelegationRecord =>
-                  record !== undefined && record.status === "running",
-              )
-          : this.runningDelegations();
-        for (const record of targets) {
-          record.stopRequested = true;
-          record.abort();
-        }
-        // Cancellation is cooperative: bound the wait so a worker that ignores
-        // abort cannot wedge the parent tool call. Still-running workers are
-        // explicitly returned as pending, never mislabeled as stopped.
-        let stopTimeout: ReturnType<typeof setTimeout> | undefined;
-        await Promise.race([
-          Promise.all(targets.map((record) => record.completion)),
-          new Promise<void>((resolve) => {
-            stopTimeout = setTimeout(resolve, 5_000);
-          }),
-        ]);
-        if (stopTimeout !== undefined) clearTimeout(stopTimeout);
-        const pending = targets.filter((record) => record.status === "running");
-        const stopped = targets.filter((record) => record.status === "stopped");
-        const settled = targets.filter(
-          (record) => record.status !== "running" && record.status !== "stopped",
-        );
-        const text =
-          targets.length === 0
-            ? "No matching running subagents to stop."
-            : pending.length > 0
-              ? `Cancellation requested for ${targets.length} subagent${targets.length === 1 ? "" : "s"}; ${pending.length} have not confirmed termination and remain running.`
-              : settled.length > 0
-                ? `Cancellation settled for ${targets.length} subagent${targets.length === 1 ? "" : "s"}: ${stopped.length} stopped and ${settled.length} had already finished.`
-                : `Stopped ${stopped.length} subagent${stopped.length === 1 ? "" : "s"}.`;
-        return {
-          content: [{ type: "text", text }],
-          details: {
-            stopped: stopped.map(delegationSummary),
-            ...(pending.length > 0
-              ? { stopPending: pending.map(delegationSummary) }
-              : {}),
-            ...(settled.length > 0
-              ? { settled: settled.map(delegationSummary) }
-              : {}),
-          },
-        };
+        return this.stopSubagents(ids);
       },
     };
   }

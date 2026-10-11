@@ -1890,7 +1890,8 @@ Single message render — either user (plaintext) or assistant (markdown streami
   capacity, used/window counts, turn total, and provider
   input/output/cache/reasoning/hit-rate are that turn's newest usage-bearing
   assistant message (the last model request), using
-  `input + output + reasoning + cacheRead + cacheWrite` (D355). They are not
+  `input + output + cacheRead + cacheWrite` (D355; `output` already carries the
+  reasoning tokens, so `reasoningTokens` is never added again). They are not
   the sum of every model call in the visual tool-loop. It is hidden until that
   usage exists. The trigger keeps a small capacity ring beside the
   percentage and omits the redundant `Context` label; the leading figure
@@ -2568,6 +2569,12 @@ as a conversation:
   state (`running`, `error`, `denied`, `success`). Clicking the node expands the
   existing brief/report/counters and nested rows; the report remains printed
   exactly once.
+- Local Desktop running nodes with a delegation handle expose a separate Stop
+  button; the delegate detail panel exposes the same action. The group header
+  offers Stop all subagents for the current session. These actions do not open
+  a model turn or stop the coordinator. Pending cancellation disables duplicate
+  submission and reads Stopping; terminal nodes have no Stop action. Existing
+  output remains readable, including partial output from stopped delegates.
 - A topology that first appears while the turn is active opens once so progress
   is visible, then closes when its activity settles if the user has not
   interacted with the card. Reloaded history remains collapsed by default. A
