@@ -8,7 +8,7 @@
  * session's recent complete Q&A (built by the headless entry).
  *
  * A row has to carry its mark text when the list is drawn, so snapshots are
- * fetched with the list and kept here by `id@updatedAt#budget`; only rows
+ * fetched with the list and kept here by `id@updatedAt#budget/turns`; only rows
  * whose snapshot is ready are offered. Plain ES module, no build step of its own.
  *
  * The mark sends its `<referenced-chat>` block inside a fence tagged
@@ -44,6 +44,18 @@ export function triggerContext(context) {
 }
 
 /**
+ * The host's Session references preferences from the trigger query
+ * (`query.sessionReferences`, Settings › AI), passed on to the headless
+ * entry; `undefined` from a host that predates them (the plugin's defaults,
+ * 25 % and 10 turns, apply then).
+ */
+export function triggerReferences(references) {
+  if (!references || typeof references !== 'object') return undefined;
+  const { budgetPercent, maxTurns } = references;
+  return Number.isFinite(budgetPercent) && Number.isFinite(maxTurns) ? { budgetPercent, maxTurns } : undefined;
+}
+
+/**
  * The host passes the draft's `sessionId` (left out of the list: a session
  * cannot reference itself) and its `context` use on every query; hosts that
  * predate them pass neither, and the list then shows every session with
@@ -65,7 +77,7 @@ export function createSessionTrigger(dispatch, {
   };
   const call = (method, args) => dispatch('plugin.call', { method, args });
 
-  async function items({ query, sessionId, context: usage }) {
+  async function items({ query, sessionId, context: usage, sessionReferences }) {
     const started = Date.now();
     const turn = ++latest;
     if (debounceMs > 0) await sleep(debounceMs);
@@ -75,7 +87,8 @@ export function createSessionTrigger(dispatch, {
     // Snapshot keys name the budget they were built for, so the cache stays
     // valid across context changes: a new budget is a new key.
     const context = triggerContext(usage);
-    const extra = context ? { context } : {};
+    const references = triggerReferences(sessionReferences);
+    const extra = { ...(context ? { context } : {}), ...(references ? { references } : {}) };
     const exclude = typeof sessionId === 'string' && sessionId ? { exclude: sessionId } : {};
     const listed = await call('sessions.items', {
       query, cached: [...cache.keys()], deadlineMs: left() - 250, ...exclude, ...extra,

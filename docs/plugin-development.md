@@ -876,7 +876,12 @@ export function onLoad(pi) {
   symbols: `{ slot: "composerTrigger", trigger: "#", items }`, and the host draws
   the list. `items` gets `{ trigger, query }` plus, when the host knows them,
   the draft's `sessionId` and `context: { usedTokens, contextWindow }` (what
-  the composer's context ring shows). Your group follows the host's own rows
+  the composer's context ring shows). It also gets
+  `sessionReferences: { budgetPercent, maxTurns }`, the user's Settings › AI ›
+  Session references choices (budget 10/25/50/100 % of the remaining context,
+  25 by default; 3/5/10/20 turns per reference, 10 by default), already
+  defaulted by the host. Read-only; hosts that predate it leave it out, so
+  fall back to your own defaults. Your group follows the host's own rows
   for the symbol (its `/` commands, its `@` files); `placement: "first"` puts
   it before them instead, so its first item is highlighted and Enter picks
   it. Arrow keys run across both groups either way

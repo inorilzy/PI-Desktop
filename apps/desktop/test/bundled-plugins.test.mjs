@@ -173,12 +173,9 @@ test("Session Mentions ships as an ordinary plugin on the public slot API", () =
   assert.deepEqual(sessionManifest.rendererCallMethods, ["sessions.items", "sessions.snapshots"]);
   assert.equal(typeof sessionManifest.i18n.en.name, "string");
   assert.equal(typeof sessionManifest.i18n["zh-CN"].name, "string");
-  // Its one setting: the reference budget, a share of the remaining context.
-  assert.deepEqual(
-    sessionManifest.contributes.settings.map((setting) => [setting.key, setting.type, setting.default,
-      setting.enum.map((choice) => choice.value)]),
-    [["budgetPercent", "select", 25, [10, 25, 50, 100]]],
-  );
+  // No plugin settings: Session references are host settings (Settings › AI),
+  // handed to the trigger with its query.
+  assert.equal(sessionManifest.contributes, undefined);
   // Plain modules, nothing to build: every relative import resolves in place.
   const files = ["main.js", "service.js", "renderer.js", "card.js"];
   for (const file of ["prompt", "qa", "reader", "references", "snapshot"]) files.push(`lib/${file}.js`);

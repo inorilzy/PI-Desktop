@@ -14,7 +14,9 @@ import {
   type PluginTriggerContext,
   type PluginTriggerPlacement,
   type PluginTriggerQuery,
+  type PluginTriggerSessionReferences,
 } from "@pi-desktop/plugin-sdk";
+import { resolveSessionReferenceSettings } from "@pi-desktop/shared";
 
 export type PluginTriggerMatch = {
   readonly trigger: PluginComposerTrigger;
@@ -74,18 +76,27 @@ export function orderTriggerGroups<Host, Plugin>(
 export type PluginTriggerScope = {
   readonly sessionId?: string;
   readonly context?: PluginTriggerContext;
+  readonly sessionReferences?: PluginTriggerSessionReferences;
 };
 
 /**
  * The draft's scope as a trigger sees it: the session id when there is one,
- * and its context use when the composer's ring has a positive window to show.
+ * its context use when the composer's ring has a positive window to show,
+ * and the user's Session references preferences (Settings › AI), defaults
+ * filled in, whenever the caller passes the settings.
  */
 export function pluginTriggerScope(
   sessionId: string | null | undefined,
   context: { usedTokens: number; contextWindow: number } | null | undefined,
+  settings?: { sessionReferenceBudgetPercent?: unknown; sessionReferenceMaxTurns?: unknown } | null,
 ): PluginTriggerScope {
-  const scope: { sessionId?: string; context?: PluginTriggerContext } = {};
+  const scope: {
+    sessionId?: string;
+    context?: PluginTriggerContext;
+    sessionReferences?: PluginTriggerSessionReferences;
+  } = {};
   if (sessionId) scope.sessionId = sessionId;
+  if (settings !== undefined) scope.sessionReferences = resolveSessionReferenceSettings(settings);
   if (
     context &&
     Number.isFinite(context.usedTokens) &&

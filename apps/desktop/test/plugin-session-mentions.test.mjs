@@ -144,19 +144,8 @@ test("the manifest asks only for the renderer and desktop control", () => {
   assert.deepEqual(manifest.rendererCallMethods, ["sessions.items", "sessions.snapshots"]);
 });
 
-test("the reference budget is a plugin setting: 10/25/50/100% of the remaining context, 25% by default", async (t) => {
-  assert.deepEqual(manifest.contributes.settings.map(({ key, type, default: value }) => ({ key, type, value })),
-    [{ key: "budgetPercent", type: "select", value: 25 }]);
-  assert.deepEqual(manifest.contributes.settings[0].enum, [
-    { label: "10%", value: 10 }, { label: "25%", value: 25 }, { label: "50%", value: 50 }, { label: "100%", value: 100 },
-  ]);
-  const { BUDGET_PERCENTS, DEFAULT_BUDGET_PERCENT } = await import(pathToFileURL(join(PLUGIN_DIR, "lib/snapshot.js")).href);
-  assert.deepEqual(manifest.contributes.settings[0].enum.map((choice) => choice.value), BUDGET_PERCENTS);
-  assert.equal(manifest.contributes.settings[0].default, DEFAULT_BUDGET_PERCENT);
-  // The runtime hands the plugin the manifest default before any edit.
-  const win = await pluginWindow(t);
-  const view = await win.runtime.getPluginSettings(PLUGIN);
-  assert.deepEqual(view.map(({ key, value }) => ({ key, value })), [{ key: "budgetPercent", value: 25 }]);
+test("the plugin declares no settings: Session references live in Settings › AI", () => {
+  assert.equal(manifest.contributes, undefined, "no second place to change the budget or the turn limit");
 });
 
 test("@ lists recent sessions, and a pick sends the session's recent Q&A", async (t) => {
@@ -248,4 +237,16 @@ test("the host's session and context reach the trigger: itself left out, a full 
   assert.doesNotMatch(beta.send, /<referenced-chat/, "no clipped snapshot");
   const task = full.find((row) => row.label.startsWith("new task"));
   assert.match(task.send, /<referenced-chat id="dddddddd-/);
+
+  // Settings › AI › Session references reach the plugin with the scope:
+  // max 3 turns is Alpha's first turn and its 2 most recent.
+  const scope = pluginTriggerScope(BETA, null, { sessionReferenceBudgetPercent: 100, sessionReferenceMaxTurns: 3 });
+  assert.deepEqual(scope.sessionReferences, { budgetPercent: 100, maxTurns: 3 });
+  const three = (await ask("alpha", scope)).find((row) => row.label === "Alpha migration");
+  assert.deepEqual([...three.send.matchAll(/^Q: (Question \d+)$/gm)].map((match) => match[1]),
+    ["Question 0", "Question 10", "Question 11"]);
+  assert.match(three.detail, /first \+ 2 most recent turns · 9 between omitted/);
+  // Defaults when the settings say nothing: 10 turns.
+  const plain = (await ask("alpha", pluginTriggerScope(BETA, null, {}))).find((row) => row.label === "Alpha migration");
+  assert.match(plain.send, /turns="10" first-turn="true" omitted="2"/);
 });

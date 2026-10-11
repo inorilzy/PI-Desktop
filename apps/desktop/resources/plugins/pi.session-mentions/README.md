@@ -13,16 +13,15 @@ holding that session's first and most recent complete Q&A, inside a fence
 tagged `pi.session-mentions:chat`. In the transcript the block is drawn as a
 one-line card that opens on click (see below).
 
-Like `pi.browser`, it is plain ES modules with no build step: `manifest.json`,
-`main.js` (headless entry), `service.js`, `renderer.js` (renderer entry),
-`card.js` (the transcript card) and `lib/` (the pure logic carried over from
-PR #447). Its tests live in
-`apps/desktop/test/plugin-session-mentions*.test.mjs`.
+Plain ES modules, no build step: `main.js` + `service.js` (headless),
+`renderer.js` + `card.js` (renderer), `lib/` (pure logic from PR #447).
+Tests: `apps/desktop/test/plugin-session-mentions*.test.mjs`.
 
 ## What a reference contains
 
 - The referenced session's **first complete Q&A turn**, always, then its
-  **most recent** complete turns, at most **10 turns** in all. Each turn is a
+  **most recent** complete turns, at most **max turns** in all (below; the
+  first turn counts, so 3 is the first + the 2 most recent). Each turn is a
   parent user question and every eligible parent answer row after it; the
   block keeps them in chronological order.
 - Recent turns are selected newest-first, whole, until the next one would
@@ -30,7 +29,7 @@ PR #447). Its tests live in
   left out between the first turn and the recent ones: `[… 7 turns omitted
   here]`, or `… were not read` when the reader did not reach them.
 - The reader pages backwards from the newest rows (400 at a time, at most 4
-  pages) and stops once it has 11 turns; for a longer session the first turn
+  pages) and stops once it has 21 turns (enough for any turn limit); for a longer session the first turn
   comes from one read of its first 48 rows. A first turn not closed by a later
   question within those rows (a very long first run of tool rows) is not
   used; the block then holds the most recent turns and says older history was
@@ -46,11 +45,19 @@ PR #447). Its tests live in
   tag carries the same: `turns`, `first-turn`, `omitted` (turns left out that
   were read) and `unread` (some were not read).
 
-## The reference budget (setting)
+## Settings › AI › Session references
 
-**Extensions → Session Mentions → Settings → Reference budget**: 10%, **25%**
-(default), 50% or 100% of the current chat's remaining context. One
-reference may use
+The plugin has no settings of its own. The host's **Settings › AI › Session
+references** group (会话引用) holds both choices and hands them to the trigger
+with each query as `sessionReferences: { budgetPercent, maxTurns }`:
+
+- **Reference budget**: 10%, **25%** (default), 50% or 100% of the current
+  chat's remaining context.
+- **Max turns per reference**: 3, 5, **10** (default) or 20.
+
+A host without the field (or a value outside the choices) gets 25% and 10.
+A budget once saved under the plugin's former Extensions setting is ignored.
+One reference may use
 
     min(32 KB, pct × (contextWindow − usedTokens − 8192) × 3 bytes)
 
@@ -58,14 +65,14 @@ where `usedTokens` / `contextWindow` are the trigger query's `context` (what
 the composer's context ring shows), 8192 tokens are held back for the reply,
 and 3 bytes per token is #447's UTF-8 estimate (not a tokenizer). The budget
 is rounded down to 512 bytes. Before the chat's first answered turn the host
-reports no usage, and the 32 KB mark limit is the budget. A setting change
-applies to the next `@`.
+reports no usage, and the 32 KB mark limit is the budget. A change applies
+to the next `@`.
 
 When the context share is the tighter limit and not even the first turn fits
 it, the row is **not** given a clipped snapshot: it shows as `⚠ <title>` with
-the hint "上下文剩余不足：先 /compact 压缩，或在扩展设置里调高引用预算" / "Not
-enough context left: run /compact, or raise the reference budget in the
-Extensions settings" (at 100%: "上下文快满了，先 /compact 压缩再引用"), and
+the hint "上下文剩余不足：先 /compact 压缩，或在 设置 › AI 里调高引用预算" / "Not
+enough context left: run /compact, or raise the reference budget in Settings
+› AI" (at 100%: "上下文快满了，先 /compact 压缩再引用"), and
 picking it anyway only sends a one-line note that the session was not
 attached. The plugin never compacts; the user runs `/compact`.
 
@@ -80,10 +87,8 @@ is unchanged: the model reads the same text, and Copy, edit and the context
 menu's copy use the full message. With the plugin disabled the fence is shown
 as the text it is.
 
-User messages are plain text, not Markdown, so the host draws only fences a
-plugin claimed (`UserMessageText`, `splitPluginFences` in
-`src/lib/block-renderer.ts`); every other fence in a user message renders as
-before.
+In user messages the host draws only claimed fences (`UserMessageText`);
+other fences stay text.
 
 ## The list
 
@@ -109,16 +114,14 @@ omitted`, or `3 Q&A turns` for a session referenced whole).
   text when the list is drawn, so the renderer asks the headless entry for the
   list together with the rows' snapshots through `plugin.call`
   (`sessions.items`, then `sessions.snapshots` for any still pending), passing
-  the trigger query's `context` on, and caches them by `id@updatedAt#budget`
-  (the budget in bytes), so a cached snapshot is reused exactly while the
-  session and the budget are unchanged. Only rows whose snapshot is ready are
+  the query's `context` and `sessionReferences` on, and caches them by
+  `id@updatedAt#bytes/maxTurns`, so a snapshot is reused exactly while the
+  session, the budget and the turn limit are unchanged. Only rows whose snapshot is ready are
   listed. The cache is warmed once at load. It also registers the
   `blockRenderer` for the reference fence and injects the card's styles.
 - `service.js` (headless) reads through the reviewed desktop-control read
   operations `session/list` and `session/get` (`pi.desktop.invoke`, permission
   `desktop.control`), paging 400 physical rows at a time (at most 4 pages).
-  It reads the `budgetPercent` setting once (`pi.plugin.getSettings()`) and
-  follows `plugin:settingsChanged`.
   Snapshots are built ahead of the pick, cached, and sent in answers kept
   under the host's 64 KB `plugin.call` limit and 2 s budget.
 

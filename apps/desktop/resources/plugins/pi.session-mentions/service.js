@@ -3,8 +3,8 @@ import { ownTypedText } from './lib/prompt.js';
 import { pairCompletedQaTurns } from './lib/qa.js';
 import { readSessionReferenceSource } from './lib/reader.js';
 import {
-  budgetPercent, buildSessionSnapshot, DEFAULT_BUDGET_PERCENT, DEFAULT_MAX_TURNS, MARK_SEND_MAX_BYTES,
-  referenceBudget,
+  budgetPercent, buildSessionSnapshot, DEFAULT_BUDGET_PERCENT, MARK_SEND_MAX_BYTES, MAX_TURNS_CHOICES,
+  maxTurnsOf, referenceBudget,
 } from './lib/snapshot.js';
 
 /** Rows one `@` list offers; also the host's mark limit per draft. */
@@ -100,7 +100,7 @@ function words(locale) {
     turns: (n) => `${n} 轮问答`, first: (n) => n > 1 ? `首轮 + 最近 ${n - 1} 轮` : '仅首轮',
     omitted: (n) => `省略 ${n} 轮更早的`, between: (n) => `中间省略 ${n} 轮`,
     unread: '更早的未读取', betweenUnread: '中间部分未读取', clipped: '已截断',
-    contextFull: (raise) => raise ? '上下文剩余不足：先 /compact 压缩，或在扩展设置里调高引用预算'
+    contextFull: (raise) => raise ? '上下文剩余不足：先 /compact 压缩，或在 设置 › AI 里调高引用预算'
       : '上下文快满了，先 /compact 压缩再引用',
   } : {
     turns: (n) => `${n} Q&A turn${n === 1 ? '' : 's'}`,
@@ -108,7 +108,7 @@ function words(locale) {
     omitted: (n) => `${n} older omitted`, between: (n) => `${n} between omitted`,
     unread: 'older history not read', betweenUnread: 'some turns between not read', clipped: 'clipped',
     contextFull: (raise) => raise
-      ? 'Not enough context left: run /compact, or raise the reference budget in the Extensions settings'
+      ? 'Not enough context left: run /compact, or raise the reference budget in Settings › AI'
       : 'Context is nearly full: run /compact first, then reference this session again',
   };
 }
@@ -178,14 +178,18 @@ export function referencePage(value, expectedId) {
  *
  * A trigger row has to carry its mark text up front, so snapshots are built
  * ahead of the pick. Transcripts are cached by `id@updatedAt`; a snapshot's
- * key adds the byte budget it was built for (`id@updatedAt#bytes`), so the
- * renderer's copies stay valid exactly as long as the session and the budget
- * do. An answer holds as many snapshots as fit its size and time budget; the
- * rest are reported pending and keep building, so the renderer can ask again.
+ * key adds the byte budget and turn limit it was built for
+ * (`id@updatedAt#bytes/turns`), so the renderer's copies stay valid exactly
+ * as long as the session and both limits do. An answer holds as many
+ * snapshots as fit its size and time budget; the rest are reported pending
+ * and keep building, so the renderer can ask again.
  *
- * The budget is the `budgetPercent` setting's share of the current session's
- * remaining context (the trigger query's `context`, passed on by the
- * renderer), capped at the 32 KB mark limit; see `referenceBudget`.
+ * Both limits are the host's Settings › AI › Session references preferences,
+ * which the renderer passes on from the trigger query
+ * (`args.references = { budgetPercent, maxTurns }`); without them 25 % and
+ * 10 turns. The budget is that share of the current session's remaining
+ * context (the query's `context`), capped at the 32 KB mark limit; see
+ * `referenceBudget`.
  */
 export function createSessionMentionService(host, options = {}) {
   const maxBytes = options.maxBytes ?? MARK_SEND_MAX_BYTES;
@@ -193,16 +197,6 @@ export function createSessionMentionService(host, options = {}) {
   let disposed = false;
   let list = null;
   let locale;
-  let percent;
-  // The Extensions settings page posts every edit; the next `@` uses it.
-  host.events?.on?.('plugin:settingsChanged', (next) => { percent = budgetPercent(next?.budgetPercent); });
-  const currentPercent = async () => {
-    if (percent === undefined) {
-      const settings = await Promise.resolve(host.plugin?.getSettings?.()).catch(() => undefined);
-      percent = budgetPercent(settings?.budgetPercent);
-    }
-    return percent;
-  };
   const sources = new Map();
   const building = new Map();
   const controller = new AbortController();
@@ -290,7 +284,8 @@ export function createSessionMentionService(host, options = {}) {
     const work = (async () => {
       try {
         const source = await readSessionReferenceSource(row.id, loadPage, {
-          budgetTokens: Math.ceil(maxBytes / 3), enoughTurns: DEFAULT_MAX_TURNS + 1,
+          // Enough for the largest turn limit, so one read serves every setting.
+          budgetTokens: Math.ceil(maxBytes / 3), enoughTurns: Math.max(...MAX_TURNS_CHOICES) + 1,
           maxPages: MAX_PAGES, signal: controller.signal,
         });
         if (!source) return null;
@@ -310,15 +305,16 @@ export function createSessionMentionService(host, options = {}) {
   /** The row's mark text for this answer's budget; pure, from the cached transcript. */
   const snapshotOf = (source, budget) => {
     const contextBytes = budget.contextBound ? budget.bytes : undefined;
-    let snapshot = buildSessionSnapshot(source, { maxBytes, contextBytes });
+    const { maxTurns } = budget;
+    let snapshot = buildSessionSnapshot(source, { maxBytes, maxTurns, contextBytes });
     // JSON escaping must not push one snapshot past the answer budget.
     for (let limit = maxBytes; snapshot.status === 'ready' && jsonBytes(snapshot.send) > answerMaxBytes - 1024 && limit > 2048;) {
       limit = Math.floor(limit * 0.75);
-      snapshot = buildSessionSnapshot(source, { maxBytes: limit, contextBytes });
+      snapshot = buildSessionSnapshot(source, { maxBytes: limit, maxTurns, contextBytes });
     }
     return snapshot;
   };
-  const keyOf = (row, budget) => `${row.key}#${budget.bytes}`;
+  const keyOf = (row, budget) => `${row.key}#${budget.bytes}/${budget.maxTurns}`;
 
   /** No complete Q&A turn to reference (a new or unanswered session, often the current one). */
   const empty = (source) => pairCompletedQaTurns(source.messages).length === 0;
@@ -357,14 +353,15 @@ export function createSessionMentionService(host, options = {}) {
     return Number.isFinite(value) ? Math.min(MAX_CALL_DEADLINE_MS, Math.max(0, value)) : MAX_CALL_DEADLINE_MS;
   };
   /**
-   * This answer's byte budget: the setting's share of the remaining context
-   * the renderer passed on (`args.context`, the trigger query's figures), or
-   * the mark limit when there are none.
+   * This answer's limits: the host's turn limit, and its budget share of the
+   * remaining context the renderer passed on (`args.context`, the trigger
+   * query's figures), or the mark limit when there are none.
    */
-  const budgetOf = async (args) => {
-    const pct = await currentPercent();
+  const budgetOf = (args) => {
+    const references = args.references && typeof args.references === 'object' ? args.references : {};
+    const percent = budgetPercent(references.budgetPercent);
     const context = args.context && typeof args.context === 'object' ? args.context : undefined;
-    return { ...referenceBudget(context, pct, maxBytes), percent: pct };
+    return { ...referenceBudget(context, percent, maxBytes), percent, maxTurns: maxTurnsOf(references.maxTurns) };
   };
   const keysOf = (value) => new Set(Array.isArray(value)
     ? value.filter((key) => typeof key === 'string' && key.length <= 128).slice(0, 64) : []);
@@ -387,7 +384,7 @@ export function createSessionMentionService(host, options = {}) {
         const rows = (await summaries())
           .filter((row) => row.id !== exclude && !hidden(row) && `${row.title}\n${row.id}`.toLowerCase().includes(query))
           .slice(0, MAX_ROWS);
-        const budget = await budgetOf(args);
+        const budget = budgetOf(args);
         const packed = await pack(rows.filter((row) => !cached.has(keyOf(row, budget))), deadlineOf(args), budget);
         const lang = await currentLocale();
         // Sessions found empty while packing leave the list before labels are disambiguated.
@@ -400,7 +397,7 @@ export function createSessionMentionService(host, options = {}) {
       }
       if (method === 'sessions.snapshots') {
         const wanted = keysOf(args.keys);
-        const budget = await budgetOf(args);
+        const budget = budgetOf(args);
         const rows = (await summaries()).filter((row) => wanted.has(keyOf(row, budget)));
         return pack(rows, deadlineOf(args), budget);
       }

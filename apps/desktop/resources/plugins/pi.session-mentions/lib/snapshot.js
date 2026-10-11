@@ -3,7 +3,12 @@ import { pairCompletedQaTurns } from "./qa.js";
 
 /** `PLUGIN_MARK_SEND_MAX_BYTES`: the host drops a trigger row whose `send` is larger. */
 export const MARK_SEND_MAX_BYTES = 32 * 1024;
-/** At most this many complete turns (the first one included), as in PR #447. */
+/**
+ * Complete turns one reference may hold, the first one included: the host's
+ * Settings › AI choices (`PluginTriggerQuery.sessionReferences.maxTurns`) and
+ * the default when the host does not say (as in PR #447).
+ */
+export const MAX_TURNS_CHOICES = Object.freeze([3, 5, 10, 20]);
 export const DEFAULT_MAX_TURNS = 10;
 /** A clipped question keeps at most this much, leaving the rest to its answer. */
 const CLIPPED_QUESTION_MAX_BYTES = 2 * 1024;
@@ -12,16 +17,24 @@ const HOST_CLIP_MARKER = "\n[… the host shortened this text]";
 
 /** Model tokens held back for the reply and the user's own text (#447's default output reserve). */
 export const CONTEXT_RESERVE_TOKENS = 8192;
-/** The `budgetPercent` setting's choices (manifest `contributes.settings`) and its default. */
+/**
+ * The reference budget's choices, % of the remaining context: the host's
+ * Settings › AI choices (`PluginTriggerQuery.sessionReferences.budgetPercent`)
+ * and the default when the host does not say.
+ */
 export const BUDGET_PERCENTS = Object.freeze([10, 25, 50, 100]);
 export const DEFAULT_BUDGET_PERCENT = 25;
 /** Context budgets are rounded down to this, so a few tokens of typing do not rebuild every snapshot. */
 export const BUDGET_STEP_BYTES = 512;
 
-/** The setting's value when it is one of the choices; the default otherwise. */
+/** The host's value when it is one of the choices; the default otherwise. */
 export function budgetPercent(value) {
-  const n = Number(value);
-  return BUDGET_PERCENTS.includes(n) ? n : DEFAULT_BUDGET_PERCENT;
+  return typeof value === "number" && BUDGET_PERCENTS.includes(value) ? value : DEFAULT_BUDGET_PERCENT;
+}
+
+/** The host's value when it is one of the choices; the default otherwise. */
+export function maxTurnsOf(value) {
+  return typeof value === "number" && MAX_TURNS_CHOICES.includes(value) ? value : DEFAULT_MAX_TURNS;
 }
 
 /**

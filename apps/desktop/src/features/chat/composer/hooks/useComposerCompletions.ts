@@ -101,9 +101,16 @@ export function useComposerCompletions({
   const [dismissedKey, setDismissedKey] = useState<string | null>(null);
   const [highlight, setHighlight] = useState(0);
   const frozenRef = useRef<PluginTriggerMatch | null>(null);
-  // Read when a trigger is asked, so a context change alone asks nothing.
-  const scopeRef = useRef(pluginTriggerScope(referenceSessionId, triggerContext));
-  scopeRef.current = pluginTriggerScope(referenceSessionId, triggerContext);
+  // Session references (Settings › AI), told to triggers with the scope.
+  const referenceBudgetPercent = useAppStore((state) => state.settings?.sessionReferenceBudgetPercent);
+  const referenceMaxTurns = useAppStore((state) => state.settings?.sessionReferenceMaxTurns);
+  const referenceSettings = {
+    sessionReferenceBudgetPercent: referenceBudgetPercent,
+    sessionReferenceMaxTurns: referenceMaxTurns,
+  };
+  // Read when a trigger is asked, so a context or settings change alone asks nothing.
+  const scopeRef = useRef(pluginTriggerScope(referenceSessionId, triggerContext, referenceSettings));
+  scopeRef.current = pluginTriggerScope(referenceSessionId, triggerContext, referenceSettings);
 
   const liveMatch = useMemo(
     () =>

@@ -73,16 +73,33 @@ export type PluginTriggerContext = {
 };
 
 /**
+ * The user's Session references preferences (Settings › AI), for a trigger
+ * that references other sessions: the share of the remaining context one
+ * reference may use (`budgetPercent`: 10, 25, 50 or 100) and the complete
+ * Q&A turns it may hold, the referenced session's first turn included
+ * (`maxTurns`: 3, 5, 10 or 20). A reference is still bound by
+ * `PLUGIN_MARK_SEND_MAX_BYTES`. Read-only; the host fills in the defaults
+ * (25, 10) when the user has not chosen.
+ */
+export type PluginTriggerSessionReferences = {
+  readonly budgetPercent: number;
+  readonly maxTurns: number;
+};
+
+/**
  * What a trigger is asked for: the text typed after its symbol, and, when the
  * host knows them, the session the draft belongs to and that session's
  * context use. Both are absent for a draft without a session yet, and
  * `context` also before the session's first answered turn.
+ * `sessionReferences` carries the user's Session references preferences;
+ * hosts that predate it leave it out.
  */
 export type PluginTriggerQuery = {
   readonly trigger: PluginComposerTrigger;
   readonly query: string;
   readonly sessionId?: string;
   readonly context?: PluginTriggerContext;
+  readonly sessionReferences?: PluginTriggerSessionReferences;
 };
 
 /**

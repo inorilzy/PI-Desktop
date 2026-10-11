@@ -10,16 +10,10 @@ const rows = (id, n, size = 10) => Array.from({ length: n }, (_, i) => [
 ]).flat();
 
 /** A host whose desktop control answers `session/list` and `session/get` like the app's IPC. */
-function fakeHost(sessions, { delayMs = 0, locale = 'en', settings } = {}) {
+function fakeHost(sessions, { delayMs = 0, locale = 'en' } = {}) {
   const calls = [];
-  const listeners = new Map();
   const host = {
     app: { getLocale: async () => locale },
-    plugin: { getSettings: async () => { calls.push({ operation: 'getSettings' }); return settings ?? {}; } },
-    events: {
-      on: (event, handler) => listeners.set(event, handler),
-      emit: (event, value) => listeners.get(event)?.(value),
-    },
     desktop: {
       invoke: async ({ operation, args }) => {
         calls.push({ operation, args });
@@ -58,7 +52,7 @@ test('lists recent desktop sessions with their snapshots, filtered by the query'
   assert.deepEqual(all.rows.map((row) => row.label), ['Beta notes', 'Alpha plan']);
   assert.deepEqual(all.pending, []);
   assert.equal(all.snapshots.length, 2);
-  const alpha = all.snapshots.find((entry) => entry.key === `${A}@2026-10-02#32768`);
+  const alpha = all.snapshots.find((entry) => entry.key === `${A}@2026-10-02#32768/10`);
   assert.match(alpha.send, /Q: Q1\nA: A1/);
   assert.equal(alpha.detail, '“Q0” · 2 Q&A turns', 'the first question, then the turns');
   assert.ok(all.rows.every((row) => typeof row.when === 'string' && row.when.length > 0));
@@ -66,7 +60,7 @@ test('lists recent desktop sessions with their snapshots, filtered by the query'
   assert.deepEqual(filtered.rows.map(({ key, label }) => ({ key, label })), [{ key: alpha.key, label: 'Alpha plan' }]);
   assert.deepEqual(filtered.snapshots, [], 'a snapshot the renderer holds is not sent again');
   assert.equal(calls.filter((call) => call.operation === 'session/list').length, 1, 'the list is cached briefly');
-  assert.ok(calls.every((call) => ['session/list', 'session/get', 'getSettings'].includes(call.operation)), 'reads only');
+  assert.ok(calls.every((call) => ['session/list', 'session/get'].includes(call.operation)), 'reads only');
 });
 
 test('session/get is paged by physical cursor, bounded rows and content', async (t) => {
@@ -107,7 +101,7 @@ test('a slow host leaves rows pending past the deadline instead of timing out', 
   const started = Date.now();
   const answer = await service.call('sessions.items', { query: '', deadlineMs: 0 });
   assert.ok(Date.now() - started < 1000);
-  assert.deepEqual(answer.pending, [`${A}@2026-10-02#32768`]);
+  assert.deepEqual(answer.pending, [`${A}@2026-10-02#32768/10`]);
   await new Promise((resolve) => setTimeout(resolve, 250));
   const later = await service.call('sessions.snapshots', { keys: answer.pending, deadlineMs: 0 });
   assert.equal(later.snapshots.length, 1, 'the build kept going and was cached');
@@ -154,7 +148,7 @@ const leaving = (tokens) => ({ usedTokens: 200_000 - 8192 - tokens, contextWindo
 
 test('a nearly full context gets a /compact hint instead of a clipped snapshot', async (t) => {
   const sessions = [session(A, 'Alpha', '2026-10-02', rows(A, 3, 6000)), session(B, 'Beta', '2026-10-03', rows(B, 2, 10))];
-  for (const [locale, hint] of [['zh-CN', '上下文剩余不足：先 /compact 压缩，或在扩展设置里调高引用预算'],
+  for (const [locale, hint] of [['zh-CN', '上下文剩余不足：先 /compact 压缩，或在 设置 › AI 里调高引用预算'],
     ['en', /run \/compact, or raise the reference budget/]]) {
     const { host } = fakeHost(sessions, { locale });
     const service = createSessionMentionService(host);
@@ -163,7 +157,7 @@ test('a nearly full context gets a /compact hint instead of a clipped snapshot',
     const answer = await service.call('sessions.items', { query: '', context: leaving(6000) });
     const alpha = answer.snapshots.find((entry) => entry.key.startsWith(A));
     const beta = answer.snapshots.find((entry) => entry.key.startsWith(B));
-    assert.equal(alpha.key, `${A}@2026-10-02#4096`);
+    assert.equal(alpha.key, `${A}@2026-10-02#4096/10`);
     assert.equal(alpha.contextFull, true);
     if (typeof hint === 'string') assert.equal(alpha.detail, hint); else assert.match(alpha.detail, hint);
     assert.equal(alpha.send, contextFullNote('Alpha'));
@@ -172,10 +166,12 @@ test('a nearly full context gets a /compact hint instead of a clipped snapshot',
     assert.match(beta.send, /<referenced-chat/);
   }
   // At 100% there is no larger budget to suggest.
-  const { host } = fakeHost(sessions, { locale: 'zh-CN', settings: { budgetPercent: 100 } });
+  const { host } = fakeHost(sessions, { locale: 'zh-CN' });
   const service = createSessionMentionService(host);
   t.after(() => service.dispose());
-  const answer = await service.call('sessions.items', { query: '', context: leaving(1200) });
+  const answer = await service.call('sessions.items', {
+    query: '', context: leaving(1200), references: { budgetPercent: 100, maxTurns: 10 },
+  });
   assert.equal(answer.snapshots.find((entry) => entry.key.startsWith(A)).detail, '上下文快满了，先 /compact 压缩再引用');
 });
 
@@ -185,9 +181,9 @@ test('a snapshot key names its budget: another budget is another snapshot', asyn
   t.after(() => service.dispose());
   const plain = await service.call('sessions.items', { query: '' });
   const key = plain.snapshots[0].key;
-  assert.equal(key, `${A}@2026-10-02#32768`, 'unknown context: the 32 KB mark limit');
+  assert.equal(key, `${A}@2026-10-02#32768/10`, 'unknown context: the 32 KB mark limit');
   const tight = await service.call('sessions.items', { query: '', cached: [key], context: leaving(6000) });
-  assert.equal(tight.rows[0].key, `${A}@2026-10-02#4096`);
+  assert.equal(tight.rows[0].key, `${A}@2026-10-02#4096/10`);
   assert.equal(tight.snapshots.length, 1, 'not skipped as cached');
   assert.ok(Buffer.byteLength(tight.snapshots[0].send, 'utf8') <= 4096);
   assert.match(tight.snapshots[0].send, /Q: Q0\n/, 'the first turn is kept');
@@ -199,27 +195,39 @@ test('a snapshot key names its budget: another budget is another snapshot', asyn
   assert.equal(pending.snapshots[0].key, tight.rows[0].key);
 });
 
-test('the budget setting: 25% by default, read once, updated by settings events', async (t) => {
-  const sessions = [session(A, 'Alpha', '2026-10-02', rows(A, 10, 1000))];
+test('the host\'s Session references preferences set the budget and turns; 25 % and 10 without them', async (t) => {
+  const sessions = [session(A, 'Alpha', '2026-10-02', rows(A, 25, 10))];
   const context = leaving(20_000);
-  const keyAt = async (settings, edit) => {
-    const { host, calls } = fakeHost(sessions, { settings });
-    const service = createSessionMentionService(host);
-    t.after(() => service.dispose());
-    const first = (await service.call('sessions.items', { query: '', context })).rows[0].key;
-    if (edit) host.events.emit('plugin:settingsChanged', edit);
-    const second = (await service.call('sessions.items', { query: '', context })).rows[0].key;
-    return { first, second, reads: calls.filter((call) => call.operation === 'getSettings').length };
+  const { host, calls } = fakeHost(sessions);
+  const service = createSessionMentionService(host);
+  t.after(() => service.dispose());
+  const ask = async (references) => {
+    const answer = await service.call('sessions.items', { query: '', context, ...(references === undefined ? {} : { references }) });
+    return { key: answer.rows[0].key, send: answer.snapshots[0]?.send };
   };
   // 20000 tokens after the reserve: 10% → 6000 B → 5632; 25% → 15000 B → 14848; 50% → 29696; 100% → 32 KB.
-  assert.equal((await keyAt(undefined)).first, `${A}@2026-10-02#14848`);
-  assert.equal((await keyAt({ budgetPercent: 'bogus' })).first, `${A}@2026-10-02#14848`);
-  assert.equal((await keyAt({ budgetPercent: 10 })).first, `${A}@2026-10-02#5632`);
-  assert.equal((await keyAt({ budgetPercent: 50 })).first, `${A}@2026-10-02#29696`);
-  const edited = await keyAt({ budgetPercent: 100 }, { budgetPercent: 10 });
-  assert.equal(edited.first, `${A}@2026-10-02#32768`);
-  assert.equal(edited.second, `${A}@2026-10-02#5632`, 'the edit applies to the next @');
-  assert.equal(edited.reads, 1, 'settings are read once, then kept current by the event');
+  assert.equal((await ask()).key, `${A}@2026-10-02#14848/10`, 'an older host: the defaults');
+  assert.equal((await ask({ budgetPercent: 'bogus', maxTurns: 7 })).key, `${A}@2026-10-02#14848/10`, 'unknown values: the defaults');
+  assert.equal((await ask({ budgetPercent: 10, maxTurns: 10 })).key, `${A}@2026-10-02#5632/10`);
+  assert.equal((await ask({ budgetPercent: 50, maxTurns: 10 })).key, `${A}@2026-10-02#29696/10`);
+  assert.equal((await ask({ budgetPercent: 100, maxTurns: 10 })).key, `${A}@2026-10-02#32768/10`);
+  const questions = (send) => [...send.matchAll(/^Q: (Q\d+)$/gm)].map((match) => match[1]);
+  for (const [maxTurns, expected] of [
+    [3, ['Q0', 'Q23', 'Q24']],
+    [5, ['Q0', 'Q21', 'Q22', 'Q23', 'Q24']],
+    [10, ['Q0', ...Array.from({ length: 9 }, (_, i) => `Q${16 + i}`)]],
+    [20, ['Q0', ...Array.from({ length: 19 }, (_, i) => `Q${6 + i}`)]],
+  ]) {
+    const { key, send } = await ask({ budgetPercent: 100, maxTurns });
+    assert.equal(key, `${A}@2026-10-02#32768/${maxTurns}`, 'the key names the turn limit');
+    assert.deepEqual(questions(send), expected, `max ${maxTurns}: the first turn, then the most recent`);
+  }
+  assert.ok(!calls.some((call) => call.operation === 'getSettings'), 'no plugin-level settings are read');
+  // The renderer asks for pending rows with the same preferences.
+  const pending = await service.call('sessions.snapshots', {
+    keys: [`${A}@2026-10-02#32768/3`], context, references: { budgetPercent: 100, maxTurns: 3 },
+  });
+  assert.equal(pending.snapshots[0].key, `${A}@2026-10-02#32768/3`);
 });
 
 test('a long session keeps its first turn; a first turn not closed in the first rows is not used', async (t) => {
@@ -254,7 +262,7 @@ test('sessions with no complete Q&A turn are not listed', async (t) => {
   t.after(() => service.dispose());
   const first = await service.call('sessions.items', { query: '' });
   assert.deepEqual(first.rows.map((row) => row.label), ['Answered']);
-  assert.deepEqual(first.snapshots.map((entry) => entry.key), [`${C}@2026-10-02#32768`]);
+  assert.deepEqual(first.snapshots.map((entry) => entry.key), [`${C}@2026-10-02#32768/10`]);
   assert.deepEqual(first.pending, []);
   const again = await service.call('sessions.items', { query: '' });
   assert.deepEqual(again.rows.map((row) => row.label), ['Answered'], 'known-empty sessions stay out');
@@ -274,8 +282,8 @@ test('sessions sharing a title are told apart by time, then by id', async (t) =>
   assert.deepEqual(answer.rows.map((row) => row.label),
     [`new task · ${shortStamp(d2)}`, `new task · ${shortStamp(d1)}`, 'Other']);
   const byKey = new Map(answer.snapshots.map((entry) => [entry.key, entry.detail]));
-  assert.equal(byKey.get(`${A}@${d2}#32768`), '“Fix the login bug” · 1 Q&A turn');
-  assert.equal(byKey.get(`${B}@${d1}#32768`), '“Plan the release notes” · 1 Q&A turn');
+  assert.equal(byKey.get(`${A}@${d2}#32768/10`), '“Fix the login bug” · 1 Q&A turn');
+  assert.equal(byKey.get(`${B}@${d1}#32768/10`), '“Plan the release notes” · 1 Q&A turn');
 });
 
 test('row labels: unique titles stay bare; collisions get a stamp, then an id; 64 characters at most', () => {
@@ -346,7 +354,7 @@ test('the session being typed in is left out, even once it has answers', async (
   t.after(() => service.dispose());
   const answer = await service.call('sessions.items', { query: '', exclude: A.toUpperCase() });
   assert.deepEqual(answer.rows.map((row) => row.label), ['Other']);
-  assert.deepEqual(answer.snapshots.map((entry) => entry.key), [`${B}@2026-10-02#32768`]);
+  assert.deepEqual(answer.snapshots.map((entry) => entry.key), [`${B}@2026-10-02#32768/10`]);
   assert.ok(!calls.some(({ operation, args }) => operation === 'session/get' && args[0].id === A), 'never read');
   const unknown = await service.call('sessions.items', { query: '', exclude: 'not-a-session' });
   assert.deepEqual(unknown.rows.map((row) => row.label), ['Current', 'Other']);

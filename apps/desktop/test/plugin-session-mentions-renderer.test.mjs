@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import {
-  createSessionTrigger, onLoad, triggerContext, CONTEXT_FULL_PREFIX,
+  createSessionTrigger, onLoad, triggerContext, triggerReferences, CONTEXT_FULL_PREFIX,
 } from '../resources/plugins/pi.session-mentions/renderer.js';
 import {
   parseReference, referenceFacts, ReferenceCard, ReferenceCardView, REFERENCE_CARD_CSS,
@@ -83,7 +83,7 @@ test('onLoad claims @, the reference fence, and warms the cache', async () => {
 
 
 test('the query context is passed on as is, and a session that does not fit is flagged', async () => {
-  const hint = '上下文剩余不足：先 /compact 压缩，或在扩展设置里调高引用预算';
+  const hint = '上下文剩余不足：先 /compact 压缩，或在 设置 › AI 里调高引用预算';
   const { dispatch, calls } = fakeDispatch(() => ({
     rows: [{ key: `${KEY(1)}#0`, label: 'Big' }, { key: `${KEY(2)}#0`, label: 'Small' }],
     snapshots: [
@@ -128,6 +128,23 @@ test('the host\'s session is left out; no context figures, no context', async ()
   assert.equal(calls[0].args.context, undefined);
   await sessionTrigger.items({ query: '' });
   assert.equal(calls[1].args.exclude, undefined, 'an older host tells no session');
+});
+
+test('the host\'s Session references preferences are passed on with every call', async () => {
+  const { dispatch, calls } = fakeDispatch(({ method }) => method === 'sessions.items'
+    ? { rows: [{ key: KEY(1), label: 'One' }], snapshots: [], pending: [KEY(1)] }
+    : { snapshots: [{ key: KEY(1), send: 'S1', detail: 'd1' }], pending: [] });
+  const sessionTrigger = createSessionTrigger(dispatch, { debounceMs: 0 });
+  const sessionReferences = { budgetPercent: 50, maxTurns: 3 };
+  await sessionTrigger.items({ query: '', sessionReferences, context: { usedTokens: 1, contextWindow: 100 } });
+  assert.deepEqual(calls.map((call) => call.args.references), [sessionReferences, sessionReferences]);
+  assert.deepEqual(calls[1].args.context, { usedTokens: 1, contextWindow: 100 });
+  await sessionTrigger.items({ query: '' });
+  assert.equal(calls[2].args.references, undefined, 'an older host: the plugin\'s defaults apply');
+  assert.deepEqual(triggerReferences({ budgetPercent: 10, maxTurns: 20, extra: 1 }), { budgetPercent: 10, maxTurns: 20 });
+  for (const value of [undefined, null, {}, { budgetPercent: 10 }, { budgetPercent: 'x', maxTurns: 3 }]) {
+    assert.equal(triggerReferences(value), undefined, JSON.stringify(value));
+  }
 });
 
 test('only finite context figures with a window are passed on', () => {

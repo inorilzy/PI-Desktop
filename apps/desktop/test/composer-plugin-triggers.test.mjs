@@ -197,13 +197,48 @@ test("a trigger is told the draft's session and context use, when the host knows
   ]);
 });
 
+test("a trigger is told the Session references preferences, defaulted, when settings are given", async () => {
+  // No settings argument (an older call site): the field is left out.
+  assert.equal("sessionReferences" in pluginTriggerScope("s-1", null), false);
+  assert.deepEqual(pluginTriggerScope("s-1", null, {}), {
+    sessionId: "s-1",
+    sessionReferences: { budgetPercent: 25, maxTurns: 10 },
+  });
+  assert.deepEqual(
+    pluginTriggerScope("s-1", null, { sessionReferenceBudgetPercent: 50, sessionReferenceMaxTurns: 3 }).sessionReferences,
+    { budgetPercent: 50, maxTurns: 3 },
+  );
+  // Values outside the choices read as the defaults.
+  assert.deepEqual(
+    pluginTriggerScope(null, null, { sessionReferenceBudgetPercent: 33, sessionReferenceMaxTurns: "20" }).sessionReferences,
+    { budgetPercent: 25, maxTurns: 10 },
+  );
+
+  const asked = [];
+  await askPluginTrigger(
+    (query) => {
+      asked.push(query);
+      return [];
+    },
+    { trigger: "@", query: "", tokenStart: 0, tokenEnd: 1 },
+    "demo.lab",
+    undefined,
+    pluginTriggerScope("s-1", null, { sessionReferenceBudgetPercent: 100, sessionReferenceMaxTurns: 20 }),
+  );
+  assert.deepEqual(asked, [
+    { trigger: "@", query: "", sessionId: "s-1", sessionReferences: { budgetPercent: 100, maxTurns: 20 } },
+  ]);
+});
+
 test("the composer tells triggers its session and the context ring's figures", async () => {
   const { readComposerSource } = await import("./helpers/composer-source.mjs");
   const source = await readComposerSource();
   assert.match(source, /usedTokens: contextOccupancyTokens\(composerContextUsage\.usage\)/);
   assert.match(source, /contextWindow: composerContextUsage\.contextWindow/);
   assert.match(source, /triggerContext: composerTriggerContext/);
-  assert.match(source, /pluginTriggerScope\(referenceSessionId, triggerContext\)/);
+  assert.match(source, /pluginTriggerScope\(referenceSessionId, triggerContext, referenceSettings\)/);
+  assert.match(source, /state\.settings\?\.sessionReferenceBudgetPercent/);
+  assert.match(source, /state\.settings\?\.sessionReferenceMaxTurns/);
   assert.match(source, /askPluginTrigger\(entry\.items, match, entry\.pluginId, undefined, scopeRef\.current\)/);
 });
 

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  buildSessionSnapshot, budgetPercent, BUDGET_PERCENTS, BUDGET_STEP_BYTES, CONTEXT_RESERVE_TOKENS,
+  buildSessionSnapshot, budgetPercent, BUDGET_PERCENTS, maxTurnsOf, MAX_TURNS_CHOICES, BUDGET_STEP_BYTES, CONTEXT_RESERVE_TOKENS,
   DEFAULT_BUDGET_PERCENT, MARK_SEND_MAX_BYTES, DEFAULT_MAX_TURNS, referenceBudget, REFERENCE_FENCE_LANGUAGE,
 } from './helpers/session-mentions.mjs';
 import { A, source, user, assistant } from './helpers/session-mentions.mjs';
@@ -39,6 +39,27 @@ test('a reference is sent in a fence its blockRenderer claims, framed by line br
   const fenced = buildSessionSnapshot(source(A, [['code?', 'Here:\n````js\nx\n````']]));
   assert.match(fenced.send, /^\n`{5}pi\.session-mentions:chat\n/);
   assert.match(fenced.send, /\n`{5}\n$/);
+});
+
+test('each turn limit counts the first turn: 3 is the first + the 2 most recent', () => {
+  const all = source(A, pairs(25));
+  for (const [maxTurns, recent] of [[3, 2], [5, 4], [10, 9], [20, 19]]) {
+    const snapshot = buildSessionSnapshot(all, { maxTurns });
+    assert.equal(snapshot.includedTurns, maxTurns);
+    assert.equal(snapshot.omittedKnown, 24 - recent);
+    assert.deepEqual(questions(snapshot.send),
+      ['Q0', ...Array.from({ length: recent }, (_, i) => `Q${25 - recent + i}`)], `max ${maxTurns}`);
+    assert.match(snapshot.send, new RegExp(`\\[… ${24 - recent} turns omitted here\\]`));
+  }
+  // Without the first turn the newest ones fill the limit.
+  const newest = buildSessionSnapshot(tail(12, 20), { maxTurns: 3 });
+  assert.deepEqual(questions(newest.send), ['Q29', 'Q30', 'Q31']);
+});
+
+test('turn limits from the host: 3/5/10/20, 10 otherwise', () => {
+  assert.deepEqual(MAX_TURNS_CHOICES, [3, 5, 10, 20]);
+  for (const value of MAX_TURNS_CHOICES) assert.equal(maxTurnsOf(value), value);
+  for (const value of [undefined, null, 0, 7, '5', 25]) assert.equal(maxTurnsOf(value), 10);
 });
 
 test('a short session is referenced whole, without a marker', () => {
@@ -141,11 +162,11 @@ test('custom limits are validated', () => {
   assert.ok(bytes(small.send) <= 4096);
 });
 
-test('the budget setting: 10/25/50/100%, 25% by default', () => {
+test('budget shares from the host: 10/25/50/100%, 25% otherwise', () => {
   assert.deepEqual(BUDGET_PERCENTS, [10, 25, 50, 100]);
   assert.equal(DEFAULT_BUDGET_PERCENT, 25);
-  for (const value of [10, 25, 50, 100, '50']) assert.equal(budgetPercent(value), Number(value));
-  for (const value of [undefined, null, 0, 30, 'x', -10]) assert.equal(budgetPercent(value), 25);
+  for (const value of [10, 25, 50, 100]) assert.equal(budgetPercent(value), value);
+  for (const value of [undefined, null, 0, 30, 'x', '50', -10]) assert.equal(budgetPercent(value), 25);
 });
 
 test('budget = pct × (window − used − 8192 reserve), at 3 bytes per token, under 32 KB', () => {
