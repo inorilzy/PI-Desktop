@@ -273,11 +273,9 @@ export const SETTINGS_NAV: SettingsNavEntry[] = [
     labelKey: "settings.nav.sync",
     titleKey: "settings.configSync.title",
     group: "system",
-    // Cloud sync (encrypted portable configuration backup) is not open to
-    // users yet: packaged builds hide the destination and its search hits,
-    // development builds keep it. Drop this flag to ship it again.
-    developmentOnly: true,
+    experimentalBadgeKey: "settings.configSync.experimental",
     keywordKeys: [
+      "settings.configSync.experimental",
       "settings.configSync.connectionTitle",
       "settings.configSync.endpoint",
       "settings.configSync.statusTitle",
@@ -291,8 +289,6 @@ export const SETTINGS_NAV: SettingsNavEntry[] = [
     labelKey: "settings.nav.remoteHosts",
     titleKey: "settings.remoteHosts.title",
     group: "system",
-    developerOnly: true,
-    developmentOnly: true,
     experimentalBadgeKey: "settings.remoteHosts.experimental",
     keywordKeys: [
       "settings.remoteHosts.title",

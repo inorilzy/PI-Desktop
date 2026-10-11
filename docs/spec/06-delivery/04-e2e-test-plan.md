@@ -1601,16 +1601,21 @@ identify the platform validation still needed.
   2) With the work panel closed, ask the agent to preview a workspace HTML
   file (`BrowserPreview`) and verify the Browser tab opens in the visible work
   panel. 3) Use ToolSearch `cdp` / `Browser` to snapshot and interact while the
-  panel remains visible. 4) For an HTTP(S) URL, verify the agent opens or
-  activates Browser before navigating; if it cannot reveal the view, it asks
-  the user to open it before continuing. 5) Switch to Plan and call the plugin
-  Browser tool. 6) Disable `pi.browser`. 7) Call `BrowserPreview` and click an
-  http(s) transcript link. 8) From a third-party or test caller, send
+  panel remains visible. 4) With the work panel closed, call the plugin
+  Browser tool for an HTTP(S) URL and verify it activates the existing Browser
+  tab before navigating. 5) Switch to a second session and call Browser;
+  verify it opens that session's own page, then switch back and verify the first
+  page is retained. 6) Run Browser from a background session and verify it does
+  not steal focus. 7) Switch to Plan and call the plugin Browser tool. 8) Disable
+  `pi.browser`. 9) Call `BrowserPreview` and click an http(s) transcript link.
+  10) From a third-party or test caller, send
   `Network.getAllCookies` through `pi.browser.cdp`.
 - **Expected**: The launcher has no host Browser row. Preview opens the plugin
   view, reveals the work panel, and live-reloads the file. Browser operations
-  are made only while the view is visible; the agent waits for the user to
-  reveal it if necessary. Plugin tool `plugin_pi_browser_Browser` can snapshot
+  run only after the originating session's view is visible; the agent opens it
+  automatically and waits for readiness. A background session does not change
+  the visible tab and receives `UNAVAILABLE` if it cannot be revealed. Plugin
+  tool `plugin_pi_browser_Browser` can snapshot
   after ToolSearch. Plan denies the plugin tool
   (`PLUGIN_DISABLED_IN_PLAN`) while `BrowserPreview` remains callable. Disable
   hides the view and tools; `BrowserPreview` errors; http(s) chips use
@@ -2961,8 +2966,8 @@ identify the platform validation still needed.
   15. Archive one project session, open it from Projects, and return to Projects.
   16. Return to the app shell and open Plugins.
 - **Expected**: The rail contains exactly General, AI, Shortcuts, Instructions, Models, Skills, MCP, Subagents, Projects, Cloud sync, Remote Hosts, and Info in that order, each with its semantic Lucide icon (Sliders / Sparkles / Keyboard / FileText / Bot / BookOpen / Server / Bot / Archive / CloudDownload / Globe / Info). The flat directory is visually grouped under four muted, non-interactive headings — Preferences / 偏好 for General, AI, and Shortcuts; Agent / 智能体 for Instructions and Models; Workspace / 工作区 for Projects; About / 关于 for Info — with whitespace and no divider lines between groups; searching keeps the destination results flat and hides empty groups together with their headings. Appearance remains in General, while Permissions, Defaults, and the Command shell row live under 全局 AI; an available selected shell is represented by the selector without a duplicate Configured status, while default, fallback, and no-effective-shell states remain explicit; Context management has no settings card; Keyboard shortcuts and global instructions have their own destinations; Developer lives under Info; Projects shows active, closed, and archived durable rows without a visibility toggle, grouping them under the always-visible Pinned / All projects / Archived strips (D168/D267/D455) with per-section counts in a one-column workbench. The destination renders no hero block and no page-level counter run: the intro is one quiet description line, and each group strip's count agrees with its rendered rows; a click selects a row without leaving Settings; sorting by Name reorders rows inside every section without hiding any; search matches project fields and session titles and reports a match count, a session-title result selects its owning project, lists sessions in the inspector by latest activity with relative update times, and reveals history in batches of eight; clearing the search restores the complete index. The inspector menu closes on Escape and on an outside press. Bootstrap completion and background refreshes do not return Settings or Extensions to the chat home; the destination changes only after an explicit navigation action. Restore keeps the archive open and activation returns to chat with the restored project retained in the sidebar. Opening an archived session succeeds before clearing its archived state, returns to chat with that session selected, and makes it visible in the project sidebar; returning to Project archive no longer shows that session as archived. The home sidebar and global page results have no standalone Projects destination; Settings search finds Projects; Plugins remains an independent app-shell destination.
-  A packaged build omits Cloud sync from the rail and settings search; see
-  `04-ux/06-settings-ia.md`.
+  Cloud sync and Remote Hosts appear in packaged Settings with Experimental
+  badges on their navigation rows and page titles; see `04-ux/06-settings-ia.md`.
 - **Specs linked**: `04-ux/06-settings-ia.md`, `04-ux/01-ui-ia.md`, `03-runtime/11-provider-model-system.md`
 - **Acceptance**: B (model configuration), F (project persistence)
 - **Milestone**: M4
@@ -9499,73 +9504,85 @@ must keep splitting are covered by `markdown-blocks.test.mjs`.
   because the host has no device backend yet, so this scenario stays Draft until
   audio lands.
 
-### E2E-CONFIG-SYNC-webdav-portable-configuration
+<a id="e2e-config-sync-webdav-portable-configuration"></a>
 
-- **Preconditions:** A built task candidate, an isolated host profile, and a
-  local WebDAV fixture that supports strong ETags and conditional PUT, plus a
-  fixture variant that ignores conditional headers but supports `PROPFIND`
-  directory listing. No real WebDAV account, provider, or production desktop.
-  Developer mode starts off so the destination is exercised as developed.
-- **Steps:** 1) In a development build with developer mode off, confirm Cloud
-  sync is present in the rail and returned by settings search, then open it and
-  confirm neither the rail row nor the page title carries an Experimental
-  badge. 2) Toggle developer mode on and off and confirm the destination stays
-  reachable either way. 3) Enter the fixture URL,
-  device label, directory, and backup password. 4) Run the capability test and
-  confirm it uses temporary objects. 5) Select provider/MCP/skill categories
-  while leaving credentials and memory off; enable credentials in a second
-  preview and verify only redacted counts are shown. 6) Configure device A,
-  create a user provider and MCP definition, and sync. 7) Configure device B
-  against the same vault, sync, inspect pending activation/mapping, and verify
-  no command or task runs before approval. 8) Approve a changed safe entity,
-  reject one staged entity, edit disjoint settings on both devices, and sync
-  again. 9) Exercise a concurrent head writer, wrong password, weak ETag,
-  ciphertext corruption, redirect, archive traversal, and network interruption.
-  10) On the ignored-precondition fixture, select explicit compatibility mode,
-  confirm the warning, and configure two devices. Verify each device publishes
-  its own encrypted head under the heads collection, a concurrent update is
-  merged from both tips, and compatibility mode does not delete immutable
-  history. Cancel the confirmation once and verify configuration is not saved.
-  11) Use the explicit LAN HTTP acknowledgement with a loopback/private fixture,
-  verify the setting survives a state refresh, and confirm a public HTTP
-  endpoint is rejected even when the checkbox is selected. 12) Leave the
-  Cloud sync page with an unfinished connection edit, reopen it, and confirm
-  the non-sensitive draft is painted immediately while host state/history
-  refreshes in the background. Confirm a configured endpoint reuses its stored
-  WebDAV app password, while password fields themselves remain blank and no
-  vault password is written to renderer storage.
-- **Expected:** Cloud sync is reachable in development builds without developer
-  mode, is absent from a packaged build's rail, page, and settings search,
-  carries no Experimental badge, and neither its availability nor its behavior
-  changes when developer mode is toggled.
-  Strict mode refuses
-  unreliable conditional writes. The explicit
-  compatibility mode accepts only a server that proves bounded directory
-  listing, explains that it is not atomic CAS, and retains per-device tips for
-  merge/recovery. A server that ignores conditional headers is never accepted
-  without that user selection. HTTP remains opt-in and is accepted only for
-  localhost, `.local`, or private/link-local addresses; public HTTP endpoints
-  are rejected and the UI explains the credential exposure risk. A fixture that
-  reports a missing object as 502 is accepted only after the capability probe
-  observes that endpoint-specific behavior. WebDAV sees
-  only authenticated ciphertext and opaque object names; raw secrets never
-  appear in renderer state or logs. Identical and disjoint edits converge,
-  conflicts remain reviewable, explicit deletions use tombstones, category
-  opt-out is not deletion, and executable imports remain inactive until local
-  approval and mapping. Reopening Settings does not block on history, and
-  unfinished non-sensitive connection choices survive navigation or reload.
-  Recovery never exposes a partial local apply.
-- **Specs:** `04-ux/06-settings-ia.md`, `03-runtime/22-config-sync.md`,
-  `03-runtime/14-secrets-storage.md`, `05-security/01-security.md`, ADR 0300,
-  ADR 0301.
-- **Acceptance:** F (persistence), Security, Quality.
-- **Milestone:** M6+.
-- **Status:** Draft; merge/crypto, in-process WebDAV conditional-write
-  coverage, and the two-device host/WebDAV path are automated by
-  `pnpm test:e2e:config-sync`. Cloud sync's development-build-only visibility
-  and its packaged-build omission are asserted by
-  `settings-developer-only-destinations.test.mjs`; full
-  renderer-driven persistence and checkpoint recovery fault injection remain.
+### E2E-CONFIG-SYNC-s3-portable-configuration
+
+- **Preconditions:** A built task candidate, isolated Host processes with
+  separate data, HOME and agent directories, and a local S3 fixture with strong
+  ETags and conditional PUT. No real model provider or running desktop instance.
+  A live S3 run is separately opt-in and requires explicit authorization.
+- **Steps:**
+  1. In a packaged build, confirm Cloud sync appears in Settings navigation
+     and search with Experimental badges on its row and page title. Open the
+     destination and confirm only the new S3 setup is offered; old formats are
+     not detected, migrated or deleted.
+  2. Confirm initial setup shows only required connection/password fields and
+     automatic runs use the shared switch. Expand Advanced to edit region,
+     prefix, addressing, device label and optional token; collapse/reopen it
+     without losing values. Select categories before the first save, keeping
+     credentials/memory opt-in. Test conditional creation, readback, matching
+     update, stale-write rejection and probe cleanup.
+     Reject ignored preconditions, weak ETags, redirects, public HTTP and 403;
+     never interpret 502 as a missing object. LAN HTTP follows network policy.
+  3. Configure two sync devices. Publish a provider and mapped packaged skill,
+     receive them as pending where approval is required, approve, and verify
+     visible persisted configuration and resource bytes. Exercise disjoint edits,
+     same-entity conflicts and explicit choice convergence, remote deletion
+     versus offline edit, and repeated polling. Credential opt-out must not
+     manufacture local edits or prevent deletion convergence. No real executable
+     capability is run.
+  4. Configure backup mode. Verify remote configuration is not applied, backup
+     history is separate, unchanged snapshots do not duplicate revisions, and
+     a local restore does not change either cloud head.
+  5. Restore an older sync revision with propagation acknowledgment. Verify a
+     local recovery point, a new shared revision and propagation to the second
+     device, with sensitive activation still requiring approval. Rewrap the
+     password without claiming revocation of already unlocked devices.
+  6. Reopen Settings with saved and unfinished drafts. Preserve typed S3 choices
+     and automatic-run preferences, but never persist secret keys, tokens or
+     passwords. Test blank credential reuse, explicit token clearing and full
+     replacement. Invalidate history on destination/mode changes and ignore
+     outstanding responses from the old connection. Unsaved mode changes must
+     not alter restore confirmation or propagation flags.
+     Saved connections reopen collapsed while status, manual run and inline
+     unlock remain visible above them. Open History and Security/connection
+     to restore, change password or disconnect. Pending approvals and errors
+     remain visible. At narrow content widths the form becomes one column
+     without horizontal overflow. In light/dark themes, activate shared
+     checkboxes by label and Space; verify focus, disabled and mixed states.
+  7. Restart an isolated Host and verify persisted state, then disconnect without
+     deleting unrelated data. Inspect remote object bytes for known fixture
+     plaintext and verify there is no automatic immutable-object GC.
+  8. Hold an in-flight manual sync, navigate away from Settings and return.
+     Verify Host still reports `syncing`, duplicate actions stay disabled, and
+     releasing the fixture completes the operation and refreshes Host state.
+- **Expected:** Only S3 is supported, with mandatory conditional writes and
+  encrypted vault contents. Identical/disjoint edits converge; conflicts and
+  tombstones preserve changes; excluded categories do not imply deletion.
+  Backup never downloads/applies remote configuration during normal runs.
+  History queries index at most 30 revisions; stored immutable objects are not
+  automatically deleted. Import recovery remains observable; per-file atomic
+  replacement is not asserted to be a whole-filesystem transaction.
+- **Live S3 safety:** `--live-s3 --env-file <authorized-file>` reads credentials
+  programmatically without logging/copying them. Use a new random test prefix,
+  confirm it is initially empty, run actual isolated Host processes, delete
+  only objects created under that prefix, and verify it is empty afterward.
+  Never use an existing backup prefix or production desktop profile. Record
+  tested base/candidate and distinguish this run from a standalone SDK probe.
+- **Automation:** `pnpm test:e2e:config-sync` is the multi-Host harness.
+  Rust `config_sync::` and `user_skills::` suites cover transport, merge,
+  application and resource safety. `config-sync-user-path.test.mjs` runs the
+  real settings page and shared checkbox with a mocked external IPC boundary,
+  actual styles and isolated Electron input, without network access;
+  `config-sync-ipc.test.mjs` covers Main notification shape. Visibility remains
+  covered by `settings-developer-only-destinations.test.mjs`.
+- **Specs:** `03-runtime/22-config-sync.md`, `04-ux/06-settings-ia.md`,
+  `03-runtime/14-secrets-storage.md`, `05-security/01-security.md`,
+  `docs/adr/s3-only-configuration-backup-sync.md`.
+- **Acceptance:** F (persistence), Security, Quality. **Milestone:** M6+.
+- **Status:** Candidate validation required; full checkpoint-recovery fault
+  injection is not claimed by the settings or multi-Host happy-path suites.
 
 **E2E-CHAT-session-todo-checklist: TodoWrite to session-aware TodoDock**
 
@@ -9618,7 +9635,7 @@ must keep splitting are covered by `markdown-blocks.test.mjs`.
 | C / F — Hourly task updates | E2E-SCHEDULED-manual-to-hourly |
 | C / F / Quality — Saved project isolation | E2E-SCHEDULED-manual-workspace-binding |
 | C / F / Quality — Desktop automations | E2E-SCHEDULED-desktop-automation-lifecycle |
-| F / Security / Quality — Portable configuration sync | E2E-CONFIG-SYNC-webdav-portable-configuration |
+| F / Security / Quality — Portable configuration sync | E2E-CONFIG-SYNC-s3-portable-configuration |
 | A / C — Unicode stdio framing | E2E-RPC-unicode-separators |
 | C / G / Quality — Plugins navigation | E2E-NAV-plugins-button-goes-back |
 | C / D / Quality — Sidebar row states | E2E-LAYOUT-sidebar-row-states |
@@ -9992,8 +10009,8 @@ This test plan spec is accepted when:
 - Expect **full-page** Codex settings (no app sidebar/nav). Left rail has Back
   to app, search, and exactly General / AI / Shortcuts / Instructions / Models /
   Skills / MCP / Subagents / Projects, Cloud sync / Remote Hosts / Info in that
-  order (a packaged build leaves Cloud sync out); content pane shows the
-  selected destination.
+  order; packaged builds show both Cloud sync and Remote Hosts with Experimental
+  badges. The content pane shows the selected destination.
 - Return to the app shell and expect Plugins to remain an independent
   sidebar-footer destination.
 - Drag the empty 46px top band over either the rail or content pane; the native
@@ -10204,8 +10221,8 @@ This test plan spec is accepted when:
 - Expect the working theme selector without inert toggle or open-target rows.
 - Expect Appearance in General and Permissions + Defaults in AI. The rail
   contains General, AI, Shortcuts, Instructions, Models, Skills, MCP,
-  Subagents, Projects, Cloud sync (development builds only), and Info; Remote
-  Hosts appears only in developer mode. Voice may appear between AI and
+  Subagents, Projects, Cloud sync and Remote Hosts (both Experimental in all
+  builds), and Info. Voice may appear between AI and
   builds with developer mode on; plugin-contributed destinations follow the
   core groups. There is no Import destination.
 - Resize between 800px, 1200px, and 1600px widths; the content cards fill the
@@ -14488,6 +14505,57 @@ browser milestones are scheduled.
 - **Milestone**: Post-MVP
 - **Status**: Draft; remote harness required
 
+#### E2E-REMOTE-MVP: Narrow remote project-to-chat workflow
+
+- **Preconditions**: Current Desktop and complete same-platform Host bundle,
+  isolated data/profile, and a loopback mock model. No production credentials.
+- **Steps**: Copy an explicitly selected eligible provider and repeat the copy;
+  pair, register a project, create/open an Agent/Ask session and send text. Drop
+  the client connection while a real Bash approval is pending, reconnect and
+  approve once. Read the resulting transcript/file/diff, reject a path outside
+  the project, remove the host and attempt another prompt.
+- **Expected**: Import preserves the default and is idempotent. The command and
+  turn execute once, in the Host project only; stale routing never falls back
+  locally. Snapshot recovery restores pending requests and clears peer-resolved
+  cards. Local workspace/model state is unchanged.
+- **Component path**: Select a provider, verify copy is disabled before consent,
+  authorize and copy, enter the remote project path, create/open, type/send,
+  approve, resolve from another peer, and retry a failed reconnect. Buttons,
+  visible errors and listener cleanup are checked in real React/Chromium.
+- **Automation**: `scripts/e2e-remote-mvp.mjs` (packaged Host, real Rust/Agent
+  runtime and Desktop main routing, mocked model); `scripts/e2e-remote-mvp-ui.mjs`
+  (real components, mocked IPC). Neither is a full SSH/Desktop acceptance result.
+- **Status**: Automated narrow-MVP scenario. Linux `sshd`, release download,
+  password authentication and full R2 remain separately gated by E2E-231.
+
+#### E2E-REMOTE-HOME: Create and continue a remote project from Chat home
+
+- **Preconditions**: Isolated Desktop/Chromium profile, two connected SSH host
+  fixtures, existing local workspace, and remote directory/project IPC fixtures.
+  No production Host, user profile, credentials, or paid model calls.
+- **Steps**: Open Create project from home, select Remote, change hosts while
+  directory browsing is pending, browse and select a remote directory, then
+  create. Send text through the regular Composer and inspect the transcript.
+  Reopen the project and start New chat; repeat with an existing remote project.
+  Disconnect and retry. Review a remote permission request and resolve it.
+- **Expected**: Late responses cannot replace the newly selected Host. Creation
+  registers and creates once on the selected Host, then shows the same empty
+  home and docked transcript layout as local chats. Remote projects are listed
+  by host/project identity in the home switcher and sidebar. Empty chat reuse
+  never crosses hosts. Local workspace remains unchanged; remote paths never
+  enter local activation, attachment, preview, slash-command, or plugin calls.
+  Offline/unsupported actions fail closed, preserve drafts, and never replay.
+  History forwards opaque session cursors and Return to latest restores live rows.
+- **Specs**: `02-architecture/05-remote-agent-control.md`, `04-ux/01-ui-ia.md`.
+- **Acceptance / milestone**: Home remote-project UX; additive Desktop IPC only,
+  no Host wire protocol, persisted data, or R2 SSH acceptance change.
+- **Automation**: `remote-project-session.test.mjs`,
+  `remote-session-user-path.test.mjs`, `remote-unified-chat.test.mjs`,
+  `transcript-reading.test.mjs`, `remote-project-dialog-user-path.test.mjs`,
+  and `scripts/e2e-remote-mvp-ui.mjs`.
+- **Status**: Component/service and main-routing acceptance; real SSH release
+  validation remains the separately provisioned E2E-231 scenario.
+
 #### E2E-231: The desktop drives a remote Host over an SSH tunnel
 
 - **Preconditions**: A Linux test machine runs `sshd` and holds a project
@@ -14539,8 +14607,8 @@ browser milestones are scheduled.
 
 #### E2E-REMOTE-HOST-ssh-password-authentication
 
-- **Preconditions**: Developer mode is enabled (Settings → Info → Developer),
-  so the Remote Hosts destination exists. A Linux test machine runs `sshd` with
+- **Preconditions**: Settings → Remote Hosts is available with its Experimental
+  badge, independently of developer mode. A Linux test machine runs `sshd` with
   `PasswordAuthentication yes` and `PubkeyAuthentication no`, so the login is
   only reachable with a password; the user's local SSH agent holds no usable key
   for it. A GitHub Releases fixture serves the `pi-host` bundle for that platform
@@ -14586,31 +14654,26 @@ browser milestones are scheduled.
 
 - **Preconditions**: The desktop Settings window can open. No paired remote
   host is required. Developer mode is off in persisted settings.
-- **Steps**: 1) Open Settings and confirm the rail has no Remote Hosts row and
-  that searching settings for it returns nothing. 2) Enable developer mode in
-  Info → Developer and confirm Remote Hosts appears on the rail between
-  Projects and Info with an Experimental badge. 3) Open it and confirm the page
-  title carries the same badge, with a host inventory and one Add form
-  (SSH / Pair) and no instructional copy. 4) Switch Add to Pair and back to
-  SSH; confirm both forms stay filled and each tab's `aria-controls` points
-  to its panel, whose `aria-labelledby` points back to that tab. Repeat the
-  association check after changing the interface language. 5) Disable developer mode while the
-  destination is open and confirm the page returns to General and the rail row
-  is gone.
-- **Expected**: The whole destination is marked Experimental and is reachable
-  only while developer mode is on; the rail row, the page, and settings search
-  add and drop it together. Field labels and placeholders remain; overview,
-  body, and hint copy are absent. There is no Experimental switch list. SSH
-  stays the default Add tab. Pairing and SSH bootstrap keep their existing
-  success and failure toasts.
+- **Steps**: 1) Open Settings with developer mode off and confirm Remote Hosts
+  and its search hits are available. 2) Open the page and confirm the rail and
+  title carry the Experimental badge. 3) Switch Add between SSH and Pair and
+  confirm both forms stay filled and their ARIA tab/panel associations remain
+  correct after changing language. 4) Toggle developer mode and confirm the
+  destination stays selected and available. 5) On a paired SSH host, open the
+  inline sessions/model-copy workbench and verify copy selection and consent
+  start empty; changing selection invalidates consent.
+- **Expected**: Experimental availability is consistent across packaged and
+  development builds. SSH remains the default Add tab. Existing pairing toasts
+  remain. The inline workbench explains credential copying and MVP limitations;
+  unsupported local workspace/model/terminal operations are not offered.
 - **Specs linked**: `04-ux/06-settings-ia.md` §1, §3,
   `06-delivery/07-remote-control-rollout.md` §2 R2,
   `02-architecture/05-remote-agent-control.md` §5.2
 - **Acceptance**: D (surfaces), Quality
 - **Milestone**: Post-MVP (rollout R2b)
-- **Status**: Draft; covered offline by
-  `apps/desktop/test/settings-remote-hosts.test.mjs` and
-  `apps/desktop/test/settings-developer-only-destinations.test.mjs`.
+- **Status**: Offline coverage in `settings-remote-hosts.test.mjs` and
+  `remote-mvp-renderer.test.mjs`; interaction coverage in
+  `scripts/e2e-remote-mvp-ui.mjs`. Real SSH acceptance is separate.
 
 #### E2E-232: The outbound messaging integration relays events and commands
 
@@ -16783,9 +16846,10 @@ the latest destination. These assertions measure work counts, not device FPS.
 - Automated coverage: `pnpm test:e2e:settings-scroll` mounts the production
   SettingsPage, store, translations, and built CSS in isolated Electron. Only
   preload data is stubbed; search navigation uses SearchDialog's public store
-  entry points. It also checks that Cloud sync stays a development-build-only
-  destination with no developer-mode gate and no Experimental badge, that
-  Remote hosts keeps its badge, and the fallback to General. This covers
+  entry points. The development UI path checks both destinations and their
+  Experimental badge surfaces; `settings-developer-only-destinations.test.mjs`
+  separately verifies packaged visibility/search and developer-only fallback.
+  This covers
   renderer interaction, not host persistence or the
   full global-search dialog.
 
