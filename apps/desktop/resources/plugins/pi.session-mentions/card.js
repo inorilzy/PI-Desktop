@@ -6,6 +6,7 @@
  * Copying the message copies its source, so the full block is never lost.
  */
 import { createElement as h, useState } from 'react';
+import { displayTitle, isZh } from './lib/references.js';
 
 const OPEN_TAG = /^\s*<referenced-chat\b([^>]*)>/;
 const encoder = new TextEncoder();
@@ -42,7 +43,7 @@ const kb = (bytes) => bytes < 1024 ? `${bytes} B` : `${(bytes / 1024).toFixed(by
 
 /** The card's facts line, in the app's language (`zh*` or English). */
 export function referenceFacts(info, lang) {
-  const zh = String(lang ?? '').toLowerCase().startsWith('zh');
+  const zh = isZh(lang);
   const partial = info.omitted > 0 || info.unread;
   const parts = [];
   if (zh) {
@@ -70,7 +71,7 @@ export function ReferenceCardView({ source, open, onToggle, lang = appLanguage()
   const info = parseReference(source);
   // Not a block this plugin wrote: show the text as it is.
   if (!info) return h('pre', { className: 'psm-raw' }, source);
-  const zh = String(lang).toLowerCase().startsWith('zh');
+  const zh = isZh(lang);
   return h('div', { className: 'psm-card', 'data-psm-open': open ? 'true' : 'false', 'data-session-id': info.id },
     h('button', {
       type: 'button', className: 'psm-head', 'aria-expanded': open,
@@ -79,7 +80,7 @@ export function ReferenceCardView({ source, open, onToggle, lang = appLanguage()
     },
     h('span', { className: 'psm-chevron', 'aria-hidden': true }, open ? '▾' : '▸'),
     h('span', { className: 'psm-kind' }, zh ? '引用会话' : 'Referenced chat'),
-    h('span', { className: 'psm-title' }, info.title),
+    h('span', { className: 'psm-title' }, displayTitle(info.title, lang)),
     h('span', { className: 'psm-facts' }, referenceFacts(info, lang))),
     open ? h('pre', { className: 'psm-body' }, source) : null);
 }

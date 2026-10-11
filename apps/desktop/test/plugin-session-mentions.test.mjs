@@ -162,8 +162,8 @@ test("@ lists recent sessions, and a pick sends the session's recent Q&A", async
   assert.deepEqual(rows.map((row) => row.label), [
     "Beta 发布 计划",
     "Alpha migration",
-    `new task · ${shortStamp(SESSIONS[3].updatedAt)}`,
-    `new task · ${shortStamp(SESSIONS[4].updatedAt)}`,
+    `New task · ${shortStamp(SESSIONS[3].updatedAt)}`,
+    `New task · ${shortStamp(SESSIONS[4].updatedAt)}`,
   ], "newest first, one line, the unanswered current session left out, equal titles told apart");
   assert.deepEqual(rows.map((row) => row.detail.replace(/^.+? · (?=“)/, "")), [
     "“Question 0” · first turn only · 2 between omitted",
@@ -235,7 +235,7 @@ test("the host's session and context reach the trigger: itself left out, a full 
   assert.equal(beta.label, "⚠ Beta 发布 计划");
   assert.match(beta.detail, /\/compact/);
   assert.doesNotMatch(beta.send, /<referenced-chat/, "no clipped snapshot");
-  const task = full.find((row) => row.label.startsWith("new task"));
+  const task = full.find((row) => row.label.startsWith("New task"));
   assert.match(task.send, /<referenced-chat id="dddddddd-/);
 
   // Settings › AI › Session references reach the plugin with the scope:
@@ -246,6 +246,14 @@ test("the host's session and context reach the trigger: itself left out, a full 
   assert.deepEqual([...three.send.matchAll(/^Q: (Question \d+)$/gm)].map((match) => match[1]),
     ["Question 0", "Question 10", "Question 11"]);
   assert.match(three.detail, /first \+ 2 most recent turns · 9 between omitted/);
+  // The app's UI language reaches the rows: the sidebar's 新建任务, Chinese times and coverage.
+  const zh = await ask("", pluginTriggerScope(BETA, null, {}, "zh-CN"));
+  const untitled = zh.filter((row) => row.label.startsWith("新建任务 · "));
+  assert.equal(untitled.length, 2);
+  assert.ok(!zh.some((row) => /new task|New task/.test(row.label)));
+  assert.match(untitled[0].detail, /^(\d{4}-\d\d-\d\d|\d+ (分钟|小时|天)前|刚刚) · “.+” · 1 轮问答$/);
+  assert.match(zh.find((row) => row.label === "Alpha migration").detail, /首轮 \+ 最近 9 轮 · 中间省略 2 轮$/);
+  assert.equal((await ask("新建", pluginTriggerScope(BETA, null, {}, "zh-CN"))).length, 2);
   // Defaults when the settings say nothing: 10 turns.
   const plain = (await ask("alpha", pluginTriggerScope(BETA, null, {}))).find((row) => row.label === "Alpha migration");
   assert.match(plain.send, /turns="10" first-turn="true" omitted="2"/);

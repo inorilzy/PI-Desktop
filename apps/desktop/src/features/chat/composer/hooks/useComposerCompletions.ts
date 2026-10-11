@@ -20,6 +20,7 @@ import {
   useSyncExternalStore,
   type RefObject,
 } from "react";
+import { useTranslation } from "react-i18next";
 import {
   useComposerAutocomplete,
   type AutocompleteItem,
@@ -108,9 +109,12 @@ export function useComposerCompletions({
     sessionReferenceBudgetPercent: referenceBudgetPercent,
     sessionReferenceMaxTurns: referenceMaxTurns,
   };
+  // The UI language the host's own rows are drawn in, told to triggers too.
+  const { i18n } = useTranslation();
+  const uiLocale = i18n?.resolvedLanguage ?? i18n?.language;
   // Read when a trigger is asked, so a context or settings change alone asks nothing.
-  const scopeRef = useRef(pluginTriggerScope(referenceSessionId, triggerContext, referenceSettings));
-  scopeRef.current = pluginTriggerScope(referenceSessionId, triggerContext, referenceSettings);
+  const scopeRef = useRef(pluginTriggerScope(referenceSessionId, triggerContext, referenceSettings, uiLocale));
+  scopeRef.current = pluginTriggerScope(referenceSessionId, triggerContext, referenceSettings, uiLocale);
 
   const liveMatch = useMemo(
     () =>

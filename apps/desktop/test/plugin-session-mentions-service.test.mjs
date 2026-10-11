@@ -280,7 +280,7 @@ test('sessions sharing a title are told apart by time, then by id', async (t) =>
   t.after(() => service.dispose());
   const answer = await service.call('sessions.items', { query: '' });
   assert.deepEqual(answer.rows.map((row) => row.label),
-    [`new task · ${shortStamp(d2)}`, `new task · ${shortStamp(d1)}`, 'Other']);
+    [`New task · ${shortStamp(d2)}`, `New task · ${shortStamp(d1)}`, 'Other']);
   const byKey = new Map(answer.snapshots.map((entry) => [entry.key, entry.detail]));
   assert.equal(byKey.get(`${A}@${d2}#32768/10`), '“Fix the login bug” · 1 Q&A turn');
   assert.equal(byKey.get(`${B}@${d1}#32768/10`), '“Plan the release notes” · 1 Q&A turn');
@@ -358,4 +358,42 @@ test('the session being typed in is left out, even once it has answers', async (
   assert.ok(!calls.some(({ operation, args }) => operation === 'session/get' && args[0].id === A), 'never read');
   const unknown = await service.call('sessions.items', { query: '', exclude: 'not-a-session' });
   assert.deepEqual(unknown.rows.map((row) => row.label), ['Current', 'Other']);
+});
+
+test('rows follow the UI language the query names: untitled sessions, times and coverage', async (t) => {
+  const d1 = '2026-10-09T09:05:00.000Z';
+  const d2 = '2026-10-09T10:40:00.000Z';
+  const { host } = fakeHost([
+    session(A, 'new task', d2, [user('Fix the login bug'), assistant('done')]),
+    session(B, '新建任务', d1, [user('Plan the release notes'), assistant('ok')]),
+    session(C, 'Other', d1, rows(C, 1)),
+  ], { locale: 'en' });
+  const service = createSessionMentionService(host);
+  t.after(() => service.dispose());
+  // The query's locale (the app's UI language) wins over the host's app locale.
+  const zh = await service.call('sessions.items', { query: '', locale: 'zh-CN' });
+  assert.deepEqual(zh.rows.map((row) => row.label),
+    [`新建任务 · ${shortStamp(d2)}`, `新建任务 · ${shortStamp(d1)}`, 'Other']);
+  assert.match(zh.rows[0].when, /^(\d{4}-\d\d-\d\d|\d+ (分钟|小时|天)前|刚刚)$/);
+  assert.equal(new Map(zh.snapshots.map((entry) => [entry.key, entry.detail])).get(`${A}@${d2}#32768/10`),
+    '“Fix the login bug” · 1 轮问答');
+  // The untitled label is searchable in the language it is shown in.
+  assert.equal((await service.call('sessions.items', { query: '新建', locale: 'zh-CN' })).rows.length, 2);
+  // Without a query locale: the host's app locale, so English here.
+  const en = await service.call('sessions.items', { query: '' });
+  assert.deepEqual(en.rows.map((row) => row.label), [`New task · ${shortStamp(d2)}`, `New task · ${shortStamp(d1)}`, 'Other']);
+  assert.match(en.rows[0].when, /ago|just now|^\d{4}/);
+});
+
+test('without a query locale the host\'s app locale is read afresh, not once', async (t) => {
+  let locale = 'en';
+  const { host } = fakeHost([session(A, 'new task', '2026-10-09T09:05:00.000Z', rows(A, 1))]);
+  host.app.getLocale = async () => locale;
+  const service = createSessionMentionService(host);
+  t.after(() => service.dispose());
+  assert.deepEqual((await service.call('sessions.items', { query: '' })).rows.map((row) => row.label), ['New task']);
+  locale = 'zh-CN';
+  const after = await service.call('sessions.items', { query: '' });
+  assert.deepEqual(after.rows.map((row) => row.label), ['新建任务']);
+  assert.match(after.snapshots[0].detail, /1 轮问答$/);
 });

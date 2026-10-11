@@ -568,6 +568,7 @@ export const zhTW = {
     webSearchMore_other: "還有 {{count}} 個來源",
     thinkingShow: "顯示思考過程",
     thinkingHide: "隱藏思考過程",
+    referencedSessionTitle: "引用：{{title}}",
     untitledTask: "新建任務",
   },
   session: {

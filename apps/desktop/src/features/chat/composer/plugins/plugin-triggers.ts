@@ -77,25 +77,30 @@ export type PluginTriggerScope = {
   readonly sessionId?: string;
   readonly context?: PluginTriggerContext;
   readonly sessionReferences?: PluginTriggerSessionReferences;
+  readonly locale?: string;
 };
 
 /**
  * The draft's scope as a trigger sees it: the session id when there is one,
  * its context use when the composer's ring has a positive window to show,
  * and the user's Session references preferences (Settings › AI), defaults
- * filled in, whenever the caller passes the settings.
+ * filled in, whenever the caller passes the settings, and the app's UI
+ * language, so a trigger's rows read like the host's.
  */
 export function pluginTriggerScope(
   sessionId: string | null | undefined,
   context: { usedTokens: number; contextWindow: number } | null | undefined,
   settings?: { sessionReferenceBudgetPercent?: unknown; sessionReferenceMaxTurns?: unknown } | null,
+  locale?: string | null,
 ): PluginTriggerScope {
   const scope: {
     sessionId?: string;
     context?: PluginTriggerContext;
     sessionReferences?: PluginTriggerSessionReferences;
+    locale?: string;
   } = {};
   if (sessionId) scope.sessionId = sessionId;
+  if (typeof locale === "string" && locale.trim()) scope.locale = locale.trim();
   if (settings !== undefined) scope.sessionReferences = resolveSessionReferenceSettings(settings);
   if (
     context &&

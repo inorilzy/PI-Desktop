@@ -57,7 +57,7 @@ export function triggerReferences(references) {
 
 /**
  * The host passes the draft's `sessionId` (left out of the list: a session
- * cannot reference itself) and its `context` use on every query; hosts that
+ * cannot reference itself), its `context` use and the UI `locale` on every query; hosts that
  * predate them pass neither, and the list then shows every session with
  * something to reference.
  */
@@ -66,9 +66,9 @@ export function createSessionTrigger(dispatch, {
 } = {}) {
   const cache = new Map();
   let latest = 0;
-  const store = (answer, into) => {
+  const store = (answer, into, lang) => {
     for (const entry of answer?.snapshots ?? []) {
-      const value = { send: entry.send, detail: entry.detail, contextFull: entry.contextFull === true };
+      const value = { send: entry.send, detail: entry.detail, contextFull: entry.contextFull === true, lang };
       into.delete(entry.key);
       into.set(entry.key, value);
       while (into.size > CACHE_MAX) into.delete(into.keys().next().value);
@@ -77,7 +77,7 @@ export function createSessionTrigger(dispatch, {
   };
   const call = (method, args) => dispatch('plugin.call', { method, args });
 
-  async function items({ query, sessionId, context: usage, sessionReferences }) {
+  async function items({ query, sessionId, context: usage, sessionReferences, locale }) {
     const started = Date.now();
     const turn = ++latest;
     if (debounceMs > 0) await sleep(debounceMs);
@@ -88,14 +88,18 @@ export function createSessionTrigger(dispatch, {
     // valid across context changes: a new budget is a new key.
     const context = triggerContext(usage);
     const references = triggerReferences(sessionReferences);
-    const extra = { ...(context ? { context } : {}), ...(references ? { references } : {}) };
+    // Row texts follow the app's UI language; a snapshot cached in another
+    // language is built again (and shown as it is until then).
+    const lang = typeof locale === 'string' && locale ? locale : undefined;
+    const extra = { ...(context ? { context } : {}), ...(references ? { references } : {}), ...(lang ? { locale: lang } : {}) };
     const exclude = typeof sessionId === 'string' && sessionId ? { exclude: sessionId } : {};
+    const cached = [...cache].flatMap(([key, value]) => value.lang === lang ? [key] : []);
     const listed = await call('sessions.items', {
-      query, cached: [...cache.keys()], deadlineMs: left() - 250, ...exclude, ...extra,
+      query, cached, deadlineMs: left() - 250, ...exclude, ...extra,
     });
-    let pending = store(listed, cache);
+    let pending = store(listed, cache, lang);
     while (pending.length && turn === latest && left() > 400) {
-      pending = store(await call('sessions.snapshots', { keys: pending, deadlineMs: left() - 250, ...extra }), cache);
+      pending = store(await call('sessions.snapshots', { keys: pending, deadlineMs: left() - 250, ...extra }), cache, lang);
     }
     return (listed?.rows ?? []).flatMap((row) => {
       const ready = cache.get(row.key);
@@ -118,10 +122,14 @@ export function onLoad(pi) {
   pi.slots.register({ slot: 'blockRenderer', language: REFERENCE_FENCE_LANGUAGE, component: ReferenceCard });
   pi.ui?.injectStyle?.(REFERENCE_CARD_CSS);
   // Warm the cache for the most recent sessions, so the first `@` has rows.
-  void pi.dispatch('plugin.call', { method: 'sessions.items', args: { query: '', cached: [] } })
-    .then((answer) => {
+  // Built in the host's app locale, so a first `@` in that language reuses them.
+  void Promise.resolve(pi.app?.getLocale?.()).catch(() => undefined)
+    .then(async (value) => {
+      const lang = typeof value === 'string' && value ? value : undefined;
+      const answer = await pi.dispatch('plugin.call',
+        { method: 'sessions.items', args: { query: '', cached: [], ...(lang ? { locale: lang } : {}) } });
       for (const entry of answer?.snapshots ?? []) {
-        trigger.cache.set(entry.key, { send: entry.send, detail: entry.detail, contextFull: entry.contextFull === true });
+        trigger.cache.set(entry.key, { send: entry.send, detail: entry.detail, contextFull: entry.contextFull === true, lang });
       }
     })
     .catch(() => {});

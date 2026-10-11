@@ -575,6 +575,7 @@ export const en = {
     webSearchMore_other: "+{{count}} more sources",
     thinkingShow: "Show thinking",
     thinkingHide: "Hide thinking",
+    referencedSessionTitle: "Reference: {{title}}",
     untitledTask: "New task",
   },
   session: {

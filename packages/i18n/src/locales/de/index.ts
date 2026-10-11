@@ -563,6 +563,7 @@ export const de = {
     "webSearchMore_other": "+{{count}} weitere Quellen",
     "thinkingShow": "Denken anzeigen",
     "thinkingHide": "Denken ausblenden",
+    "referencedSessionTitle": "Verweis: {{title}}",
     "untitledTask": "Neue Aufgabe"
   },
   "session": {

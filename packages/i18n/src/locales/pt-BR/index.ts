@@ -562,6 +562,7 @@ export const ptBR = {
     webSearchMore_other: "+{{count}} fontes adicionais",
     thinkingShow: "Mostrar raciocínio",
     thinkingHide: "Ocultar raciocínio",
+    referencedSessionTitle: "Referência: {{title}}",
     untitledTask: "Tarefa sem título"
   },
   session: {

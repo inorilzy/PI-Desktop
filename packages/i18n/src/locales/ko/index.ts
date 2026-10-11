@@ -572,6 +572,7 @@ export const ko = {
     webSearchMore_other: "출처 {{count}}개 더",
     thinkingShow: "생각 표시",
     thinkingHide: "생각 숨기기",
+    referencedSessionTitle: "참조: {{title}}",
     untitledTask: "새 작업",
   },
   session: {

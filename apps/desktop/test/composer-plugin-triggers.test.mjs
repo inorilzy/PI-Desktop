@@ -230,13 +230,21 @@ test("a trigger is told the Session references preferences, defaulted, when sett
   ]);
 });
 
+test("a trigger is told the app's UI language when the composer knows it", () => {
+  assert.equal(pluginTriggerScope("s-1", null, undefined, "zh-CN").locale, "zh-CN");
+  for (const none of [undefined, null, "", "  "]) {
+    assert.equal("locale" in pluginTriggerScope("s-1", null, undefined, none), false);
+  }
+});
+
 test("the composer tells triggers its session and the context ring's figures", async () => {
   const { readComposerSource } = await import("./helpers/composer-source.mjs");
   const source = await readComposerSource();
   assert.match(source, /usedTokens: contextOccupancyTokens\(composerContextUsage\.usage\)/);
   assert.match(source, /contextWindow: composerContextUsage\.contextWindow/);
   assert.match(source, /triggerContext: composerTriggerContext/);
-  assert.match(source, /pluginTriggerScope\(referenceSessionId, triggerContext, referenceSettings\)/);
+  assert.match(source, /pluginTriggerScope\(referenceSessionId, triggerContext, referenceSettings, uiLocale\)/);
+  assert.match(source, /const uiLocale = i18n\?\.resolvedLanguage \?\? i18n\?\.language/);
   assert.match(source, /state\.settings\?\.sessionReferenceBudgetPercent/);
   assert.match(source, /state\.settings\?\.sessionReferenceMaxTurns/);
   assert.match(source, /askPluginTrigger\(entry\.items, match, entry\.pluginId, undefined, scopeRef\.current\)/);

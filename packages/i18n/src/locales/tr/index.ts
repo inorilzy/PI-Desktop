@@ -572,6 +572,7 @@ export const tr = {
     webSearchMore_other: "+{{count}} kaynak daha",
     thinkingShow: "Düşünmeyi göster",
     thinkingHide: "Düşünmeyi gizle",
+    referencedSessionTitle: "Referans: {{title}}",
     untitledTask: "Yeni görev",
   },
   session: {

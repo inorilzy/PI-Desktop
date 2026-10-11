@@ -1,4 +1,4 @@
-import { normalizeSessionId } from './lib/references.js';
+import { displayTitle, isZh, normalizeSessionId } from './lib/references.js';
 import { ownTypedText } from './lib/prompt.js';
 import { pairCompletedQaTurns } from './lib/qa.js';
 import { readSessionReferenceSource } from './lib/reader.js';
@@ -54,12 +54,13 @@ export function shortStamp(updatedAt) {
 }
 
 /**
- * Labels for the rows of one list. Sessions sharing a title (e.g. several
- * "new task") get their short update time, and the id's first four
+ * Labels for the rows of one list, untitled sessions named as the app names
+ * them in `lang`. Sessions sharing a title (e.g. several "new task") get their short update time, and the id's first four
  * characters if that still collides; a unique title stays as it is, so the
  * chip in the draft is just the title.
  */
-export function rowLabels(rows) {
+export function rowLabels(input, lang) {
+  const rows = input.map((row) => ({ ...row, title: displayTitle(row.title, lang) }));
   const base = rows.map((row) => markLabel(row.title, row.id));
   const count = (labels) => labels.reduce((map, label) => map.set(label, (map.get(label) ?? 0) + 1), new Map());
   const firstPass = count(base);
@@ -77,7 +78,7 @@ export function rowLabels(rows) {
 export function relativeTime(updatedAt, locale, nowMs = Date.now()) {
   const at = new Date(updatedAt).getTime();
   if (Number.isNaN(at)) return '';
-  const zh = String(locale ?? '').toLowerCase().startsWith('zh');
+  const zh = isZh(locale);
   const minutes = Math.max(0, Math.floor((nowMs - at) / 60_000));
   if (minutes < 1) return zh ? '刚刚' : 'just now';
   if (minutes < 60) return zh ? `${minutes} 分钟前` : `${minutes} min ago`;
@@ -96,7 +97,7 @@ export function questionSnippet(text) {
 }
 
 function words(locale) {
-  return String(locale ?? '').toLowerCase().startsWith('zh') ? {
+  return isZh(locale) ? {
     turns: (n) => `${n} 轮问答`, first: (n) => n > 1 ? `首轮 + 最近 ${n - 1} 轮` : '仅首轮',
     omitted: (n) => `省略 ${n} 轮更早的`, between: (n) => `中间省略 ${n} 轮`,
     unread: '更早的未读取', betweenUnread: '中间部分未读取', clipped: '已截断',
@@ -196,7 +197,6 @@ export function createSessionMentionService(host, options = {}) {
   const answerMaxBytes = options.answerMaxBytes ?? ANSWER_MAX_BYTES;
   let disposed = false;
   let list = null;
-  let locale;
   const sources = new Map();
   const building = new Map();
   const controller = new AbortController();
@@ -224,10 +224,12 @@ export function createSessionMentionService(host, options = {}) {
     return rows;
   };
 
-  const currentLocale = async () => {
-    if (locale === undefined) locale = await Promise.resolve(host.app?.getLocale?.()).catch(() => '') ?? '';
-    return locale;
-  };
+  /**
+   * The UI language the host passed with the query (`args.locale`, what the
+   * app is drawn in); else the host's app locale, read afresh each time.
+   */
+  const localeOf = async (args) => typeof args.locale === 'string' && args.locale ? args.locale
+    : await Promise.resolve(host.app?.getLocale?.()).catch(() => '') ?? '';
 
   const loadPage = async (id, before, signal) => {
     signal.throwIfAborted();
@@ -322,9 +324,8 @@ export function createSessionMentionService(host, options = {}) {
   const hidden = (row) => sources.has(row.key) && (!sources.get(row.key) || empty(sources.get(row.key)));
 
   /** As many ready snapshots of `rows` as fit; the rest pending. */
-  const pack = async (rows, deadlineMs, budget) => {
+  const pack = async (rows, deadlineMs, budget, lang) => {
     const until = now() + deadlineMs;
-    const lang = await currentLocale();
     const all = Promise.all(rows.map((row) => read(row).catch(() => null)));
     await Promise.race([all, sleep(Math.max(0, until - now()))]);
     const ready = [];
@@ -381,15 +382,16 @@ export function createSessionMentionService(host, options = {}) {
         const cached = keysOf(args.cached);
         // The session being typed in, when the host told the renderer: it cannot reference itself.
         const exclude = normalizeSessionId(args.exclude);
+        const lang = await localeOf(args);
         const rows = (await summaries())
-          .filter((row) => row.id !== exclude && !hidden(row) && `${row.title}\n${row.id}`.toLowerCase().includes(query))
+          .filter((row) => row.id !== exclude && !hidden(row)
+            && `${row.title}\n${displayTitle(row.title, lang)}\n${row.id}`.toLowerCase().includes(query))
           .slice(0, MAX_ROWS);
         const budget = budgetOf(args);
-        const packed = await pack(rows.filter((row) => !cached.has(keyOf(row, budget))), deadlineOf(args), budget);
-        const lang = await currentLocale();
+        const packed = await pack(rows.filter((row) => !cached.has(keyOf(row, budget))), deadlineOf(args), budget, lang);
         // Sessions found empty while packing leave the list before labels are disambiguated.
         const visible = rows.filter((row) => !hidden(row));
-        const labels = rowLabels(visible);
+        const labels = rowLabels(visible, lang);
         return {
           rows: visible.map((row, i) => ({ key: keyOf(row, budget), label: labels[i], when: relativeTime(row.updatedAt, lang) })),
           ...packed,
@@ -399,7 +401,7 @@ export function createSessionMentionService(host, options = {}) {
         const wanted = keysOf(args.keys);
         const budget = budgetOf(args);
         const rows = (await summaries()).filter((row) => wanted.has(keyOf(row, budget)));
-        return pack(rows, deadlineOf(args), budget);
+        return pack(rows, deadlineOf(args), budget, await localeOf(args));
       }
       throw new Error(`Unknown Session Mentions method: ${method}`);
     },

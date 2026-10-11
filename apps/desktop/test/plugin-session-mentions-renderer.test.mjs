@@ -10,6 +10,7 @@ import {
 } from '../resources/plugins/pi.session-mentions/card.js';
 import { buildSessionSnapshot } from '../resources/plugins/pi.session-mentions/lib/snapshot.js';
 import { A, source } from './helpers/session-mentions.mjs';
+import { displayTitle } from '../resources/plugins/pi.session-mentions/lib/references.js';
 
 const KEY = (n) => `k${n}`;
 
@@ -186,4 +187,43 @@ test('the card is closed at first and shows the full text when opened', () => {
   assert.match(open, /<pre class="psm-body">&lt;referenced-chat [^<]*Q: Q0\nA: A0 x+\n\nQ: Q1/);
   // A fence it did not write is shown as text.
   assert.equal(renderToStaticMarkup(createElement(ReferenceCard, { source: 'hello' })), '<pre class="psm-raw">hello</pre>');
+});
+
+test('the UI locale is passed on; a snapshot cached in another language is built again', async () => {
+  let detail = 'en detail';
+  const { dispatch, calls } = fakeDispatch(({ method }) => method === 'sessions.items'
+    ? { rows: [{ key: KEY(1), label: 'One' }], snapshots: calls.at(-1).args.cached.includes(KEY(1)) ? []
+        : [{ key: KEY(1), send: 'S1', detail }], pending: [] }
+    : { snapshots: [], pending: [] });
+  const trigger = createSessionTrigger(dispatch, { debounceMs: 0 });
+  assert.equal((await trigger.items({ query: '', locale: 'en' }))[0].detail, 'en detail');
+  assert.equal(calls[0].args.locale, 'en');
+  assert.equal((await trigger.items({ query: '', locale: 'en' }))[0].detail, 'en detail');
+  assert.deepEqual(calls[1].args.cached, [KEY(1)], 'same language: reused');
+  detail = '中文';
+  assert.equal((await trigger.items({ query: '', locale: 'zh-CN' }))[0].detail, '中文');
+  assert.deepEqual(calls[2].args.cached, [], 'another language: built again');
+  assert.equal(calls[2].args.locale, 'zh-CN');
+  await trigger.items({ query: '' });
+  assert.equal('locale' in calls[3].args, false, 'an older host names none');
+});
+
+test('the warm-up is built in the host\'s app locale', async () => {
+  const { dispatch, calls } = fakeDispatch(() => ({ rows: [], snapshots: [], pending: [] }));
+  onLoad({ dispatch, app: { getLocale: async () => 'zh-CN' }, slots: { register() {} }, ui: { injectStyle() {} } });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(calls[0], { method: 'sessions.items', args: { query: '', cached: [], locale: 'zh-CN' } });
+});
+
+test('the card names an untitled session as the app does', () => {
+  const body = fenceBody(buildSessionSnapshot({ ...source(A, pairs(1)), title: 'new task' }).send);
+  const zh = renderToStaticMarkup(createElement(ReferenceCardView, { source: body, open: false, onToggle() {}, lang: 'zh-CN' }));
+  assert.match(zh, /<span class="psm-title">新建任务<\/span>/);
+  assert.match(zh, /<span class="psm-facts">1 轮问答 · 约 /);
+  const en = renderToStaticMarkup(createElement(ReferenceCardView, { source: body, open: false, onToggle() {}, lang: 'en' }));
+  assert.match(en, /<span class="psm-title">New task<\/span>/);
+  assert.match(en, /<span class="psm-kind">Referenced chat<\/span>/);
+  assert.equal(displayTitle('Release plan', 'zh-CN'), 'Release plan');
+  assert.equal(displayTitle(' 新建任务 ', 'en'), 'New task');
+  assert.equal(displayTitle('', 'zh-CN'), '');
 });

@@ -91,8 +91,10 @@ export type PluginTriggerSessionReferences = {
  * host knows them, the session the draft belongs to and that session's
  * context use. Both are absent for a draft without a session yet, and
  * `context` also before the session's first answered turn.
- * `sessionReferences` carries the user's Session references preferences;
- * hosts that predate it leave it out.
+ * `sessionReferences` carries the user's Session references preferences,
+ * and `locale` the app's UI language (e.g. "en", "zh-CN"), the one the host's
+ * own rows are drawn in, so a trigger's rows can match them; hosts that
+ * predate either leave it out.
  */
 export type PluginTriggerQuery = {
   readonly trigger: PluginComposerTrigger;
@@ -100,6 +102,7 @@ export type PluginTriggerQuery = {
   readonly sessionId?: string;
   readonly context?: PluginTriggerContext;
   readonly sessionReferences?: PluginTriggerSessionReferences;
+  readonly locale?: string;
 };
 
 /**

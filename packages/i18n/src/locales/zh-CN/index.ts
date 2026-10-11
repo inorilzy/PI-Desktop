@@ -568,6 +568,7 @@ export const zhCN = {
     webSearchMore_other: "还有 {{count}} 个来源",
     thinkingShow: "显示思考过程",
     thinkingHide: "隐藏思考过程",
+    referencedSessionTitle: "引用：{{title}}",
     untitledTask: "新建任务",
   },
   session: {
