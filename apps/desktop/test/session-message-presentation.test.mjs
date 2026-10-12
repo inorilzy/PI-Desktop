@@ -16,6 +16,7 @@ const store = {
   activateMessageRevision: async () => {},
   deleteMessage: async () => {},
   selectSession: async () => {},
+  sessions: [],
   showToast: () => {},
 };
 const useAppStore = (selector) => selector(store);
@@ -51,6 +52,7 @@ function loadComponent(name, extras = {}) {
     "../../../components/icons": new Proxy({}, { get: () => Icon }),
     "../../../components/ui": { TooltipButton },
     "./shared": shared,
+    "./UserMessageText": { UserMessageText: shared.LinkifiedText },
     "./menu-items": { userMessageMenuItems: () => [] },
     "./TranscriptMenu": {
       useTranscriptMenu: () => () => {},

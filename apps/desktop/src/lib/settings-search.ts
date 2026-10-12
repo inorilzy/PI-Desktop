@@ -121,6 +121,9 @@ export const SETTINGS_NAV: SettingsNavEntry[] = [
       "settings.contextUsageDisplayRemaining",
       "settings.contextUsageDisplayUsed",
       "settings.largePasteThreshold",
+      "settings.sessionReferences",
+      "settings.sessionReferenceBudget",
+      "settings.sessionReferenceMaxTurns",
     ],
   },
   {

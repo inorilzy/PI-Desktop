@@ -133,6 +133,8 @@ const { MessageRow } = load(new URL("../src/features/chat/transcript/MessageRow.
     useChatTextActions: () => ({ copyText: () => {}, selectText: () => {} }),
   },
   "./shared": shared,
+  // Plugin-claimed fences aside (none here), a user text run is the shared text.
+  "./UserMessageText": { UserMessageText: shared.LinkifiedText },
 });
 
 const referenced = {
