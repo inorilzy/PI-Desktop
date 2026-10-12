@@ -1259,6 +1259,8 @@ export const ptBR = {
     noResults: "Nenhum resultado encontrado",
     enterToSend: "Enter para enviar",
     enterToSendDesc: "Desativado: pressione ⌘/Ctrl+Enter para enviar.",
+    sessionMessagesInCurrentTurn: "Receber mensagens de colaboração na rodada atual",
+    sessionMessagesInCurrentTurnDesc: "Desativado por padrão. Aplica-se a novas rodadas do Agent: recebe mensagens antes da próxima solicitação ao modelo sem interromper ferramentas. As mensagens já enfileiradas permanecem inalteradas.",
     infiniteProviderRetry: "Tentar novamente até obter sucesso",
     infiniteProviderRetryDesc: "Continua tentando indefinidamente em caso de falhas temporárias de rede ou do provedor. Ainda é possível interromper a rodada; enquanto esta opção estiver ativada, o consumo e os custos da API podem continuar.",
     smoothStreaming: "Exibição gradual",

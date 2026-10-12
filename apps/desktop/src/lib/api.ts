@@ -375,6 +375,7 @@ export function normalizeSettings(settings: AppSettings): AppSettings {
   return {
     ...settings,
     defaultMode: normalizeMode((settings as { defaultMode?: unknown }).defaultMode),
+    sessionMessagesInCurrentTurn: settings.sessionMessagesInCurrentTurn === true,
     infiniteProviderRetry:
       (settings as { infiniteProviderRetry?: unknown }).infiniteProviderRetry === true,
     jevEnabled: (settings as { jevEnabled?: unknown }).jevEnabled === true,
@@ -417,6 +418,7 @@ export function validateSettingsWrite(settings: AppSettings): AppSettings {
     smoothStreaming?: unknown;
     updatePreference?: unknown;
     lastNotifiedUpdateVersion?: unknown;
+    sessionMessagesInCurrentTurn?: unknown;
     networkProxy?: unknown;
     networkPolicy?: unknown;
   };
@@ -452,6 +454,10 @@ export function validateSettingsWrite(settings: AppSettings): AppSettings {
         errorCode: "INVALID_PARAMS",
       });
     }
+  }
+  if (Object.prototype.hasOwnProperty.call(value, "sessionMessagesInCurrentTurn") &&
+    typeof value.sessionMessagesInCurrentTurn !== "boolean") {
+    throw Object.assign(new Error("sessionMessagesInCurrentTurn is invalid"), { errorCode: "INVALID_PARAMS" });
   }
   if (
     Object.prototype.hasOwnProperty.call(value, "infiniteProviderRetry") &&

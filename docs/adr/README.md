@@ -373,3 +373,4 @@ Each ADR includes:
 | 0325 | [Smooth Windows main-window corner compositing](0325-windows-window-corner-compositing.md) | Proposed (implementation candidate; Windows E2E pending) |
 | 0326 | [Per-fallback thinking levels for subagents](0326-subagent-fallback-thinking.md) | Accepted for implementation |
 | plugin-fetch-redirect-policy | [Host-enforced plugin fetch redirect policy](plugin-fetch-redirect-policy.md) | Accepted (implementation candidate for #1475) |
+| session-collaboration-current-turn | [Opt-in current-turn session collaboration](session-collaboration-current-turn.md) | Proposed |

@@ -108,6 +108,7 @@ type RuntimeParams = {
   infiniteProviderRetry?: boolean;
   /** Opt-in TypeSafe classifier credential resolved by Electron main. */
   jevApiKey?: string;
+  sessionMessagesInCurrentTurn?: boolean;
   provider: RuntimeProviderConfig;
   commandShell: CommandShellOption;
   pluginTools?: PluginToolDef[];
@@ -248,6 +249,7 @@ async function runtimeFor(
     reusable.setPluginSkills(pluginSkills);
     reusable.setCompactionSettings(params.compactionSettings);
     reusable.setInfiniteProviderRetry(params.infiniteProviderRetry === true);
+    reusable.setSessionMessagesInCurrentTurn(params.sessionMessagesInCurrentTurn === true);
     reusable.setMode(mode);
     return reusable;
   }
@@ -297,6 +299,7 @@ async function runtimeFor(
     thinkingLevel,
     infiniteProviderRetry: params.infiniteProviderRetry === true,
     jevApiKey: params.jevApiKey,
+    sessionMessagesInCurrentTurn: params.sessionMessagesInCurrentTurn === true,
     history,
     compaction,
     compactionSettings: params.compactionSettings,
@@ -476,6 +479,9 @@ async function handle(method: string, params: any): Promise<unknown> {
       });
       return { accepted: true, turnId };
     }
+    case "agent.collaborationContext":
+      return { accepting: runtimes.get(String(params.sessionId ?? ""))
+        ?.acceptsSessionMessages(String(params.expectedTurnId ?? "")) ?? false };
     case "agent.steeringContext":
     case "agent.steer": {
       const runtime = runtimes.get(String(params.sessionId ?? ""));

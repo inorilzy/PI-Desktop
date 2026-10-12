@@ -17375,3 +17375,26 @@ host-created files. The full app's file-preview viewer is covered separately.
 - **Steps:** Save a 500K user context limit for a model whose catalog publishes 1M. Open the Composer model list, then send a short message and inspect context usage. Repeat with a catalog-owned limit and with discovery unavailable.
 - **Expected:** The user-configured row and context inspector show 500K; a catalog-owned row follows the published limit; a configured model without discovery retains its saved context label. Model selection remains unchanged.
 - **Status:** Automated unit regression in `apps/desktop/test/composer-models.test.mjs` covers user overrides, catalog inheritance, and missing discovery; the full save → picker → message → context-inspector path remains a manual validation scenario.
+### E2E-SESSION-current-turn-collaboration (#914)
+
+**Command:** `pnpm test:e2e:session-current-turn`, after JS and host debug builds.
+Use isolated host storage and a local deterministic SSE provider; no paid model,
+production profile, Electron UI or user's running desktop is involved.
+
+Start a parent and two durable worker turns. The real parent runtime calls a
+controlled wait tool for worker09. While that tool is blocked, send worker08's
+ordinary report through the production Main collaboration service, repeat the
+same send key, and settle worker08's task to create its completion notice.
+Verify no queue submission, extra model request or tool cancellation occurs.
+Release the wait interval without completing worker09. The next actual provider
+request must contain both canonical source IDs once, in the original parent
+turn. Worker09 stays running. Settle the parent and verify neither accepted
+message becomes a later queued prompt.
+
+Companion tests: `current-turn-messages.test.ts` covers bounded same-key retries,
+Stop/epoch changes and context shaping; `session-collaboration-service.test.mjs`
+covers queue/CAS races and the transcript-flush gate; host
+`session_collaboration::current_turn::tests` covers default-off compatibility,
+old queues/tasks, v19-v23 migration chains and backups, source/permission/approval validation, hop limits,
+receipt replay, JSONL repair and accepted-versus-unclaimed restart reconciliation.
+A successful local transport harness is not evidence of an Electron UI run.

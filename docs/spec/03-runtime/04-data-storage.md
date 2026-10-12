@@ -1,4 +1,4 @@
-# 04. Data Storage (Schema v23)
+# 04. Data Storage (Schema v24)
 
 ## 0. Ownership decision
 
@@ -1474,7 +1474,7 @@ truncating at a guessed position.
 - JSON columns are read blind on hot paths (shipped to the renderer as-is);
   anything filtered or summed is a promoted column by rule.
 
-## 7. Versioning, v7 reset, and v8-to-v23 migration
+## 7. Versioning, v7 reset, and v8-to-v24 migration
 
 - `PRAGMA user_version` stays the schema authority; future structural changes
   add ordered Rust migration fns again, each in one transaction, with a
@@ -1485,7 +1485,7 @@ truncating at a guessed position.
   Sessions, providers, and settings from the old file are not carried over;
   the archive remains for manual recovery. All pre-v7 migration code
   (v1 `settings.sqlite` import, v2→v6 chain) is deleted.
-- Fresh installs run the full v23 DDL directly.
+- Fresh installs run the full v24 DDL directly.
 - **Schema v7 first reaches v8, then uses the guarded path.** The v7→v8
   migration is followed by the same guarded v8→v15 migration; schema-v9 and
   schema-v10 databases take the same guarded path and receive an exact readable
@@ -1549,6 +1549,10 @@ truncating at a guessed position.
 - **Schema v23 is additive.** It adds `sessions.title_source` and classifies
   existing placeholder titles as `default`; every other existing title is
   preserved and classified as `manual`. The migration keeps a v22 backup.
+- **Schema v24 is additive.** It adds current-turn collaboration receipts after
+  a v23 backup. Existing v19-v23 files traverse every intervening migration;
+  queue identity/voice provenance, Todo data, session indexes and title sources
+  remain intact. Old queued messages are never promoted into receipt offers.
 - **Schema v14 is additive.** It adds nullable `sessions.deleted_at`, the
   partial deletion index, and `session_import_origins`. Existing sessions stay
   active and have no origin rows. The migration runs in the same guarded
@@ -1816,3 +1820,24 @@ An unknown price is distinct from a known zero price; partial known costs remain
 on the individual operations. Late usage targets its captured turn and does not
 revive it or debit the currently active turn. Immediate nested parent and owning
 Task remain separate optional transcript/event fields.
+## Schema 24: current-turn collaboration receipts
+
+Migration 23 -> 24 backs up the prior database and adds
+`session_collaboration_current_turn`; it does not alter old ledger/queue rows.
+The table is keyed by message ID and references an exact target turn. Its
+`state` is `offered`, `accepted` or `fallback`; only an accepted receipt carries
+its receiver `request_id`. Indexed turn/state/request lookup bounds each batch.
+The original collaboration ledger's unique physical turn association remains
+in place. Read projections also expose the turn of an accepted receipt.
+
+The host writes acceptance before returning input, then appends the canonical
+`session-message:<messageId>` transcript ID. Same-key retries repair missing
+transcript/index state without duplicate JSONL records. Terminal parent outcomes
+settle accepted messages; completion callbacks retain their existing idempotence
+and never generate automatic acknowledgement chains.
+
+On restart, known acceptance repairs the same parent's history and is reported
+interrupted, never converted to another prompt. Never-adopted messages restore
+through the held durable Agent Host queue. Queue exhaustion keeps the remaining
+fallback in the ledger for later reconciliation; it is not silently discarded.
+The schema permits neither direct renderer writes nor plugin-selected provenance.

@@ -723,6 +723,7 @@ const eventPersistence = createEventPersistence({
 const { persistAgentEvent } = eventPersistence;
 
 const sidecarRuntime = createSidecarRuntime({
+  receiveSessionMessages: sessionCollaboration.receive,
   runtimeState,
   steeringReplies,
   logger,

@@ -642,6 +642,7 @@ export function createSessionLaunchRuntime({
         thinkingLevel,
         infiniteProviderRetry: settings.infiniteProviderRetry === true,
         ...(jevApiKey ? { jevApiKey } : {}),
+        sessionMessagesInCurrentTurn: settings.sessionMessagesInCurrentTurn === true,
         commandShell,
         scratchDir: join(dataDir, "scratch", sessionId),
         attachmentsDir: join(dataDir, "attachments"),
