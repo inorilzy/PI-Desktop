@@ -4249,10 +4249,11 @@ Do not invent objections or turn speculative risks into blockers. Stop when the 
         "No delegation model overrides are configured.",
         DELEGATION_DEFAULT_MODEL_GUIDANCE,
         DELEGATION_MODEL_OPT_IN_GUIDANCE,
+        "A pinned Default model cannot be overridden by Task.model; only its configured fallbacks may replace it after a provider failure. Never invent a provider/model key.",
       ].join(" ");
     }
     const lines: string[] = [
-      "Available models for delegation (pass as `model` parameter on Task):\n",
+      "Available models for unpinned subagents (pass as `model` parameter on Task):\n",
     ];
     for (const key of keys) {
       const provider =
@@ -4268,7 +4269,7 @@ Do not invent objections or turn speculative risks into blockers. Stop when the 
     }
     lines.push(
       "",
-      "Pick cheaper/faster models for simple searches and read-only reviews. Reserve expensive reasoning models for complex multi-step analysis.",
+      "For unpinned subagents, pick cheaper/faster models for simple searches and read-only reviews. A pinned Default model always takes precedence over this catalog; do not replace or reorder its configured fallbacks.",
     );
     return lines.join("\n");
   }
@@ -4493,7 +4494,7 @@ Do not invent objections or turn speculative risks into blockers. Stop when the 
     const catalog = this.subagents
       .map((definition) => {
         const defaultModel = definition.model
-          ? `${subagentModelKey(definition.model)}; omit model or repeat this key to keep this default.`
+          ? `${subagentModelKey(definition.model)}; pinned by the user. Task.model cannot override it; only configured fallbacks may replace it after a provider failure.`
           : "inherits the session.";
         return `- ${definition.name} (tools: ${subagentToolsLabel(definition)}): ${definition.description} Default model: ${defaultModel}`;
       })
@@ -4507,7 +4508,7 @@ Do not invent objections or turn speculative risks into blockers. Stop when the 
         "Do not delegate what you can finish in a couple of tool calls, and do not delegate anything that needs the user — a subagent cannot ask a question or propose a plan on your behalf.",
         ...(this.availableSubagentModelKeys().length
           ? [
-              "Only pass `model` when deliberately overriding the definition default with a listed delegation model; otherwise omit it. Repeating the definition's own Default model key, or the exact parent provider/model, is the same as omitting `model`.",
+              "Only pass `model` for a subagent with no pinned Default model, choosing from the listed delegation models. A pinned Default model always wins, even if `model` names the parent model; its configured fallbacks are tried only after a provider failure. Repeating an unpinned subagent's parent provider/model is the same as omitting `model`.",
             ]
           : [
               `No delegation model overrides are configured. ${DELEGATION_DEFAULT_MODEL_GUIDANCE} ${DELEGATION_MODEL_OPT_IN_GUIDANCE}`,
@@ -4534,7 +4535,7 @@ Do not invent objections or turn speculative risks into blockers. Stop when the 
         model: Type.Optional(
           Type.String({
             description:
-              "Override the delegate's model for this run, e.g. 'anthropic/claude-sonnet-4-20250514'. Omit to use the subagent's default. Repeating the definition's own Default model key is the same as omitting this parameter. Only choose a different override from the available delegation model catalog. Forbidden when `resume` is set.",
+              "Select a model only for a subagent with no pinned Default model, e.g. 'anthropic/claude-sonnet-4-20250514'. Choose from the available delegation model catalog, or omit to inherit the session model. A pinned model takes precedence and ignores this parameter; its configured fallbacks keep their order. Forbidden when `resume` is set.",
           }),
         ),
         resume: Type.Optional(
@@ -4566,7 +4567,7 @@ Do not invent objections or turn speculative risks into blockers. Stop when the 
           isRecord(params) && typeof params.resume === "string"
             ? params.resume.trim()
             : "";
-        // Model override: Task.model > definition.model pin > session model.
+        // A definition pin owns model selection; Task.model only selects for unpinned agents.
         const modelOverride =
           isRecord(params) && typeof params.model === "string"
             ? params.model.trim()
@@ -4584,17 +4585,12 @@ Do not invent objections or turn speculative risks into blockers. Stop when the 
             `Delegating to ${definition.name} needs a non-empty \`task\` brief.`,
           );
         }
+        const ignoredModelOverride = Boolean(
+          definition.model && modelOverride && !this.isDefinitionPinOverride(definition, modelOverride),
+        );
         let provider: RuntimeProviderConfig | undefined;
-        if (modelOverride) {
-          if (this.isDefinitionPinOverride(definition, modelOverride)) {
-            provider = this.subagentProvider(definition);
-            if (!provider) {
-              return this.subagentToolError(
-                toolCallId,
-                `The ${definition.name} subagent pins ${definition.model?.providerId}/${definition.model?.modelId}, which is not configured in PI-Desktop. Do this work yourself or delegate to another subagent.`,
-              );
-            }
-          } else if (this.isSessionModelOverride(modelOverride)) {
+        if (modelOverride && !definition.model) {
+          if (this.isSessionModelOverride(modelOverride)) {
             provider = this.provider;
           } else {
             provider = this.subagentModelKeys.has(modelOverride)
@@ -4857,7 +4853,7 @@ Do not invent objections or turn speculative risks into blockers. Stop when the 
           content: [
             {
               type: "text",
-              text: `Delegation ${delegationId} started: the ${definition.name} subagent is working in the background${label ? ` (${label})` : ""}. Continue your own independent work, then call TaskWait with this delegationId to converge, or TaskStop to stop it.`,
+              text: `Delegation ${delegationId} started: the ${definition.name} subagent is working in the background${label ? ` (${label})` : ""}. Continue your own independent work, then call TaskWait with this delegationId to converge, or TaskStop to stop it.${ignoredModelOverride ? ` The supplied \`model\` was ignored: this subagent uses its configured model (${provider.modelId}) and only its configured fallbacks.` : ""}`,
             },
           ],
           details: {
