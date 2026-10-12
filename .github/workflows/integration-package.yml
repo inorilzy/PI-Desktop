@@ -1,0 +1,103 @@
+# Private integration branch packaging
+#
+# Trigger: every push to `personal/integration` (plus manual dispatch).
+# Builds the Windows x64 NSIS installer and portable exe from the private
+# integration branch and uploads them as workflow artifacts. This workflow
+# never signs, notarizes, or publishes a GitHub Release: it exists so the
+# personal integration branch can be packaged without touching the tag-driven
+# `release.yml` lane (which requires version-matched tags and macOS signing
+# secrets that this fork does not configure).
+#
+# See PERSONAL-INTEGRATION.md for the branch's feature set, profile-isolation
+# requirements, and manual build commands that this workflow mirrors.
+
+name: Integration package (Windows)
+
+on:
+  push:
+    branches: [personal/integration]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: integration-package-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows:
+    name: Windows x64 package
+    runs-on: windows-latest
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: pnpm/action-setup@v6
+
+      - uses: actions/setup-node@v7
+        with:
+          # Match the Node that Electron bundles, same as release.yml.
+          node-version: 24
+          cache: pnpm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Prepare package inputs
+        # Mirrors release.yml: build host-core with --locked so a drifted
+        # Cargo.lock fails here instead of being silently rewritten by the
+        # desktop `build:host-release` script, which does not pass --locked.
+        run: |
+          set -euo pipefail
+          cargo build --release --locked -p host-core &
+          host_build_pid=$!
+          trap 'kill "$host_build_pid" 2>/dev/null || true' EXIT
+
+          pnpm install --frozen-lockfile
+          pnpm --filter '@pi-desktop/desktop^...' --fail-if-no-match build
+
+          wait "$host_build_pid"
+          trap - EXIT
+
+      - name: Package Windows installers
+        # dist:win passes --publish never itself, so electron-builder never
+        # self-publishes from this lane. The explicit arch keeps the package
+        # and the native Rust sidecar aligned with the runner.
+        run: pnpm --filter @pi-desktop/desktop run dist:win -- --x64
+
+      - name: Verify Windows artifacts
+        # Artifact names are defined in apps/desktop/package.json: the nsis
+        # block labels the installer, the portable block labels the portable
+        # exe, and the zip target uses electron-builder's default name.
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          expected_portable=(apps/desktop/release/PI-Desktop-Portable-*.exe)
+          expected_nsis=(apps/desktop/release/PI-Desktop-Setup-*.exe)
+          expected_zip=(apps/desktop/release/PI-Desktop-*.zip)
+          if [[ ${#expected_portable[@]} -ne 1 || ${#expected_nsis[@]} -ne 1 || ${#expected_zip[@]} -lt 1 ]]; then
+            echo "::error::Expected exactly one portable exe, one NSIS installer, and at least one zip."
+            printf '%s\n' apps/desktop/release/* || true
+            exit 1
+          fi
+          printf 'Packaged:\n'
+          printf '%s\n' "${expected_portable[@]}" "${expected_nsis[@]}" "${expected_zip[@]}"
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: integration-windows-x64
+          if-no-files-found: error
+          compression-level: 0
+          path: |
+            apps/desktop/release/PI-Desktop-Portable-*.exe
+            apps/desktop/release/PI-Desktop-Setup-*.exe
+            apps/desktop/release/PI-Desktop-*.zip
+            apps/desktop/release/*.exe.blockmap
+            apps/desktop/release/*.zip.blockmap
+            apps/desktop/release/latest*.yml
