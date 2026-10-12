@@ -1,15 +1,14 @@
+import { parseMcpServerIds, parseMcpToolNames } from "./mcp-tool-selection.js";
 /**
  * Node pi agent sidecar.
  * Protocol: NDJSON JSON-RPC on stdio with Electron main.
  * Host access is proxied through main (single host-core process).
  */
-import { createHash, randomUUID } from "node:crypto";
-import { constants as fsConstants } from "node:fs";
-import { copyFile, mkdir, readFile, realpath, stat } from "node:fs/promises";
-import { isAbsolute, relative, resolve } from "node:path";
+import { randomUUID } from "node:crypto";
 import type { ModelAuth } from "@earendil-works/pi-ai";
 import { ParentHostProxy } from "./parent-host-proxy.js";
 import { visionFromModelConfig } from "./model-capabilities.js";
+import { hydrateAttachmentHistory } from "./attachment-history.js";
 import { classifyAgentError } from "./agent-errors.js";
 import { readLocalRequestErrorDetails } from "./local-request-errors.js";
 import {
@@ -27,12 +26,12 @@ import {
   normalizeSupportedThinkingLevels,
   normalizeThinkingLevel,
 } from "./sidecar-config.js";
+import { matchesExpectedTurnId } from "./turn-target.js";
 import { applyNodeNetworkProxy } from "./node-proxy.js";
-import { NATIVE_PI_SESSION_PREFIX, nativePiService } from "./native-pi-session.js";
+import { applyAdditiveDefaultCaCertificates } from "./system-ca.js";
+import { NATIVE_PI_SESSION_PREFIX } from "./native-pi-session-id.js";
 import {
-  formatFileInsert,
   isCommandShellOption,
-  MAX_INLINE_IMAGE_BYTES,
   normalizeMode,
   normalizeNetworkProxy,
   OAUTH_AUTH_KIND,
@@ -46,13 +45,22 @@ import type {
   ContextCompactionSettings,
   CommandShellOption,
   Mode,
-  MessageAttachment,
   PlanExecution,
   SessionThinkingLevel,
   UiMessage,
 } from "@pi-desktop/shared";
 
 type RuntimeMap = Map<string, DesktopAgentRuntime>;
+
+type NativePiServiceFactory = typeof import("./native-pi-session.js")["nativePiService"];
+let nativePiServiceFactory: NativePiServiceFactory | undefined;
+
+async function getNativePiService() {
+  if (!nativePiServiceFactory) {
+    nativePiServiceFactory = (await import("./native-pi-session.js")).nativePiService;
+  }
+  return nativePiServiceFactory();
+}
 
 const runtimes: RuntimeMap = new Map();
 const hostProxy = new ParentHostProxy();
@@ -99,6 +107,8 @@ type RuntimeParams = {
   thinkingLevel?: SessionThinkingLevel;
   infiniteProviderRetry?: boolean;
   sessionMessagesInCurrentTurn?: boolean;
+  /** Opt-in TypeSafe classifier credential resolved by Electron main. */
+  jevApiKey?: string;
   provider: RuntimeProviderConfig;
   commandShell: CommandShellOption;
   pluginTools?: PluginToolDef[];
@@ -158,122 +168,6 @@ function notify(method: string, params: unknown) {
 function respond(id: string | number, result?: unknown, error?: unknown) {
   if (error) write({ jsonrpc: "2.0", id, error });
   else write({ jsonrpc: "2.0", id, result });
-}
-
-function pathInside(root: string, candidate: string): boolean {
-  const child = relative(root, candidate);
-  return child === "" || (!child.startsWith("..") && !isAbsolute(child));
-}
-
-async function replayedAttachmentPath(
-  params: RuntimeParams,
-  attachment: NonNullable<UiMessage["attachments"]>[number],
-  source: string,
-): Promise<string> {
-  if (!params.scratchDir || !attachment.ref.startsWith("attachments/")) {
-    return source;
-  }
-  const root = resolve(params.scratchDir, "replayed");
-  await mkdir(root, { recursive: true });
-  const safeName =
-    attachment.name.replace(/[^\p{L}\p{N}._-]+/gu, "_") || "attachment";
-  const suffix = createHash("sha256")
-    .update(attachment.ref)
-    .digest("hex")
-    .slice(0, 12);
-  const target = resolve(root, `${safeName}-${suffix}`);
-  try {
-    await copyFile(source, target, fsConstants.COPYFILE_EXCL);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException)?.code !== "EEXIST") throw error;
-  }
-  return target;
-}
-
-async function hydrateAttachmentHistory(
-  history: UiMessage[],
-  params: RuntimeParams,
-): Promise<UiMessage[]> {
-  // Same helper the live prompt path uses, on the same override-shaped config,
-  // so a replayed image is inlined exactly when a fresh one would be.
-  const supportsVision = visionFromModelConfig(params.provider.modelConfig);
-  const roots = [
-    params.scratchDir,
-    params.projectPath,
-    params.attachmentsDir,
-  ].filter((value): value is string => Boolean(value));
-  const canonicalRoots = await Promise.all(
-    roots.map(async (root) => {
-      try {
-        return await realpath(root);
-      } catch {
-        return undefined;
-      }
-    }),
-  );
-  const resolveAttachment = async (
-    attachment: NonNullable<UiMessage["attachments"]>[number],
-  ): Promise<{ attachment: MessageAttachment; fallbackPath?: string }> => {
-    const ref = attachment.ref.trim();
-    if (!ref) return { attachment };
-    const candidate =
-      ref.startsWith("attachments/") && params.attachmentsDir
-        ? resolve(params.attachmentsDir, ref.slice("attachments/".length))
-        : isAbsolute(ref)
-          ? resolve(ref)
-          : params.projectPath
-            ? resolve(params.projectPath, ref)
-            : undefined;
-    if (!candidate) return { attachment };
-    try {
-      const canonical = await realpath(candidate);
-      if (!canonicalRoots.some((root) => root && pathInside(root, canonical))) {
-        return { attachment };
-      }
-      const shouldInline = attachment.kind === "image" && supportsVision;
-      const size = (await stat(canonical)).size;
-      const bytes =
-        shouldInline && size <= MAX_INLINE_IMAGE_BYTES
-          ? await readFile(canonical)
-          : undefined;
-      if (attachment.kind === "image" && supportsVision && bytes) {
-        return { attachment: { ...attachment, data: bytes.toString("base64") } };
-      }
-      return {
-        attachment,
-        fallbackPath: await replayedAttachmentPath(
-          params,
-          attachment,
-          canonical,
-        ),
-      };
-    } catch {
-      return { attachment };
-    }
-  };
-
-  return Promise.all(
-    history.map(async (message) => {
-      if (message.role !== "user" || !message.attachments?.length) return message;
-      const resolved = await Promise.all(message.attachments.map(resolveAttachment));
-      const fallbackPaths = resolved
-        .map((item) => item.fallbackPath)
-        .filter((path): path is string => Boolean(path))
-        .map((path) => formatFileInsert(path, "file"))
-        .join("")
-        .trim();
-      const content = message.content.trim()
-        ? fallbackPaths
-          ? `${message.content}\n${fallbackPaths}`
-          : message.content
-        : fallbackPaths;
-      return {
-        ...message,
-        content,
-        attachments: resolved.map((item) => item.attachment),
-      };
-    }),
-  );
 }
 
 async function runtimeFor(
@@ -338,6 +232,7 @@ async function runtimeFor(
     subagents,
     subagentProviders,
     subagentModelKeys,
+    jevApiKey: params.jevApiKey,
     projectInstructions: params.projectInstructions,
     customSystemPrompt: params.customSystemPrompt,
     projectMemory: params.projectMemory,
@@ -351,6 +246,7 @@ async function runtimeFor(
     runtimes.delete(sessionId);
   }
   if (reusable) {
+    reusable.setPluginSkills(pluginSkills);
     reusable.setCompactionSettings(params.compactionSettings);
     reusable.setInfiniteProviderRetry(params.infiniteProviderRetry === true);
     reusable.setSessionMessagesInCurrentTurn(params.sessionMessagesInCurrentTurn === true);
@@ -367,18 +263,29 @@ async function runtimeFor(
         compaction?: ContextCompactionRecord;
       } | null;
     }>("session.get", { id: sessionId });
-    history = await hydrateAttachmentHistory(detail?.session?.messages ?? [], params);
+    let restoredMessages = detail?.session?.messages ?? [];
+    // The current prompt is sent separately below. Exclude its persisted row
+    // before attachment hydration so it cannot consume the history byte budget.
+    if (currentPrompt !== undefined && params.userMessageId) {
+      restoredMessages = restoredMessages.filter((message) =>
+        message.role !== "user" || message.id !== params.userMessageId,
+      );
+    }
+    const supportsVision = visionFromModelConfig(params.provider.modelConfig);
+    history = await hydrateAttachmentHistory(restoredMessages, {
+      scratchDir: params.scratchDir,
+      projectPath: params.projectPath,
+      attachmentsDir: params.attachmentsDir,
+      supportsVision,
+    });
     compaction = detail?.session?.compaction;
   } catch {
     // History restore is best-effort; a prompt can still start cleanly.
   }
-  if (currentPrompt !== undefined) {
+  // Older callers without a stable message id retain the previous content match.
+  if (currentPrompt !== undefined && !params.userMessageId) {
     const last = history.at(-1);
-    if (
-      last?.role === "user" &&
-      ((params.userMessageId && last.id === params.userMessageId) ||
-        (!params.userMessageId && last.content === currentPrompt))
-    ) {
+    if (last?.role === "user" && last.content === currentPrompt) {
       history = history.slice(0, -1);
     }
   }
@@ -392,6 +299,7 @@ async function runtimeFor(
     thinkingLevel,
     infiniteProviderRetry: params.infiniteProviderRetry === true,
     sessionMessagesInCurrentTurn: params.sessionMessagesInCurrentTurn === true,
+    jevApiKey: params.jevApiKey,
     history,
     compaction,
     compactionSettings: params.compactionSettings,
@@ -410,6 +318,7 @@ async function runtimeFor(
         ? params.scratchDir
         : undefined,
     onEvent: (envelope: AgentEventEnvelope) => notify("agent.event", envelope),
+    onDiagnostic: (diagnostic) => notify("agent.diagnostic", diagnostic),
   });
   runtimes.set(sessionId, runtime);
   // Load failures are diagnostics, never a failed prompt (spec 16 §4.4).
@@ -469,34 +378,48 @@ async function handle(method: string, params: any): Promise<unknown> {
     case "sidecar.configure": {
       // Main owns host-core; sidecar only keeps config metadata.
       if (params && typeof params === "object" && "networkProxy" in params) {
-        applyNodeNetworkProxy(normalizeNetworkProxy(params.networkProxy));
+        applyNodeNetworkProxy(
+          normalizeNetworkProxy(params.networkProxy),
+          process.env,
+          typeof params.systemProxyRelayUrl === "string"
+            ? params.systemProxyRelayUrl
+            : undefined,
+        );
       }
       return { ok: true, mode: "host-proxy" };
     }
     case "sidecar.health":
       return { ok: true, runtimes: runtimes.size };
-    case "native.session.list":
-      return { sessions: await nativePiService().list() };
-    case "native.session.search":
-      return nativePiService().search(String(params.query ?? ""));
-    case "native.session.get":
+    case "native.session.list": {
+      const service = await getNativePiService();
+      return { sessions: await service.list() };
+    }
+    case "native.session.search": {
+      const service = await getNativePiService();
+      return service.search(String(params.query ?? ""));
+    }
+    case "native.session.get": {
+      const service = await getNativePiService();
       return {
-        session: nativePiService().detail(String(params.id ?? ""), {
+        session: service.detail(String(params.id ?? ""), {
           messageBefore: params.messageBefore,
           messageLimit: params.messageLimit,
           messageAround: params.messageAround,
           contentLimit: params.contentLimit,
         }),
       };
-    case "native.session.fork":
+    }
+    case "native.session.fork": {
+      const service = await getNativePiService();
       return {
-        session: nativePiService().fork({
+        session: service.fork({
           id: String(params.id ?? ""),
           title: typeof params.title === "string" ? params.title : undefined,
           throughMessageId:
             typeof params.throughMessageId === "string" ? params.throughMessageId : undefined,
         }),
       };
+    }
     case "agent.testRuntimeIdentity": {
       return testRuntimeIdentity(String(params.sessionId ?? ""));
     }
@@ -504,7 +427,8 @@ async function handle(method: string, params: any): Promise<unknown> {
       const sessionId = String(params.sessionId);
       const content = String(params.content ?? "");
       if (sessionId.startsWith(NATIVE_PI_SESSION_PREFIX)) {
-        return nativePiService().prompt(sessionId, content, (envelope) =>
+        const service = await getNativePiService();
+        return service.prompt(sessionId, content, (envelope) =>
           notify("native.agent.event", envelope),
           typeof params.userMessageId === "string" ? params.userMessageId : undefined,
         );
@@ -534,6 +458,8 @@ async function handle(method: string, params: any): Promise<unknown> {
       }
       const prompt: RuntimePrompt = {
         text: content,
+        mcpServerIds: parseMcpServerIds(params.mcpServerIds),
+        mcpToolNames: parseMcpToolNames(params.mcpToolNames),
         attachments,
         ...(params.sessionMessage ? { sessionMessage: params.sessionMessage as SessionMessageOrigin } : {}),
       };
@@ -565,7 +491,7 @@ async function handle(method: string, params: any): Promise<unknown> {
       const expectedTurnId = String(params.expectedTurnId ?? "");
       if (method === "agent.steeringContext") return runtime.steeringContext(expectedTurnId);
       return runtime.steer(
-        { text: String(params.content ?? ""), attachments: params.attachments },
+        { text: String(params.content ?? ""), attachments: params.attachments, mcpServerIds: parseMcpServerIds(params.mcpServerIds), mcpToolNames: parseMcpToolNames(params.mcpToolNames) },
         expectedTurnId,
         params.message,
       );
@@ -605,24 +531,38 @@ async function handle(method: string, params: any): Promise<unknown> {
     }
     case "agent.abort": {
       const sessionId = String(params.sessionId);
+      const turnId = typeof params.turnId === "string" ? params.turnId : undefined;
       if (sessionId.startsWith(NATIVE_PI_SESSION_PREFIX)) {
-        return nativePiService().abort(sessionId);
+        return (await getNativePiService()).abort(sessionId, turnId);
       }
       const runtime = runtimes.get(sessionId);
-      const turnId = typeof params.turnId === "string" ? params.turnId : undefined;
-      if (turnId && runtime?.getStatus().currentTurnId !== turnId) return { ok: false, aborted: false };
+      if (!matchesExpectedTurnId(runtime?.getStatus().currentTurnId, turnId)) return { ok: false, aborted: false };
       await hostProxy.call("plans.abort", { sessionId, ...(turnId ? { turnId } : {}) }).catch(() => undefined);
-      if (runtime && runtimes.get(sessionId) === runtime && (!turnId || runtime.getStatus().currentTurnId === turnId)) {
+      if (runtime && runtimes.get(sessionId) === runtime && matchesExpectedTurnId(runtime.getStatus().currentTurnId, turnId)) {
         await runtime.abort();
       }
       return { ok: true };
     }
+    case "agent.stopSubagents": {
+      const runtime = runtimes.get(String(params.sessionId));
+      if (!runtime) throw new Error("No active runtime for this session");
+      const ids = params.delegationIds;
+      if (ids !== undefined && (!Array.isArray(ids) || ids.length === 0 || ids.length > 100 || ids.some(id => typeof id !== "string" || !id.trim()))) {
+        throw new Error("Invalid delegation IDs");
+      }
+      const result = await runtime.stopSubagents(ids as string[] | undefined);
+      return { pending: result.details.stopPending?.flatMap(record => typeof record.delegationId === "string" ? [record.delegationId] : []) ?? [] };
+    }
     case "agent.stop": {
       const sessionId = String(params.sessionId);
+      const turnId = typeof params.turnId === "string" ? params.turnId : undefined;
       if (sessionId.startsWith(NATIVE_PI_SESSION_PREFIX)) {
-        return nativePiService().abort(sessionId);
+        return (await getNativePiService()).abort(sessionId, turnId);
       }
       const runtime = runtimes.get(sessionId);
+      if (!matchesExpectedTurnId(runtime?.getStatus().currentTurnId, turnId)) {
+        return { requested: false };
+      }
       return runtime?.requestGracefulStop() ?? { requested: false };
     }
     case "asktool.resolve": {
@@ -652,7 +592,7 @@ async function handle(method: string, params: any): Promise<unknown> {
     case "agent.getStatus": {
       const sessionId = String(params.sessionId);
       if (sessionId.startsWith(NATIVE_PI_SESSION_PREFIX)) {
-        return nativePiService().status(sessionId);
+        return (await getNativePiService()).status(sessionId);
       }
       const runtime = runtimes.get(sessionId);
       return {
@@ -666,7 +606,7 @@ async function handle(method: string, params: any): Promise<unknown> {
     case "agent.disposeSession": {
       const sessionId = String(params.sessionId);
       if (sessionId.startsWith(NATIVE_PI_SESSION_PREFIX)) {
-        nativePiService().dispose(sessionId);
+        (await getNativePiService()).dispose(sessionId);
         return { ok: true };
       }
       const runtime = runtimes.get(sessionId);
@@ -719,7 +659,9 @@ readNdjsonLines(process.stdin, async (line) => {
 // host call) must not take every session's runtime down with it: Node's
 // default for `unhandledRejection` is to exit the process. Log and carry on;
 // the affected session surfaces its own error through the normal event path.
-process.on("exit", () => nativePiService().disposeAll());
+process.on("exit", () => {
+  nativePiServiceFactory?.().disposeAll();
+});
 
 process.on("unhandledRejection", (reason) => {
   const detail =
@@ -737,4 +679,7 @@ if (bootProxy) {
     // Invalid boot payload is ignored; sidecar.configure will replace it.
   }
 }
+// The default TLS context is configured before any provider request can be
+// issued, so the merged CA set covers every transport this sidecar builds.
+applyAdditiveDefaultCaCertificates();
 process.stderr.write("[agent-sidecar] ready (host-proxy mode)\n");

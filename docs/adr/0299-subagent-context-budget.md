@@ -76,20 +76,27 @@ protection at all.
 
 3. **Turn-boundary compaction for delegates.** `SubagentRun` wires
    `prepareNextTurnWithContext`. At a delegate turn boundary the run
-   re-estimates its own context; at or above `hardLimit` it compacts
-   synchronously before the next provider request, using the `prepareCompaction`
-   and `generateSummary` primitives `@earendil-works/pi-agent-core` 0.85.1
-   already exports. Retention follows the parent's rule (ADR 0136): a boundary
-   with pending tool results retains as an active turn, a completed turn
-   retains as a completed turn. There is no pre-computation and no second
-   threshold, matching ADR 0064 clause 1.
+   re-estimates its own context; automatic compaction starts at
+   `floor(hardLimit * 0.9)` (the shared threshold in ADR 0064) before the next
+   provider request. The hard limit remains a final guard: if compaction is
+   disabled or cannot reduce the context below budget, the next request is
+   rejected rather than sent over budget. Compaction uses the
+   `prepareCompaction` and `generateSummary` primitives
+   `@earendil-works/pi-agent-core` 0.85.1 already exports. Retention follows the
+   parent's rule (ADR 0136): a boundary with pending tool results retains as an
+   active turn, a completed turn retains as a completed turn. There is no
+   pre-computation.
 
 4. **Degradation before failure.** When a summary cannot be generated, or the
    compacted context still exceeds `hardLimit`, the run keeps the original task
    brief plus the most recent message(s) and discards the rest of its history.
    The run continues and records that it was degraded, so the parent's report
    and the lifecycle details say the delegate lost history rather than
-   presenting a complete answer.
+   presenting a complete answer. An extracted summary that is empty or
+   whitespace-only — including a thinking-only or output-limited reply whose
+   text blocks are absent — is a summarization failure, not a successful
+   empty checkpoint. Accepting it would report compaction success while
+   silently discarding the working context.
 
 5. **A terminal code the parent can act on.** When even the degraded context
    does not fit, the run fails with `SUBAGENT_CONTEXT_OVERFLOW`

@@ -60,10 +60,16 @@ test("tool rows render structured blocks instead of dumping JSON", async () => {
   assert.match(transcriptSource, /if \(variant !== "topology" && open && hasDetails && disclosure\.parentVisible/);
   assert.match(transcriptSource, /const blocks = variant !== "topology" && open && hasDetails \? presentation\.current\?\.blocks : null/);
   assert.match(transcriptSource, /<ToolChips chips=\{chips\} \/>/);
-  assert.match(transcriptSource, /<ToolDetailBlocks blocks=\{blocks\} plain=\{runHead\} \/>/);
+  assert.match(
+    transcriptSource,
+    /<ToolDetailBlocks blocks=\{blocks\} plain=\{runHead\} streaming=\{status === "running"\} \/>/,
+  );
   assert.match(permissionSource, /<ToolDetailBlocks blocks=\{argBlocks\} \/>/);
   // Code bodies share the transcript highlighter rather than a second cache.
-  assert.match(detailsSource, /<HighlightedCode code=\{block\.text\} lang=\{block\.lang\} \/>/);
+  assert.match(
+    detailsSource,
+    /block\.highlight \? <HighlightedCode code=\{page\} lang=\{block\.lang\} \/> : page/,
+  );
   // Diffs reuse the review card rails; hits and paths open in the work panel.
   assert.match(detailsSource, /className="diff-hunk"/);
   assert.match(detailsSource, /openTarget\(\{ kind: "file", path: rel \}\)/);
@@ -166,6 +172,45 @@ test("tool-call disclosure headers span the conversation band", () => {
   assert.match(row, /min-width:\s*0;/);
 });
 
+test("delegation node copy wraps within the responsive card", () => {
+  const metrics = stylesSource.match(
+    /\.subagent-activity-metrics \{([^}]*)\}/,
+  )?.[1];
+  assert.ok(metrics);
+  assert.match(metrics, /overflow-wrap:\s*anywhere;/);
+  assert.match(metrics, /white-space:\s*normal;/);
+
+  const titleRow = stylesSource.match(
+    /\.subagent-topology-node-title-row \{([^}]*)\}/,
+  )?.[1];
+  assert.ok(titleRow);
+  assert.match(titleRow, /flex-wrap:\s*wrap;/);
+
+  const title = stylesSource.match(
+    /\.subagent-topology-node-title \{([^}]*)\}/,
+  )?.[1];
+  assert.ok(title);
+  assert.match(title, /-webkit-line-clamp:\s*2;/);
+  assert.match(title, /overflow-wrap:\s*anywhere;/);
+  assert.match(title, /white-space:\s*normal;/);
+  assert.doesNotMatch(title, /white-space:\s*nowrap;/);
+
+  const summary = stylesSource.match(
+    /\.subagent-topology-node-summary \{([^}]*)\}/,
+  )?.[1];
+  assert.ok(summary);
+  assert.match(summary, /-webkit-line-clamp:\s*2;/);
+  assert.match(summary, /overflow-wrap:\s*anywhere;/);
+  assert.match(summary, /white-space:\s*normal;/);
+
+  const steps = stylesSource.match(
+    /\.subagent-topology-node-steps \{([^}]*)\}/,
+  )?.[1];
+  assert.ok(steps);
+  assert.match(steps, /overflow-wrap:\s*anywhere;/);
+  assert.match(steps, /white-space:\s*normal;/);
+});
+
 test("assistant turns stay transparent full-width prose", () => {
   assert.match(
     stylesSource,
@@ -193,6 +238,31 @@ test("assistant turns stay transparent full-width prose", () => {
     stylesSource,
     /\.tool-activity-group\.has-subagents\s*\{[^}]*background:\s*var\(--ds-tile\)/,
   );
+});
+test("assistant error cards follow the responsive transcript column", () => {
+  const errorCard = stylesSource.match(/\n\.message-error \{([^}]*)\}/)?.[1];
+  assert.ok(errorCard);
+  assert.match(errorCard, /width:\s*100%;/);
+  assert.doesNotMatch(errorCard, /max-width\s*:/);
+  assert.match(
+    stylesSource,
+    /\.message-row\.assistant \.message-col,\s*\.message-row\.system \.message-col,\s*\.message-row\.tool \.message-col \{\s*width:\s*min\(100%,\s*var\(--chat-prose-max-width,\s*720px\)\);/,
+  );
+});
+
+test("decision and outcome cards follow the responsive transcript band", () => {
+  const cardRules = [
+    stylesSource.match(/\n\.permission-card \{([^}]*)\}/)?.[1],
+    stylesSource.match(/\n\.asktool-card \{([^}]*)\}/)?.[1],
+    stylesSource.match(/\n\.turn-outcome-card \{([^}]*)\}/)?.[1],
+  ];
+  for (const rule of cardRules) {
+    assert.ok(rule);
+    assert.match(
+      rule,
+      /width:\s*min\(100%,\s*var\(--chat-prose-max-width,\s*720px\)\);/,
+    );
+  }
 });
 
 test("transcript density and hover actions are quiet", () => {
@@ -231,6 +301,20 @@ test("wrapped user links keep plaintext alignment", () => {
   assert.ok(userLinkStyles);
   assert.match(userLinkStyles, /text-align:\s*start;/);
   assert.match(userLinkStyles, /overflow-wrap:\s*anywhere;/);
+});
+
+test("user-message links stay selectable inside the inert button baseline", () => {
+  // base.css makes every <button> unselectable, and a class selector outranks
+  // that type rule. Without this opt-in a drag across the message skips the
+  // URL and copying drops it.
+  assert.match(
+    stylesSource,
+    /button,\s*\[role="button"\],[\s\S]*?\{\s*-webkit-user-select:\s*none;\s*user-select:\s*none;/,
+  );
+  const userLinkStyles = stylesSource.match(/\.chat-text-link \{([^}]*)\}/)?.[1];
+  assert.ok(userLinkStyles);
+  assert.match(userLinkStyles, /-webkit-user-select:\s*text;/);
+  assert.match(userLinkStyles, /(?<!-webkit-)user-select:\s*text;/);
 });
 
 test("user-message file chips reuse the composer chip node", () => {
@@ -278,7 +362,10 @@ test("delete remains on user turns and is removed from assistant toolbar", async
   assert.match(storeSource, /replaceSessionMessages\(sessionId,\s*next\)/);
   assert.match(transcriptSource, /deleteMessage\(message\.id\)/);
   assert.match(transcriptSource, /chat\.deleteMessage/);
-  assert.match(transcriptSource, /const editableUserMessage = isUser && !isSessionMessage;/);
+  assert.match(
+    transcriptSource,
+    /const editableUserMessage = isUser && !isSessionMessage && canEditMessages;/,
+  );
   assert.match(transcriptSource, /\{editableUserMessage \? \(/);
   assert.match(stylesSource, /\.copy-btn\.danger:hover/);
 });
@@ -388,6 +475,10 @@ test("assistant context inspector keeps a compact summary and retry action wired
   assert.match(inspectorSource, /context-inspector-summary-row/);
   assert.match(inspectorSource, /chat\.usageToolsSummary/);
   assert.match(inspectorSource, /context-inspector-kpis/);
+  assert.match(inspectorSource, /useSessionTiming/);
+  assert.match(inspectorSource, /chat\.usageSessionTime/);
+  assert.match(inspectorSource, /chat\.usageModelResponse/);
+  assert.match(inspectorSource, /modelResponsePercent/);
   assert.match(inspectorSource, /context-inspector-window-percent/);
   assert.match(inspectorSource, /chat\.usageContextLeft/);
   assert.match(inspectorSource, /chat\.usageThroughput/);

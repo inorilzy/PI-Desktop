@@ -1,4 +1,7 @@
 import { IconClock } from "./icons";
+import { RemoteProjectGroups } from "./remote/RemoteProjectGroups";
+import { groupRemoteProjectSessions } from "../lib/remote-project-catalog";
+import { isRemoteSession, sessionAllows } from "../lib/remote-session-safety";
 import {
   useCallback,
   useEffect,
@@ -13,9 +16,11 @@ import {
 } from "react";
 import { TooltipButton, cx } from "./ui";
 
-/** Default number of most-recent sessions shown per project group before the rest fold. */
-const MAX_VISIBLE_SESSIONS = 10;
 import { portalToBody } from "../lib/portal-visibility";
+import {
+  clampSidebarFloatingMenuTop,
+  SIDEBAR_MENU_VIEWPORT_PADDING,
+} from "../lib/sidebar-floating-menu";
 import { useTranslation } from "react-i18next";
 import { api } from "../lib/api";
 import { SessionHoverCard } from "../features/sessions/SessionHoverCard";
@@ -28,6 +33,11 @@ import {
   sessionArchived,
   sessionPinned,
 } from "../lib/sidebar-session-groups";
+import {
+  getVisibleProjectSessions,
+  updateProjectSessionExpansion,
+} from "../lib/sidebar-project-sessions";
+import { listableSessions } from "../lib/session-origin";
 import {
   composerDropItems,
   hasComposerFileDrag,
@@ -42,7 +52,7 @@ import {
   sidebarSessionStatus,
   type SidebarSessionStatus,
 } from "../lib/sidebar-session-status";
-import { ErrorCodes } from "@pi-desktop/shared";
+import { ErrorCodes, formatSessionLink } from "@pi-desktop/shared";
 import type { SessionSummary } from "@pi-desktop/shared";
 import type {
   ProjectMeta,
@@ -100,8 +110,6 @@ type ProjectEntry = {
   /** Best-effort git branch from the project workspace, if known. */
   branch?: string;
 };
-
-const VIEWPORT_PADDING = 8;
 
 /** Private MIME so a sidebar session drag is never mistaken for an OS file drop. */
 const SESSION_DRAG_MIME = "application/x-pi-desktop-session";
@@ -281,6 +289,9 @@ export function Sidebar({
   // Which row menu item is armed for its second, confirming click.
   const { armed: armedDelete, setArmed: setArmedDelete } = useArmedDelete();
   const [projectMenu, setProjectMenu] = useState<string | null>(null);
+  // Multi-select: Shift/Cmd+click session rows for batch operations.
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const lastClickedIdRef = useRef<string | null>(null);
   const [sectionMenu, setSectionMenu] = useState<"sessions" | "projects" | null>(null);
   const [menuPosition, setMenuPosition] = useState<{
     top: number;
@@ -451,6 +462,20 @@ export function Sidebar({
     };
   }, []);
 
+  // Escape clears multi-select (only when no menu is open — menus consume
+  // their own Escape first, so clearing happens on the next press).
+  useEffect(() => {
+    if (selectedIds.size === 0) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      // Let menu/sort close handlers consume Escape first.
+      if (sessionMenu || projectMenu || sectionMenu || sortOpen) return;
+      setSelectedIds(new Set());
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [selectedIds.size, sessionMenu, projectMenu, sectionMenu, sortOpen]);
+
   const showArchived = sessionView.archived;
   const sessionSort = sessionView.sort;
   const displaySessionSort: Exclude<SessionSort, "manual"> =
@@ -479,11 +504,8 @@ export function Sidebar({
   const placeMenu = useCallback((event: ReactMouseEvent<HTMLButtonElement>) => {
     const rect = event.currentTarget.getBoundingClientRect();
     setMenuPosition({
-      top: Math.max(
-        VIEWPORT_PADDING,
-        Math.min(rect.bottom + 4, window.innerHeight - 220),
-      ),
-      left: Math.max(VIEWPORT_PADDING, rect.right + 4),
+      top: clampSidebarFloatingMenuTop(rect.bottom + 4, window.innerHeight),
+      left: Math.max(SIDEBAR_MENU_VIEWPORT_PADDING, rect.right + 4),
     });
   }, []);
 
@@ -491,11 +513,8 @@ export function Sidebar({
   // of the trigger or pointer; they never flip to the left at the viewport edge.
   const placeMenuAtPoint = useCallback((x: number, y: number) => {
     setMenuPosition({
-      top: Math.max(
-        VIEWPORT_PADDING,
-        Math.min(y + 4, window.innerHeight - 220),
-      ),
-      left: Math.max(VIEWPORT_PADDING, x + 4),
+      top: clampSidebarFloatingMenuTop(y + 4, window.innerHeight),
+      left: Math.max(SIDEBAR_MENU_VIEWPORT_PADDING, x + 4),
     });
   }, []);
 
@@ -614,11 +633,13 @@ export function Sidebar({
   }, [t]);
 
   const filtered = useMemo(() => {
-    const candidates = showArchived
-      ? sessions
-      : sessions.filter(
-          (session) => !sessionArchived(session, sessionMeta[session.id]),
-        );
+    // A scheduled run's transcript belongs to the Scheduled page, not to the
+    // project groups: that page's task column and run history are its entry
+    // point (issue #1291). The session stays in the store so the chat surface
+    // can still resolve its title, source, and capabilities when it is opened
+    // from there.
+    const candidates = listableSessions(sessions)
+      .filter((session) => showArchived || !sessionArchived(session, sessionMeta[session.id]));
     // Empty sessions are durable sidebar rows now. Their message count, not
     // their title, controls New Task reuse, so a manual rename never changes
     // the empty-slot behavior.
@@ -950,14 +971,16 @@ export function Sidebar({
       session: { ...session, title: taskTitle(session.title) },
       target,
       temporary,
-      space: temporary ? t("nav.hoverCardTemporarySpace") : entry?.name ?? projectName(projectPath),
+      space: isRemoteSession(session)
+        ? `${session.remoteWorkspaceLabel ?? t("remote:workspace")} · ${session.remoteHostLabel ?? t("remote:remote")}`
+        : temporary ? t("nav.hoverCardTemporarySpace") : entry?.name ?? projectName(projectPath),
       branch: entry?.branch,
     });
   }, [projectEntriesByPath, revealSessionHoverCard, t, taskTitle]);
 
   const temporarySessions = useMemo(
     () => filtered
-      .filter((session) => !normalizeProjectPath(session.projectPath))
+      .filter((session) => !normalizeProjectPath(session.projectPath) && !(isRemoteSession(session) && session.remoteProjectId))
       .sort(compareSessions),
     [filtered, compareSessions],
   );
@@ -965,6 +988,92 @@ export function Sidebar({
     () => temporarySessions.filter((session) => !pinnedSessionIds.has(session.id)),
     [temporarySessions, pinnedSessionIds],
   );
+  const remoteProjectGroups = useMemo(() => groupRemoteProjectSessions(
+    filtered.filter((session) => isRemoteSession(session) && !pinnedSessionIds.has(session.id)), compareSessions,
+  ), [filtered, pinnedSessionIds, compareSessions]);
+  // Flat ordered list of every visible session id — used for Shift+click range selection.
+  const flatSessionOrder = useMemo(() => {
+    const ids: string[] = [];
+    // Pinned first (same order as rendered)
+    for (const s of pinnedSessions) ids.push(s.id);
+    // Then project sessions
+    for (const entry of projectEntries) {
+      for (const s of entry.sessions) {
+        if (!pinnedSessionIds.has(s.id)) ids.push(s.id);
+      }
+    }
+    for (const group of remoteProjectGroups) for (const session of group.sessions) ids.push(session.id);
+    // Then temporary (standalone) sessions
+    for (const s of temporarySessionHistory) ids.push(s.id);
+    return ids;
+  }, [pinnedSessions, projectEntries, pinnedSessionIds, temporarySessionHistory, remoteProjectGroups]);
+
+  /** Handle multi-select click on a session row. Returns true if the click was consumed by multi-select. */
+  const handleMultiSelectClick = (event: React.MouseEvent, sessionId: string): boolean => {
+    const isMeta = event.metaKey || event.ctrlKey;
+    const isShift = event.shiftKey;
+    if (!isMeta && !isShift) {
+      // Plain click: clear selection, let normal handler run.
+      if (selectedIds.size > 0) setSelectedIds(new Set());
+      lastClickedIdRef.current = sessionId;
+      return false;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    if (isMeta && !isShift) {
+      // Toggle individual item
+      setSelectedIds((prev) => {
+        const next = new Set(prev);
+        if (next.has(sessionId)) next.delete(sessionId);
+        else next.add(sessionId);
+        return next;
+      });
+      lastClickedIdRef.current = sessionId;
+      return true;
+    }
+    if (isShift) {
+      // Range select from lastClickedId to current
+      const anchor = lastClickedIdRef.current;
+      if (!anchor) {
+        setSelectedIds(new Set([sessionId]));
+        lastClickedIdRef.current = sessionId;
+        return true;
+      }
+      const startIdx = flatSessionOrder.indexOf(anchor);
+      const endIdx = flatSessionOrder.indexOf(sessionId);
+      if (startIdx === -1 || endIdx === -1) {
+        setSelectedIds(new Set([sessionId]));
+        lastClickedIdRef.current = sessionId;
+        return true;
+      }
+      const lo = Math.min(startIdx, endIdx);
+      const hi = Math.max(startIdx, endIdx);
+      const range = flatSessionOrder.slice(lo, hi + 1);
+      setSelectedIds((prev) => {
+        const next = new Set(prev);
+        for (const id of range) next.add(id);
+        return next;
+      });
+      // Don't update lastClickedIdRef on shift-click so further shifts extend from same anchor
+      return true;
+    }
+    return false;
+  };
+
+  // Clear multi-select when sessions list changes (e.g. after batch delete)
+  const sessionIdSet = useMemo(() => new Set(sessions.map((s) => s.id)), [sessions]);
+  useEffect(() => {
+    if (selectedIds.size === 0) return;
+    // Remove any selected ids that no longer exist
+    let changed = false;
+    const next = new Set<string>();
+    for (const id of selectedIds) {
+      if (sessionIdSet.has(id)) next.add(id);
+      else changed = true;
+    }
+    if (changed) setSelectedIds(next);
+  }, [sessionIdSet]); // intentionally not including selectedIds to avoid loop
+
   const renderSessionStatus = (status: SidebarSessionStatus) => {
     const labelKey =
       status === "running"
@@ -1064,7 +1173,10 @@ export function Sidebar({
       // session that really exists.
       const known = useAppStore.getState().sessions.some((session) => session.id === sessionId);
       if (!known) {
-        const detail = await api.getSession(sessionId);
+        // Only presence is read from this reply, so ask for the smallest window
+        // the host accepts. The uncapped read moved every message of the
+        // session over IPC to answer one boolean.
+        const detail = await api.getSession(sessionId, { messageLimit: 1 });
         if (!detail.session) {
           reportError(new Error(t("sessionCollaboration.sessionMissing")));
           return;
@@ -1082,6 +1194,11 @@ export function Sidebar({
   const setCollapsed = (path: string, value: boolean) => {
     const normalized = normalizeProjectPath(path) || path;
     setProjectCollapsed(normalized, value);
+    if (value) {
+      setExpandedProjectSessions((previous) =>
+        updateProjectSessionExpansion(previous, normalized, false),
+      );
+    }
   };
 
   const setSort = (next: SessionSort) => {
@@ -1097,7 +1214,9 @@ export function Sidebar({
   };
 
   const expandProjectSessions = (projectKey: string) => {
-    setExpandedProjectSessions((prev) => ({ ...prev, [projectKey]: true }));
+    setExpandedProjectSessions((previous) =>
+      updateProjectSessionExpansion(previous, projectKey, true),
+    );
   };
 
   const toggleSessionPin = (session: SessionSummary) => {
@@ -1209,6 +1328,68 @@ export function Sidebar({
     void deleteSession(session);
   };
 
+  /** Batch delete: delete all selected sessions sequentially. */
+  const batchDeleteSessions = async () => {
+    const ids = [...selectedIds];
+    if (ids.length === 0) return;
+    closeMenus();
+    const toDelete = sessions.filter(
+      (s) => ids.includes(s.id) && s.source !== "pi-native",
+    );
+    for (const session of toDelete) {
+      try {
+        await deleteSessionAction(session.id);
+      } catch (error) {
+        reportError(error);
+      }
+    }
+    // If we deleted the active session, create or select a fallback
+    if (ids.includes(activeSessionId ?? "")) {
+      const remaining = sessions.find(
+        (s) => !ids.includes(s.id) && !sessionArchived(s, sessionMeta[s.id]),
+      );
+      try {
+        if (remaining) await selectSession(remaining.id);
+        else await newSession({ projectPath: null });
+      } catch (error) {
+        reportError(error);
+      }
+    }
+    setSelectedIds(new Set());
+  };
+
+  /** Batch archive: archive all selected sessions. */
+  const batchArchiveSessions = async () => {
+    const ids = [...selectedIds];
+    if (ids.length === 0) return;
+    closeMenus();
+    for (const id of ids) {
+      const session = sessions.find((s) => s.id === id);
+      if (!session) continue;
+      const alreadyArchived = sessionArchived(session, sessionMeta[session.id]);
+      if (alreadyArchived) continue;
+      archiveSessionAction(id);
+    }
+    // If we archived the active session (and it wasn't already archived), select a fallback
+    const activeWasArchived = (() => {
+      if (!activeSessionId || !ids.includes(activeSessionId)) return false;
+      const s = sessions.find((s) => s.id === activeSessionId);
+      return s ? !sessionArchived(s, sessionMeta[s.id]) : false;
+    })();
+    if (activeWasArchived) {
+      const remaining = sessions.find(
+        (s) => !ids.includes(s.id) && !sessionArchived(s, sessionMeta[s.id]),
+      );
+      try {
+        if (remaining) await selectSession(remaining.id);
+        else await newSession({ projectPath: null });
+      } catch (error) {
+        reportError(error);
+      }
+    }
+    setSelectedIds(new Set());
+  };
+
   /** Menu items of different surfaces never share an armed key. */
   const projectDeleteKey = (entry: ProjectEntry) => `project:${entry.key}`;
 
@@ -1256,6 +1437,7 @@ export function Sidebar({
   };
 
   const forkSession = async (session: SessionSummary) => {
+    if (!sessionAllows(session, "canEditMessages")) return;
     closeMenus(false);
     try {
       await forkSessionAction(session.id);
@@ -1275,7 +1457,22 @@ export function Sidebar({
     closeMenus();
   };
 
+  /**
+   * The link another conversation references: pasting it into a Composer draft
+   * carries a bounded excerpt of this conversation into that turn (issue #1324).
+   */
+  const copySessionLink = async (session: SessionSummary) => {
+    try {
+      await navigator.clipboard.writeText(formatSessionLink(session.id));
+      showToast(t("chat.copied"));
+    } catch (error) {
+      reportError(error);
+    }
+    closeMenus();
+  };
+
   const openSessionPath = async (session: SessionSummary) => {
+    if (isRemoteSession(session)) return;
     closeMenus(false);
     try {
       await api.openSessionScratchPath(session.id);
@@ -1351,6 +1548,7 @@ export function Sidebar({
 
   const moveSessionToProject = useCallback(
     async (sessionId: string, projectPath: string, projectName: string) => {
+      if (sessionId.startsWith("remote:")) return;
       // A running turn owns the current project's instructions, tools, and
       // working directory; the host rejects the move as well.
       if (runningSessions[sessionId]) {
@@ -1536,11 +1734,11 @@ export function Sidebar({
     return (
       <div
         key={session.id}
-        className={`thread-item ${active ? "active" : ""} ${archived ? "archived" : ""} ${draggingSessionId === session.id ? "is-dragging" : ""}`}
+        className={`thread-item ${active ? "active" : ""} ${archived ? "archived" : ""} ${draggingSessionId === session.id ? "is-dragging" : ""} ${selectedIds.has(session.id) ? "selected" : ""}`}
         data-sidebar-session-row={session.id}
-        draggable={!running}
+        draggable={!running && !isRemoteSession(session)}
         onDragStart={(event) => {
-          if (running) {
+          if (running || isRemoteSession(session)) {
             event.preventDefault();
             return;
           }
@@ -1548,12 +1746,9 @@ export function Sidebar({
         }}
         onDragEnd={endSessionDrag}
         onClick={(event) => {
-          // The row's own controls are the only click targets spelled out in
-          // markup; a click on the row container or its gap to the actions
-          // column - including where a hidden overflow control would sit -
-          // still opens the conversation instead of dying on the wrapper.
           const target = event.target as HTMLElement | null;
           if (target?.closest("button, [data-action]")) return;
+          if (handleMultiSelectClick(event, session.id)) return;
           cancelSessionPrefetch();
           hideSessionHoverCard();
           void (temporary
@@ -1563,6 +1758,11 @@ export function Sidebar({
         onContextMenu={(event) => {
           event.preventDefault();
           event.stopPropagation();
+          // If right-clicking a non-selected row while multi-select is active,
+          // add it to the selection instead of replacing.
+          if (selectedIds.size > 0 && !selectedIds.has(session.id)) {
+            setSelectedIds((prev) => new Set([...prev, session.id]));
+          }
           placeMenuAtPoint(event.clientX, event.clientY);
           openSessionRowMenu(
             session.id,
@@ -1587,7 +1787,8 @@ export function Sidebar({
             showSessionHoverCard(session, event.currentTarget, temporary)
           }
           onBlur={scheduleSessionHoverCardHide}
-          onClick={() => {
+          onClick={(event) => {
+            if (handleMultiSelectClick(event, session.id)) return;
             cancelSessionPrefetch();
             hideSessionHoverCard();
             void (temporary
@@ -1603,6 +1804,7 @@ export function Sidebar({
           {session.source === "pi-native" ? (
             <span className="thread-item-source" title="Native Pi session">Pi</span>
           ) : null}
+          {isRemoteSession(session) && <span className="thread-item-source" title={session.remoteHostLabel}>{t("remote:remote")}</span>}
           <span className="thread-item-title">{taskTitle(session.title)}</span>
           {options?.global ? (
             <span className="thread-item-project">
@@ -1641,13 +1843,14 @@ export function Sidebar({
     const projectId = projectDomId(entry.key);
     const isMenuOpen = projectMenu === entry.key;
 
-    // Show the most recent MAX_VISIBLE_SESSIONS rows by default; the remaining
-    // sessions stay folded behind the same load-more affordance used for the
-    // time-grouped overflow and expand on click.
+    // Show the initial page by default; the remaining sessions stay folded
+    // behind the same load-more affordance used for time-group overflow.
     const sessionsExpanded = expandedProjectSessions[entry.key] ?? false;
     const history = entry.sessions.filter((session) => !pinnedSessionIds.has(session.id));
-    const visibleSessions = sessionsExpanded ? history : history.slice(0, MAX_VISIBLE_SESSIONS);
-    const hiddenCount = history.length - visibleSessions.length;
+    const { visibleSessions, hiddenCount } = getVisibleProjectSessions(
+      history,
+      sessionsExpanded,
+    );
 
     const renderTimeGroupedSessions = (sessions: SessionSummary[]) => {
       const result: React.ReactNode[] = [];
@@ -1923,6 +2126,40 @@ export function Sidebar({
         }}
       >
         {session ? (
+          selectedIds.size > 1 && selectedIds.has(session.id) ? (
+            <>
+              <button
+                ref={menuFirstItemRef}
+                type="button"
+                role="menuitem"
+                data-action="batch-archive"
+                onClick={() => void batchArchiveSessions()}
+              >
+                <IconArchive size={14} />
+                {t("nav.batchArchive", { defaultValue: "Archive {{count}} sessions", count: selectedIds.size })}
+              </button>
+              <button
+                type="button"
+                role="menuitem"
+                className={cx("danger", armedDelete === "batch" && "is-armed")}
+                data-action="batch-delete"
+                data-armed={armedDelete === "batch" ? "true" : undefined}
+                onClick={() => {
+                  if (armedDelete !== "batch") {
+                    setArmedDelete("batch");
+                    return;
+                  }
+                  setArmedDelete(null);
+                  void batchDeleteSessions();
+                }}
+              >
+                <IconTrash size={14} />
+                {armedDelete === "batch"
+                  ? t("nav.batchDeleteConfirm", { defaultValue: "Delete {{count}} sessions?", count: selectedIds.size })
+                  : t("nav.batchDelete", { defaultValue: "Delete {{count}} sessions", count: selectedIds.size })}
+              </button>
+            </>
+          ) : (
           <>
             {session.source !== "pi-native" ? (
               <button
@@ -1965,7 +2202,7 @@ export function Sidebar({
                 ? t("nav.restoreTask", { defaultValue: "Restore" })
                 : t("nav.archiveTask", { defaultValue: "Archive" })}
             </button>
-            {session.source !== "pi-native" ? (
+            {session.source !== "pi-native" && sessionAllows(session, "canEditMessages") ? (
               <button
                 type="button"
                 role="menuitem"
@@ -1977,7 +2214,16 @@ export function Sidebar({
                 {t("nav.createBranch")}
               </button>
             ) : null}
-            {settings?.developerMode === true ? (
+            <button
+              type="button"
+              role="menuitem"
+              data-action="copy-session-link"
+              onClick={() => void copySessionLink(session)}
+            >
+              <IconCopy size={14} />
+              {t("nav.copySessionLink")}
+            </button>
+            {settings?.developerMode === true && !isRemoteSession(session) ? (
               <>
                 <button
                   type="button"
@@ -2015,6 +2261,7 @@ export function Sidebar({
               </button>
             ) : null}
           </>
+          )
         ) : null}
         {entry ? (
           <>
@@ -2287,6 +2534,8 @@ export function Sidebar({
               </div>
             </section>
           )}
+          <RemoteProjectGroups groups={remoteProjectGroups}
+            renderSessions={(sessions) => renderSessionRows(sessions, { temporary: false })} />
         </div>
 
         <div className="sidebar-footer no-drag">

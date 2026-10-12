@@ -21,6 +21,10 @@ import { isAbsolute, join, relative, resolve } from "node:path";
 import {
   ErrorCodes,
   formatFileInsert,
+  formatPromptPathText,
+  isSvgAttachment,
+  locateInlinePromptPaths,
+  SVG_MIME_TYPE,
   MAX_INLINE_IMAGE_BYTES,
   type AgentPromptAttachment,
   type MessageAttachment,
@@ -86,7 +90,8 @@ function canonicalPath(path: string): string | undefined {
   }
 }
 
-function promptMimeType(path: string, supplied?: string): string {
+function promptMimeType(path: string, supplied?: string, name?: string): string {
+  if (isSvgAttachment(supplied, path, name)) return SVG_MIME_TYPE;
   const value = supplied?.trim().toLowerCase();
   if (value) return value;
   const extension = path.split(".").at(-1)?.toLowerCase() ?? "";
@@ -97,7 +102,8 @@ function isImagePromptAttachment(
   attachment: AgentPromptAttachment,
   path: string,
 ): boolean {
-  const mimeType = promptMimeType(path, attachment.mimeType);
+  const mimeType = promptMimeType(path, attachment.mimeType, attachment.name);
+  if (mimeType === SVG_MIME_TYPE) return false;
   const extension = path.split(".").at(-1)?.toLowerCase() ?? "";
   return (
     attachment.kind === "image" ||
@@ -224,9 +230,21 @@ export async function preparePromptAttachments(
   projectPath: string | undefined,
   attachments: readonly AgentPromptAttachment[],
   supportsVision: boolean,
+  /**
+   * The prompt text this input carries, with the attachment chips the Composer
+   * left inline. An image named there keeps that text on the durable message and
+   * in the prompt, instead of being appended after the body.
+   */
+  promptContent: string,
 ): Promise<PreparedPromptAttachment[]> {
   const prepared: PreparedPromptAttachment[] = [];
-  for (const attachment of attachments) {
+  // Reference order is the user's order, so each entry takes the next matching
+  // `@path` text the prompt holds.
+  const inlineSpans = locateInlinePromptPaths(
+    promptContent,
+    attachments.map((attachment) => attachment.path),
+  );
+  for (const [index, attachment] of attachments.entries()) {
     const source = resolvePromptPath(dataRoot, sessionId, projectPath, attachment.path);
     if (!source) {
       throw Object.assign(new Error(`Attachment path is outside the session roots: ${attachment.path}`), {
@@ -234,7 +252,7 @@ export async function preparePromptAttachments(
       });
     }
     const name = attachment.name.trim() || source.absolute.split(/[\\/]/).at(-1) || "attachment";
-    const mimeType = promptMimeType(source.absolute, attachment.mimeType);
+    const mimeType = promptMimeType(source.absolute, attachment.mimeType, name);
     const isImage = isImagePromptAttachment(attachment, source.absolute);
     if (!isImage) {
       prepared.push({
@@ -245,7 +263,9 @@ export async function preparePromptAttachments(
           ...(mimeType !== "application/octet-stream" ? { mimeType } : {}),
           ...(Number.isFinite(attachment.size) ? { size: attachment.size } : {}),
         },
-        fallbackPath: displayPromptPath(source, projectPath),
+        fallbackPath: mimeType === SVG_MIME_TYPE && source.root === "attachment"
+          ? await fallbackPathForStoredAttachment(dataRoot, sessionId, source, name)
+          : displayPromptPath(source, projectPath),
       });
       continue;
     }
@@ -259,6 +279,12 @@ export async function preparePromptAttachments(
         : bytes
           ? ensureAttachmentBlob(dataRoot, bytes)
           : await ensureAttachmentBlobFromFile(dataRoot, source.absolute);
+    // The user's own position for this image: the draft named its path between
+    // words, so the text stays in the prompt and the transcript renders the
+    // image there.
+    const inlinePath = inlineSpans[index]
+      ? formatPromptPathText(attachment.path)
+      : undefined;
     const fallbackPath = inline
       ? displayPromptPath(source, projectPath)
       : await fallbackPathForStoredAttachment(
@@ -274,6 +300,7 @@ export async function preparePromptAttachments(
         ref,
         mimeType,
         size,
+        ...(inlinePath ? { inlinePath } : {}),
       },
       fallbackPath,
       ...(bytes
@@ -312,6 +339,12 @@ export function appendPromptFallbackPaths(
 ): string {
   const paths = attachments
     .filter((attachment) => !attachment.inlineData)
+    // A path the prompt already names at the user's own position needs no second
+    // copy at the end; a rewritten fallback (a replayed copy) still travels.
+    .filter(
+      (attachment) =>
+        attachment.message.inlinePath !== formatPromptPathText(attachment.fallbackPath),
+    )
     .map((attachment) => formatFileInsert(attachment.fallbackPath, "file"))
     .join("")
     .trim();

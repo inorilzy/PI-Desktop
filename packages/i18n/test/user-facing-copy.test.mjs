@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
 import { test } from "vitest";
-import { en, flattenCatalog, ko, zhCN, zhTW } from "../src/index.ts";
+import { catalogs, en, flattenCatalog, ko, tr, zhCN, zhTW } from "../src/index.ts";
 
 const english = flattenCatalog(en);
 const chinese = flattenCatalog(zhCN);
 const traditional = flattenCatalog(zhTW);
 const korean = flattenCatalog(ko);
+const turkish = flattenCatalog(tr);
 
 test("shell status and crash copy stay user-facing", () => {
   assert.equal(english["app.tagline"], "Local AI coding partner");
@@ -65,6 +66,36 @@ test("common setup and marketplace copy avoid developer jargon", () => {
   assert.equal(korean["settings.language"], "언어");
   assert.equal(korean["nav.projects"], "프로젝트");
   assert.equal(korean["nav.temporarySessions"], "임시 대화");
+});
+
+test("Turkish cloud sync recovery copy stays localized", () => {
+  const keys = [
+    "settings.configSync.errorTitle",
+    "settings.configSync.errorDetails",
+    "settings.configSync.backupPasswordOptional",
+    "settings.configSync.passwordTooShort",
+    "settings.configSync.previewPending",
+    "settings.configSync.previewConflicts",
+    "settings.configSync.errors.auth",
+    "settings.configSync.errors.permission",
+    "settings.configSync.errors.notFound",
+    "settings.configSync.errors.conflict",
+    "settings.configSync.errors.quota",
+    "settings.configSync.errors.rateLimit",
+    "settings.configSync.errors.server",
+    "settings.configSync.errors.network",
+    "settings.configSync.errors.redirect",
+    "settings.configSync.errors.unsupported",
+    "settings.configSync.errors.locked",
+    "settings.configSync.errors.invalid",
+    "settings.configSync.errors.password",
+    "settings.configSync.errors.limit",
+    "settings.configSync.errors.unknown",
+  ];
+
+  for (const key of keys) {
+    assert.notEqual(turkish[key], english[key], `${key} must not fall back to English`);
+  }
 });
 
 test("Plan mode and Auto permission copy stay explicit in both locales", () => {
@@ -163,4 +194,43 @@ test("chat context-menu copy stays user-facing", () => {
   assert.equal(chinese["chat.copyFailed"], "复制到剪贴板失败");
   assert.equal(chinese["chat.copyConversation"], "复制整个对话");
   assert.equal(chinese["chat.selectMessageText"], "选中消息文本");
+});
+
+test("pt-BR keeps security disclosures and action semantics intact", () => {
+  const brazilian = flattenCatalog(catalogs["pt-BR"]);
+  const importWarning = brazilian["plugins.agentExtension.importConfirm"];
+  assert.match(importWarning, /processo/i);
+  assert.match(importWarning, /ferramentas|acesso/i);
+  assert.match(importWarning, /instru[çc][oõ]es/i);
+  assert.match(importWarning, /\bnpm\b/i);
+  assert.match(importWarning, /depend[eê]ncias/i);
+
+  assert.match(brazilian["plugins.permissionHelp.clipboard.read"], /hist[oó]rico/i);
+  assert.match(brazilian["plugins.permissionHelp.clipboard.write"], /substitu/i);
+  assert.match(brazilian["settings.permissionModeDesc"], /sem.{0,24}(?:permiss|autoriza|confirm)/i);
+  assert.match(brazilian["settings.permissionModeDesc"], /alterar.{0,20}arquivos?/i);
+  assert.match(brazilian["settings.networkInsecureNoticeBody"], /credenciais/i);
+  assert.match(brazilian["settings.infiniteProviderRetryDesc"], /API/i);
+  assert.match(brazilian["settings.infiniteProviderRetryDesc"], /parar|interromper/i);
+  assert.match(brazilian["settings.importModelsScanDesc"], /chaves de API salvas são copiadas/i);
+  assert.match(brazilian["settings.importModelsScanDesc"], /logins de assinatura não são/i);
+  assert.match(brazilian["settings.copyProviderHint"], /serviço independente/i);
+  assert.match(brazilian["settings.copyProviderHint"], /chaves de API.*logins de contas.*cabeçalhos personalizados não são copiados/i);
+  assert.match(brazilian["settings.copyProviderHint"], /modelo padrão.*inalterado/i);
+  assert.match(brazilian["settings.apiStyleChooseCustom"], /conta do provedor/i);
+  assert.match(brazilian["settings.apiStyleChooseCustom"], /formato de API compatível.*salvar este serviço/i);
+  assert.match(brazilian["settings.modelsFallbackNote"], /somente o modelo configurado está disponível/i);
+  assert.match(brazilian["plugins.marketEmpty"], /nenhum plugin corresponde à sua pesquisa/i);
+  assert.doesNotMatch(brazilian["chat.queuedPromptEmpty"], /vazi[oa]/i);
+  assert.match(brazilian["chat.queuedPromptEmpty"], /mensagem na fila/i);
+  assert.match(brazilian["plugins.permissionHelp.composer.transform"], /texto selecionado/i);
+  assert.equal(brazilian["settings.smoothStreaming"], "Exibição gradual");
+  assert.match(brazilian["settings.smoothStreamingDesc"], /caractere por caractere/i);
+  assert.match(brazilian["settings.smoothStreamingDesc"], /máquina de escrever/i);
+  assert.match(brazilian["settings.smoothStreamingDesc"], /reduzir animações/i);
+
+  assert.doesNotMatch(brazilian["project.clear"], /excluir|deletar/i);
+  assert.doesNotMatch(brazilian["notifications.clearAll"], /excluir|deletar/i);
+  assert.match(brazilian["chat.acHint"], /Enter/);
+  assert.match(brazilian["chat.acHint"], /Esc/);
 });

@@ -6,6 +6,82 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { createServer } from "vite";
 import { IPC } from "@pi-desktop/shared";
 
+test("sending the first prompt derives a replaceable title instead of renaming", async (t) => {
+  const server = await createServer({
+    root: fileURLToPath(new URL("..", import.meta.url)),
+    configFile: false,
+    server: { middlewareMode: true, hmr: false, ws: false },
+    appType: "custom",
+    optimizeDeps: { noDiscovery: true, include: [] },
+  });
+  const previousWindow = globalThis.window;
+  try {
+    const { createQueueSlice } = await server.ssrLoadModule("/src/stores/slices/queue-slice.ts");
+    const invoked = [];
+    let refreshed = 0;
+    globalThis.window = { piDesktop: { invoke: async (channel, ...args) => {
+      invoked.push([channel, ...args]);
+      if (channel === IPC.invoke.agentPrompt) return { ok: true, data: { turnId: "turn-1" } };
+      if (channel === IPC.invoke.sessionDeriveTitle) return { ok: true, data: { updated: true } };
+      throw new Error(`Unexpected IPC: ${channel}`);
+    } } };
+    let state = {
+      activeSessionId: "session-a",
+      sessions: [{ id: "session-a", title: "New task", source: "desktop" }],
+      messages: [],
+      pendingPlans: {},
+      runningSessions: {},
+      latestTurnResults: {},
+      sessionOutcomes: {},
+      showToast: assert.fail,
+      rememberModel() {},
+      refreshSessions: async () => {
+        refreshed += 1;
+      },
+    };
+    const runtime = {
+      submittedComposerDrafts: new Map(),
+      sessionTranscriptCache: new Map(),
+      insertOptimisticUserMessage() {},
+      retractOptimisticUserMessage() {},
+    };
+    const slice = createQueueSlice({
+      get: () => state,
+      set: (update) => {
+        const next = typeof update === "function" ? update(state) : update;
+        state = { ...state, ...next };
+      },
+      runtime,
+      promptAttachmentsFromDraft: () => [],
+      withoutRecordKey: (record, key) => {
+        const next = { ...record };
+        delete next[key];
+        return next;
+      },
+      viewingSessionIdForPrompt: () => "session-a",
+      messageErrorFromUnknown: (error) => ({ code: "FAILED", message: String(error) }),
+      assistantErrorMessage: () => ({ role: "assistant", content: "failed" }),
+      materializeDraftSession: async () => null,
+    });
+
+    assert.equal(await slice.sendPrompt("Summarize the first turn", undefined, "session-a"), true);
+    // The host, not the renderer, owns the title: the sidebar keeps the
+    // placeholder until the derived title comes back, and the rename path stays
+    // unused so an installed title plugin can still replace the derived text.
+    assert.equal(state.sessions[0].title, "New task");
+    assert.deepEqual(
+      invoked.filter(([channel]) => channel === IPC.invoke.sessionDeriveTitle),
+      [[IPC.invoke.sessionDeriveTitle, "session-a", "Summarize the first turn"]],
+    );
+    assert.equal(invoked.some(([channel]) => channel === IPC.invoke.sessionRename), false);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(refreshed, 1);
+  } finally {
+    globalThis.window = previousWindow;
+    await server.close();
+  }
+});
+
 test("pending queue actions stay locked until admission succeeds", async (t) => {
   const server = await createServer({
     root: fileURLToPath(new URL("..", import.meta.url)),
@@ -40,7 +116,7 @@ test("pending queue actions stay locked until admission succeeds", async (t) => 
           }
           throw new Error(`Unexpected IPC: ${channel}`);
         } } };
-        let state = { activeSessionId: "session-a", queuedPrompts: {}, showToast: assert.fail };
+        let state = { activeSessionId: "session-a", sessions: [{ id: "session-a", source: "desktop" }], queuedPrompts: {}, showToast: assert.fail };
         const slice = createQueueSlice({
           get: () => state,
           set: (patch) => { state = { ...state, ...(typeof patch === "function" ? patch(state) : patch) }; },
@@ -97,7 +173,7 @@ test("pending queue actions stay locked until admission succeeds", async (t) => 
         if (channel === IPC.invoke.agentQueueList) return { ok: true, data: { entries } };
         throw new Error(`Unexpected IPC: ${channel}`);
       } } };
-      let state = { activeSessionId: "session-a", queuedPrompts: {}, showToast: (message) => errors.push(message) };
+      let state = { activeSessionId: "session-a", sessions: [{ id: "session-a", source: "desktop" }], queuedPrompts: {}, showToast: (message) => errors.push(message) };
       const slice = createQueueSlice({
         get: () => state,
         set: (patch) => { state = { ...state, ...(typeof patch === "function" ? patch(state) : patch) }; },
@@ -114,6 +190,67 @@ test("pending queue actions stay locked until admission succeeds", async (t) => 
       await slice.refreshQueuedPrompts("session-a");
       assert.equal(state.queuedPrompts["session-a"][0].id, "retried-turn");
     });
+  } finally {
+    globalThis.window = previousWindow;
+    await server.close();
+  }
+});
+
+test("editing a restored queue preserves attachments when resubmitted", async (t) => {
+  const server = await createServer({
+    root: fileURLToPath(new URL("..", import.meta.url)),
+    configFile: false,
+    server: { middlewareMode: true, hmr: false, ws: false },
+    appType: "custom",
+    optimizeDeps: { noDiscovery: true, include: [] },
+  });
+  const previousWindow = globalThis.window;
+  try {
+    const { createQueueSlice } = await server.ssrLoadModule("/src/stores/slices/queue-slice.ts");
+    const image = { path: "/scratch/icon.png", name: "icon.png", kind: "image", mimeType: "image/png" };
+    const file = { path: "/scratch/notes.txt", name: "notes.txt", kind: "file", mimeType: "text/plain" };
+    for (const [name, content, attachments] of [
+      ["image and file", "Review @/scratch/notes.txt with the image", [image, file]],
+      ["image only", "", [image]],
+      ["text only", "Review the plan", undefined],
+    ]) {
+      await t.test(name, async () => {
+        let entries = [{ id: "restored-turn", sessionId: "session-a", content, attachments,
+          position: 1, createdAt: "2026-09-23T00:00:00Z" }];
+        let submitted;
+        globalThis.window = { piDesktop: { invoke: async (channel, payload) => {
+          if (channel === IPC.invoke.agentQueueList) return { ok: true, data: { entries } };
+          if (channel === IPC.invoke.agentQueueRemove) {
+            entries = entries.filter((entry) => entry.id !== payload.turnId);
+            return { ok: true, data: {} };
+          }
+          if (channel === IPC.invoke.agentQueuePush) {
+            submitted = payload;
+            const entry = { ...payload, id: "resubmitted-turn", position: 1, createdAt: "2026-09-23T00:00:01Z" };
+            entries = [entry];
+            return { ok: true, data: entry };
+          }
+          throw new Error(`Unexpected IPC: ${channel}`);
+        } } };
+        let state = { activeSessionId: "session-a", sessions: [{ id: "session-a", source: "desktop" }], queuedPrompts: {}, showToast: assert.fail };
+        const slice = createQueueSlice({
+          get: () => state,
+          set: (patch) => { state = { ...state, ...(typeof patch === "function" ? patch(state) : patch) }; },
+          promptAttachmentsFromDraft: (references) => references.map(({ path, name, kind, mimeType }) => ({ path, name, kind, mimeType })),
+        });
+        Object.assign(state, slice);
+        await slice.refreshQueuedPrompts("session-a");
+        slice.editQueuedPrompt("restored-turn");
+        assert.deepEqual(entries, [], "editing removes the original queued entry");
+        assert.deepEqual(state.composerPrefill, {
+          sessionId: "session-a", text: content, fileReferences: (attachments ?? []).map((attachment) =>
+            attachment.kind === "file" ? { ...attachment, token: "@/scratch/notes.txt" } : attachment),
+        }, "restored draft retains the Host's text and attachments");
+        assert.equal(await slice.enqueuePrompt(state.composerPrefill.text, state.composerPrefill), true);
+        assert.equal(submitted.content, content, "resubmitting must not rewrite serialized file references");
+        assert.deepEqual(submitted.attachments ?? [], attachments ?? [], "resubmitting must keep the same attachments");
+      });
+    }
   } finally {
     globalThis.window = previousWindow;
     await server.close();

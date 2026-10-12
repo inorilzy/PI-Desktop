@@ -418,7 +418,32 @@ fn restart_distinguishes_known_acceptance_from_never_received_work() {
 }
 
 #[test]
-fn migration_from_v19_is_additive_and_does_not_offer_old_messages() {
+fn migration_from_v23_is_additive_and_does_not_offer_old_messages() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("pi.sqlite");
+    let id;
+    {
+        let db = Database::open(&path).unwrap();
+        let a = session(&db, "Keep");
+        let b = session(&db, "Worker");
+        id = send(&db, &b, &a, "old", "message").id;
+        db.conn()
+            .execute_batch("DROP TABLE session_collaboration_current_turn; PRAGMA user_version=23;")
+            .unwrap();
+    }
+    let db = Database::open(&path).unwrap();
+    assert!(repository::get(&db, &id)
+        .unwrap()
+        .unwrap()
+        .current_turn
+        .is_none());
+    assert_eq!(count(&db, "PRAGMA user_version"), 24);
+    assert!(crate::db::migration_backup_path(&path, 23).exists());
+    assert_eq!(count(&db, "SELECT COUNT(*) FROM sessions"), 2);
+}
+
+#[test]
+fn migration_from_v19_upgrades_through_v24() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("pi.sqlite");
     let id;
@@ -437,8 +462,7 @@ fn migration_from_v19_is_additive_and_does_not_offer_old_messages() {
         .unwrap()
         .current_turn
         .is_none());
-    assert_eq!(count(&db, "PRAGMA user_version"), 20);
-    assert!(crate::db::migration_backup_path(&path, 19).exists());
+    assert_eq!(count(&db, "PRAGMA user_version"), 24);
     assert_eq!(count(&db, "SELECT COUNT(*) FROM sessions"), 2);
 }
 

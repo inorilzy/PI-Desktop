@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import type { AssistantMessage, Model } from "@earendil-works/pi-ai";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import {
+  AUTO_COMPACTION_TRIGGER_RATIO,
+  automaticCompactionThresholdFor,
   COMPACTION_MAX_KEEP_RECENT_TOKENS,
   COMPACTION_MIN_KEEP_RECENT_TOKENS,
   COMPACTION_RETAINED_USER_MESSAGE_MAX_TOKENS,
@@ -24,6 +26,18 @@ describe("contextBudgetFor", () => {
         requestHeadroom: 32_000,
         keepRecentTokens: 44_800,
       });
+  });
+  it("derives an early automatic trigger while preserving the hard guard", () => {
+    const limits = contextBudgetLimitsFor({
+      contextWindow: 256_000,
+      maxTokens: 32_000,
+    });
+    const trigger = automaticCompactionThresholdFor(limits);
+
+    expect(AUTO_COMPACTION_TRIGGER_RATIO).toBe(0.9);
+    expect(trigger).toBe(201_600);
+    expect(trigger).toBeLessThan(limits.hardLimit);
+    expect(automaticCompactionThresholdFor({ hardLimit: 1 })).toBe(1);
   });
 
   it("clamps the retained tail for a small model context window", () => {
@@ -183,7 +197,9 @@ describe("hosted search target model threading", () => {
     const large = contextBudgetFor(target, [searchHistory("gpt-test", 10_100)])
       .tokens;
     expect(small).toBeGreaterThan(0);
-    expect(large - small).toBe(2_500);
+    expect(large - small).toBe(
+      Math.ceil(10_100 / 3.5) - Math.ceil(100 / 3.5),
+    );
   });
 
   it("charges nothing for search the target model cannot replay", () => {

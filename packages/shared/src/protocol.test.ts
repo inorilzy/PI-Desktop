@@ -15,7 +15,6 @@ import {
   isGlobalPermissionMode,
   isToolsOutputParams,
   AGENT_COMPACT_RPC_TIMEOUT_MS,
-  CONFIG_SYNC_RPC_TIMEOUT_MS,
   COMMAND_RPC_BUFFER_MS,
   COMPACTION_SUMMARY_MAX_RETRIES,
   COMPACTION_SUMMARY_RETRY_BUDGET_MS,
@@ -236,27 +235,13 @@ describe("Plan protocol contracts", () => {
     ).toBe(false);
   });
 
-  it("derives transport deadlines from command execution semantics", () => {
-    expect(rpcTimeoutMs("tools.execute", { toolName: "Bash" })).toBe(190_000);
+  it("leaves tool approval transport open until the user decides", () => {
+    expect(rpcTimeoutMs("tools.execute", { toolName: "Bash" })).toBeUndefined();
     expect(
-      rpcTimeoutMs("tools.execute", { toolName: "Bash", timeoutMs: 5_000 }),
-    ).toBe(135_000);
-    expect(
-      rpcTimeoutMs("tools.execute", { toolName: "Bash", timeoutMs: 60_000 }),
-    ).toBe(190_000);
-    expect(
-      rpcTimeoutMs("tools.execute", { toolName: "Bash", timeoutMs: 0 }),
-    ).toBe(190_000);
-    expect(
-      rpcTimeoutMs("tools.execute", {
-        toolName: "Bash",
-        timeoutMs: 2_147_483_647,
-      }),
-    ).toBe(2_147_483_647);
-    expect(rpcTimeoutMs("tools.execute", { toolName: "Read" })).toBe(130_000);
-    expect(rpcTimeoutMs("tools.execute", { toolName: "BrowserPreview" })).toBe(
-      130_000,
-    );
+      rpcTimeoutMs("tools.execute", { toolName: "plugin_advisor_ask", timeoutMs: 5_000 }),
+    ).toBeUndefined();
+    expect(rpcTimeoutMs("tools.execute", { toolName: "Read" })).toBeUndefined();
+    expect(rpcTimeoutMs("tools.execute", { toolName: "BrowserPreview" })).toBeUndefined();
     expect(rpcTimeoutMs("tools.abort", { sessionId: "s", toolCallId: "t" })).toBe(
       130_000,
     );
@@ -284,41 +269,14 @@ describe("Plan protocol contracts", () => {
     expect(rpcTimeoutMs("agent.getStatus", { sessionId: "s" })).toBe(130_000);
   });
 
-  it("covers the permission wait, the admission queue, and host-core dispatch", () => {
-    // Permission (120s) + admission queue (30s) + host-core dispatch (150s) +
-    // slack (10s). A flat 130s would cut off a prompted plugin tool that is
-    // still inside its budget, and dropping the queue wait would cut off a call
-    // that had to wait for a saturated plugin class before it was dispatched.
-    expect(rpcTimeoutMs("tools.execute", { toolName: "plugin_advisor_ask" })).toBe(
-      310_000,
-    );
-    expect(rpcTimeoutMs("tools.execute", { toolName: "mcp_github_search" })).toBe(
-      310_000,
-    );
-    expect(
-      rpcTimeoutMs("tools.execute", {
-        toolName: "plugin_advisor_ask",
-        timeoutMs: 5_000,
-      }),
-    ).toBe(165_000);
-    expect(
-      rpcTimeoutMs("tools.execute", { toolName: "plugin_advisor_ask", timeoutMs: 0 }),
-    ).toBe(310_000);
-  });
-
-  it("lets a whole cloud sync finish instead of failing on a lost reply", () => {
-    // The sync is one request that answers only when every phase is done, and
-    // the host keeps running after a transport deadline fires. The progress
-    // reports are the liveness signal, so the deadline is only a ceiling that
-    // stops a genuinely lost answer from hanging the caller forever.
+  it("leaves a whole cloud sync unbounded and observable after navigation", () => {
+    // The Host owns sync execution; progress is supplementary, and navigating
+    // away from Settings must not impose a transport deadline on that request.
     expect(IPC.event.configSyncProgress).toBe(
       "pi-desktop/configSync/event/progress",
     );
     expect(IPC_WHITELIST.has(IPC.event.configSyncProgress)).toBe(true);
-    expect(CONFIG_SYNC_RPC_TIMEOUT_MS).toBe(1_800_000);
-    expect(rpcTimeoutMs("configSync.syncNow", {})).toBe(
-      CONFIG_SYNC_RPC_TIMEOUT_MS,
-    );
+    expect(rpcTimeoutMs("configSync.syncNow", {})).toBeUndefined();
     expect(rpcTimeoutMs("configSync.getState", {})).toBe(130_000);
   });
 });

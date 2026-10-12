@@ -1,6 +1,6 @@
 import {
   effectiveContextWindow,
-  modelIdsMatch,
+  modelWireIdsEqual,
   type ContextUsageDisplay,
   type MessageUsage,
   type ModelBinding,
@@ -25,15 +25,18 @@ export function usageTokenTotal(usage: MessageUsage): number {
 }
 
 /**
- * Occupancy of one model request, matching OpenCode's context widget:
- * `input + output + reasoning + cache.read + cache.write` on that request.
- * Cache reads from earlier tool-loop calls are not occupancy.
+ * Occupancy of one model request: `input + output + cache.read + cache.write`
+ * on that request. `output` already carries the reasoning tokens — Chat
+ * Completions reports `completion_tokens` including `reasoning_tokens`,
+ * Responses reports `output_tokens` including `reasoning_tokens`, and Google
+ * reports `candidatesTokenCount + thoughtsTokenCount` — so `reasoningTokens`
+ * is a subset and must not be added again. Cache reads from earlier tool-loop
+ * calls are not occupancy.
  */
 export function contextOccupancyTokens(usage: MessageUsage): number {
   const occupancy =
     positiveTokenCount(usage.inputTokens) +
     positiveTokenCount(usage.outputTokens) +
-    positiveTokenCount(usage.reasoningTokens) +
     positiveTokenCount(usage.cacheReadTokens) +
     positiveTokenCount(usage.cacheWriteTokens);
   return occupancy > 0 ? occupancy : usageTokenTotal(usage);
@@ -67,7 +70,7 @@ function bindingContextWindow(
 ): Pick<ModelBinding, "contextWindow" | "contextWindowSource"> | undefined {
   if (!provider || !modelId) return undefined;
   const binding = provider.models?.find((candidate) =>
-    modelIdsMatch(candidate.id, modelId),
+    candidate.id.trim().toLowerCase() === modelId.trim().toLowerCase(),
   );
   if (!binding) return undefined;
   const value = positiveTokenCount(binding.contextWindow);
@@ -88,10 +91,10 @@ export function resolveContextWindow(
   const provider = providers.find((candidate) => candidate.id === providerId);
   const catalogModel = modelId
     ? providerId
-      ? providerModels[providerId]?.find((model) => modelIdsMatch(model.modelId, modelId))
+      ? providerModels[providerId]?.find((model) => modelWireIdsEqual(model.modelId, modelId))
       : Object.values(providerModels)
           .flat()
-          .find((model) => modelIdsMatch(model.modelId, modelId))
+          .find((model) => modelWireIdsEqual(model.modelId, modelId))
     : undefined;
   const catalogWindow = modelContextWindow(catalogModel);
   const configured = bindingContextWindow(provider, modelId);
@@ -102,7 +105,10 @@ export function resolveContextWindow(
   );
   if (configuredWindow) return configuredWindow;
 
-  const providerWindow = providerContextWindow(provider);
+  // An enriched provider window may describe a different configured model.
+  const providerWindow = !modelId || !provider?.models?.length
+    ? providerContextWindow(provider)
+    : undefined;
   return providerWindow ?? DEFAULT_CONTEXT_WINDOW;
 }
 

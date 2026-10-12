@@ -1,8 +1,10 @@
 import { readFile, stat } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import {
+  isExternalThemeAssetPath,
   isLocalNetDomain,
   LEGACY_FS_PERMISSIONS,
+  normalizeThemeAssetPath,
   PLUGIN_FS_MODES,
   PLUGIN_ID_PATTERN,
   PLUGIN_PERMISSIONS,
@@ -18,17 +20,33 @@ import {
 } from "./walk.js";
 
 /**
- * Permissions the permission dialog surfaces as high risk. Kept in sync with
- * `PERMISSION_RISK` in apps/desktop/src/features/plugins/model.ts, which is the
- * copy the install dialog actually renders.
+ * Permissions the permissions matrix
+ * (docs/spec/07-plugins/13-plugin-permissions-matrix.md) marks high risk; a
+ * test keeps this list equal to the matrix's high rows.
  */
 export const HIGH_RISK_PERMISSIONS = [
   "net.fetch",
+  "net.anyHost",
   "net.websocket",
   "fs.write",
   "fs.delete",
+  "fs.write.workspace",
+  "fs.delete.workspace",
   "agent.prompt.inject",
   "agent.tool.register",
+  "agent.extension",
+  "agent.complete",
+  "renderer.extension",
+  "provider.register",
+  "provider.oauth",
+  "desktop.control",
+  "project.create",
+  "session.read",
+  "session.autoTitle",
+  "session.import",
+  "session.delete.own",
+  "mcp.server.local",
+  "mcp.server.remote",
   "browser.cdp",
   "audio.capture.background",
   "speech.adapter.register",
@@ -209,6 +227,16 @@ export async function check(dirInput: string): Promise<CheckResult> {
     errors.push({ code: "panel.missing", message: `ui.panel "${panel}" does not exist` });
   }
 
+  // validateManifest has already refused an absolute or ".." spelling; the
+  // installer also refuses an entry that is not a file in the package.
+  const renderer = manifest.renderer;
+  if (renderer && !(await fileExists(join(dir, renderer)))) {
+    errors.push({
+      code: "renderer.missing",
+      message: `manifest.renderer "${renderer}" does not exist`,
+    });
+  }
+
   for (const view of manifest.contributes?.views ?? []) {
     const entry = view?.entry;
     if (typeof entry !== "string" || !entry.trim()) continue;
@@ -256,6 +284,23 @@ export async function check(dirInput: string): Promise<CheckResult> {
         code: "skill.no-frontmatter",
         message: `skill "${path}" has no "name"/"description" front matter, so the agent gets no summary of when to apply it`,
       });
+    }
+  }
+
+  // ADR 0255 (theme assets are absolute paths): the host-core installer
+  // rejects package-relative `contributes.themes[].assets` entries with
+  // PLUGIN_INVALID, while `validateManifest` above still accepts both
+  // spellings. Catch the disagreement at author time instead of letting a
+  // package publish that no user can install.
+  for (const theme of manifest.contributes?.themes ?? []) {
+    for (const asset of theme.assets ?? []) {
+      const normalized = normalizeThemeAssetPath(asset);
+      if (normalized && !isExternalThemeAssetPath(normalized)) {
+        errors.push({
+          code: "theme.asset-package-relative",
+          message: `contributes.themes "${theme.id}" asset "${asset}" must be an absolute image or font path: the installer rejects package-relative assets (ADR 0255). Ship the bytes inside pi.plugin.getDataPath() and reference them by absolute path, or register them at runtime with pi.themes.upsert`,
+        });
+      }
     }
   }
 

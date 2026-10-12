@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
+import { useBlockingOverlay } from "../lib/blocking-overlay";
 import { MAX_PROJECT_NAME_CHARS } from "../lib/sidebar-preferences";
 import { api } from "../lib/api";
 import { parseGitCloneUrl } from "../lib/git-clone-url";
@@ -11,19 +12,18 @@ import {
   resolveProjectName,
 } from "../lib/project-name";
 import { useAppStore } from "../stores/app-store";
-import { Button, TooltipButton } from "./ui";
+import { Button, Input, TooltipButton } from "./ui";
+import { ProjectFolderPicker } from "./ProjectFolderPicker";
+import { RemoteProjectPicker, type RemoteProjectSelection } from "./remote/RemoteProjectPicker";
 import {
   IconBranch,
   IconClose,
   IconFolder,
   IconMonitor,
-  IconNewProject,
-  IconStar,
-  IconX,
 } from "./icons";
 
-/** The Create project dialog creates from local folders or one git checkout. */
-type ProjectSource = "local" | "git";
+/** One project entry point for local folders, git checkouts and remote hosts. */
+type ProjectSource = "local" | "git" | "remote";
 
 function pathParts(path: string) {
   return path.split(/[\\/]/).filter(Boolean);
@@ -39,9 +39,20 @@ function samePath(left: string, right: string) {
     right.trim().replace(/\\/g, "/").replace(/\/+$/, "");
 }
 
+// The create dialog mounts its content only while open: the blocking overlay
+// registers with that mounted subtree, and every reopen resets the form.
 export function ProjectCreateDialog() {
   const { t } = useTranslation();
   const open = useAppStore((state) => state.createProjectDialogOpen);
+  if (open) {
+    return <ProjectCreateDialogContent />;
+  }
+  return null;
+}
+
+function ProjectCreateDialogContent() {
+  useBlockingOverlay();
+  const { t } = useTranslation();
   const close = useAppStore((state) => state.closeProjectDialog);
   const createProject = useAppStore((state) => state.createProjectFromFolders);
   const createProjectFromGit = useAppStore(
@@ -49,6 +60,8 @@ export function ProjectCreateDialog() {
   );
   const showToast = useAppStore((state) => state.showToast);
   const [source, setSource] = useState<ProjectSource>("local");
+  const newSession = useAppStore((state) => state.newSession);
+  const [remoteProject, setRemoteProject] = useState<RemoteProjectSelection | null>(null);
   const [name, setName] = useState("");
   const [folders, setFolders] = useState<string[]>([]);
   const [gitUrl, setGitUrl] = useState("");
@@ -66,14 +79,13 @@ export function ProjectCreateDialog() {
     allowInsecureHttp: allowInsecureUserEndpoints(settings),
   });
   const defaultName = defaultProjectName({
-    source,
+    source: source === "remote" ? "local" : source,
     folders,
     repositoryName: cloneTarget?.name,
   });
   const projectName = resolveProjectName(name, defaultName);
 
   useEffect(() => {
-    if (!open) return;
     setSource("local");
     setName("");
     setFolders([]);
@@ -97,7 +109,7 @@ export function ProjectCreateDialog() {
       }
       if (event.key !== "Tab") return;
       const focusable = dialogRef.current?.querySelectorAll<HTMLElement>(
-        'input:not([disabled]), button:not([disabled])',
+        'input:not([disabled]), button:not([disabled]), select:not([disabled])',
       );
       if (!focusable?.length) return;
       const first = focusable[0];
@@ -117,7 +129,7 @@ export function ProjectCreateDialog() {
       document.body.style.overflow = previousOverflow;
       if (previouslyFocused?.isConnected) previouslyFocused.focus();
     };
-  }, [close, open]);
+  }, [close]);
 
   // The first folder or the repository name fills the field until the user
   // types their own name; an emptied field still falls back to it on submit.
@@ -125,8 +137,6 @@ export function ProjectCreateDialog() {
     if (nameTouchedRef.current) return;
     setName(defaultName);
   }, [defaultName]);
-
-  if (!open) return null;
 
   const addFolders = async () => {
     if (busyRef.current || folderPickerInFlightRef.current) return;
@@ -171,16 +181,24 @@ export function ProjectCreateDialog() {
 
   const submit = async () => {
     const projectName = resolveProjectName(name, defaultName);
-    if (!projectName || busyRef.current) return;
+    if (busyRef.current) return;
+    if (source === "remote" ? !remoteProject : !projectName) return;
     if (source === "git") {
       if (!cloneTarget || !cloneParent) return;
-    } else if (folders.length === 0) {
+    } else if (source === "local" && folders.length === 0) {
       return;
     }
     busyRef.current = true;
     setBusy(true);
     try {
-      if (source === "git" && cloneTarget) {
+      if (source === "remote" && remoteProject) {
+        if (!remoteProject.projectId && !remoteProject.path) return;
+        const project = remoteProject.projectId
+          ? { id: remoteProject.projectId, label: remoteProject.label ?? "" }
+          : (await api.registerRemoteProject(remoteProject.hostKey, remoteProject.path ?? "")).project;
+        await newSession({ remoteProject: { hostKey: remoteProject.hostKey, projectId: project.id, label: project.label } });
+        close();
+      } else if (source === "git" && cloneTarget) {
         await createProjectFromGit({
           name: projectName,
           url: cloneTarget.url,
@@ -245,7 +263,7 @@ export function ProjectCreateDialog() {
           }}
         >
           <div className="project-create-dialog-content">
-            <section
+            {source !== "remote" ? <section
               className="project-create-dialog-section project-create-dialog-identity"
               aria-labelledby="project-create-name-heading"
             >
@@ -261,7 +279,7 @@ export function ProjectCreateDialog() {
                   {name.length}/{MAX_PROJECT_NAME_CHARS}
                 </span>
               </div>
-              <input
+              <Input
                 ref={inputRef}
                 id="project-create-name"
                 className="field-input project-create-dialog-name-field"
@@ -277,7 +295,7 @@ export function ProjectCreateDialog() {
                 autoCorrect="off"
                 autoCapitalize="off"
               />
-            </section>
+            </section> : null}
 
             <section
               className="project-create-dialog-section project-create-dialog-source-section"
@@ -296,7 +314,7 @@ export function ProjectCreateDialog() {
                 role="group"
                 aria-label={t("project.createSourceLabel")}
               >
-                <button
+                <Button
                   type="button"
                   className={`project-create-dialog-source-option${
                     source === "local" ? " is-active" : ""
@@ -308,8 +326,8 @@ export function ProjectCreateDialog() {
                 >
                   <IconMonitor size={15} aria-hidden />
                   {t("project.createComputer")}
-                </button>
-                <button
+                </Button>
+                <Button
                   type="button"
                   className={`project-create-dialog-source-option${
                     source === "git" ? " is-active" : ""
@@ -321,81 +339,21 @@ export function ProjectCreateDialog() {
                 >
                   <IconBranch size={15} aria-hidden />
                   {t("project.createSourceGit")}
-                </button>
+                </Button>
+                <Button type="button" className={`project-create-dialog-source-option${source === "remote" ? " is-active" : ""}`}
+                  data-project-source="remote" aria-pressed={source === "remote"} disabled={busy}
+                  onClick={() => setSource("remote")}>
+                  <IconMonitor size={15} aria-hidden />{t("remote:remote")}
+                </Button>
               </div>
             </section>
 
-            {source === "local" ? (
-              <section
-                className="project-create-dialog-section project-create-dialog-folders"
-                aria-labelledby="project-create-folders-heading"
-              >
-                <div className="project-create-dialog-section-head">
-                  <h3 id="project-create-folders-heading" className="project-create-dialog-section-title">
-                    {t("project.createFoldersLabel")}
-                    {folders.length > 0 ? (
-                      <span className="project-create-dialog-count">{folders.length}</span>
-                    ) : null}
-                  </h3>
-                  <span className="project-create-dialog-source" data-project-source="local">
-                    <IconMonitor size={15} aria-hidden />
-                    {t("project.createComputer")}
-                  </span>
-                </div>
-
-                {folders.length > 0 ? (
-                  <div className="project-create-dialog-folder-list" role="list">
-                    {folders.map((path, index) => (
-                      <div
-                        className={`project-create-folder-row${index === 0 ? " is-primary" : ""}`}
-                        key={path}
-                        role="listitem"
-                      >
-                        <span className="project-create-folder-icon" aria-hidden>
-                          <IconFolder size={17} />
-                        </span>
-                        <span className="project-create-folder-copy" title={path}>
-                          <span className="project-create-folder-name">{folderNameFromPath(path)}</span>
-                          <span className="project-create-folder-path">{folderParent(path)}</span>
-                        </span>
-                        {index === 0 ? (
-                          <span className="project-create-primary-tag">
-                            <IconStar size={11} fill="currentColor" aria-hidden />
-                            {t("project.createPrimary")}
-                          </span>
-                        ) : null}
-                        <TooltipButton
-                          type="button"
-                          className="project-create-folder-remove"
-                          tooltip={t("project.createRemoveFolder")}
-                          ariaLabel={`${t("project.createRemoveFolder")}: ${folderNameFromPath(path)}`}
-                          disabled={busy}
-                          onClick={() => setFolders((current) => current.filter((item) => item !== path))}
-                        >
-                          <IconX size={15} />
-                        </TooltipButton>
-                      </div>
-                    ))}
-                  </div>
-                ) : null}
-
-                <button
-                  type="button"
-                  aria-label={t("project.createAddFolder")}
-                  className={`project-create-add-folder${folders.length === 0 ? " is-empty" : ""}`}
-                  onClick={() => void addFolders()}
-                  disabled={busy || folderPickerBusy}
-                >
-                  <span className="project-create-add-folder-icon" aria-hidden>
-                    <IconNewProject size={18} />
-                  </span>
-                  <span className="project-create-add-folder-copy">
-                    <span className="project-create-add-folder-title">
-                      {t("project.createAddFolder")}
-                    </span>
-                  </span>
-                </button>
-              </section>
+            {source === "remote" ? (
+              <RemoteProjectPicker busy={busy} onChange={setRemoteProject} />
+            ) : source === "local" ? (
+              <ProjectFolderPicker folders={folders} busy={busy} pickerBusy={folderPickerBusy}
+                onAdd={() => void addFolders()}
+                onRemove={(path) => setFolders((current) => current.filter((item) => item !== path))} />
             ) : (
               <section
                 className="project-create-dialog-section project-create-dialog-clone"
@@ -411,7 +369,7 @@ export function ProjectCreateDialog() {
                   </span>
                 </div>
 
-                <input
+                <Input
                   id="project-create-clone-url"
                   className="field-input project-create-dialog-url-field"
                   value={gitUrl}
@@ -425,7 +383,7 @@ export function ProjectCreateDialog() {
                   onChange={(event) => setGitUrl(event.target.value)}
                 />
 
-                <button
+                <Button
                   type="button"
                   className={`project-create-dialog-location${
                     cloneParent ? " is-chosen" : ""
@@ -449,7 +407,7 @@ export function ProjectCreateDialog() {
                         : t("project.createLocationHint")}
                     </span>
                   </span>
-                </button>
+                </Button>
 
                 <p className="project-create-dialog-clone-hint" role="status">
                   {cloneTarget
@@ -468,7 +426,7 @@ export function ProjectCreateDialog() {
               type="submit"
               variant="primary"
               disabled={
-                source === "git"
+                source === "remote" ? !remoteProject || busy : source === "git"
                   ? !projectName || !cloneTarget || !cloneParent || busy
                   : !projectName || folders.length === 0 || busy
               }

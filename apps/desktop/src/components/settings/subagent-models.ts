@@ -5,7 +5,7 @@
  * session). The sheet lists the same configured, runnable models as the
  * Composer rather than asking the user to type that string.
  */
-import { modelIdsMatch, type ProviderPublic } from "@pi-desktop/shared";
+import { modelWireIdsEqual as sameComposerModelId, type ProviderPublic } from "@pi-desktop/shared";
 import { defaultModelOptions } from "./default-model";
 
 export type SubagentModelChoice = {
@@ -79,7 +79,7 @@ export function subagentModelPinParts(
 export function pinMatchesChoice(pin: string, choice: SubagentModelChoice): boolean {
   const parts = subagentModelPinParts(pin);
   if (!parts) return false;
-  if (!modelIdsMatch(parts.modelId, choice.modelId)) return false;
+  if (!sameComposerModelId(parts.modelId, choice.modelId)) return false;
   if (parts.providerPart === choice.providerId) return true;
   const alias = providerAlias(parts.providerPart);
   if (!alias) return false;
@@ -94,6 +94,34 @@ export function pinMatchesChoice(pin: string, choice: SubagentModelChoice): bool
   return (
     providerAlias(choice.providerName) === alias
   );
+}
+
+/** Saved-row identity is independent of whether the picker can offer it. */
+export function subagentModelDisplay(
+  pin: string,
+  providers: readonly ProviderPublic[],
+): { providerId: string; providerName: string; modelId: string; status: "available" | "disabled" | "unavailable" } | null {
+  const parts = subagentModelPinParts(pin);
+  if (!parts) return null;
+  const exact = providers.find((provider) => provider.id === parts.providerPart);
+  const alias = providerAlias(parts.providerPart);
+  const matches = exact ? [exact] : providers.filter((provider) => alias && (
+    providerAlias(provider.name) === alias ||
+    (alias !== "custom" && providerAlias(provider.vendorKey) === alias)
+  ));
+  // Resolve the provider before its model: a duplicate alias must not silently
+  // identify another account just because only that account has the binding.
+  if (matches.length !== 1) return null;
+  const provider = matches[0];
+  const model = defaultModelOptions([provider]).find((option) =>
+    sameComposerModelId(parts.modelId, option.modelId));
+  if (!model) return null;
+  return {
+    providerId: provider.id,
+    providerName: provider.name,
+    modelId: model.modelId,
+    status: !provider.enabled ? "disabled" : isSubagentModelProvider(provider) ? "available" : "unavailable",
+  };
 }
 
 function uniqueProviderPart(

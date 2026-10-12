@@ -171,10 +171,43 @@ Bootstrap runs over the user's own SSH session, never over RACP:
    device token that the desktop stores in its secure storage.
 5. The Host records the desktop device as `owner` of that Host.
 
-Provider configuration for the remote Host is written over the same SSH
-channel by the bootstrap step, as Host-local configuration. It never crosses
-RACP, so the secret boundary in `05-security/02-remote-control-security.md`
-§7 is unchanged.
+Provider configuration is copied only after explicit selection and consent in
+Settings. Electron Main reads the selected eligible secrets and sends a bounded
+versioned payload over SSH stdin to `pi-host provider-import`. That CLI forwards
+only `providers.import` to the running Host's owner-only Unix socket. The running
+Host uses its existing Rust RPC connection; the CLI never starts another database
+writer. Configuration and credentials never cross RACP or return to the renderer.
+See `docs/adr/remote-provider-import.md` and security §3.5.
+
+**Experimental desktop MVP.** Chat home uses the shared Create project dialog
+for local folders, Git checkouts, and connected remote hosts. Remote selection
+lists registered projects, browses Host-owned directories under the Host's
+existing browse root, and accepts an explicit absolute remote path. Registration
+and session creation execute on that Host; remote project names remain Host-owned
+directory labels. The home switcher and sidebar expose remote projects by their
+host/project identity, so equal directory names on different hosts remain distinct.
+New chat reuses an empty chat only within that remote project and never activates
+its path locally. Remote chats use the regular home, Composer, retained transcript
+panes, and permission/input cards, with unsupported controls disabled by capabilities.
+The client opens Agent/Ask sessions, sends text, and reads bounded history and
+workspace text/diffs. Sessions retain remote identity even offline;
+remote paths are labels, never local workspace activation targets. Missing remote
+backends or unsupported actions fail closed. Local model configuration, attachments,
+message edits, local tools, terminal UI, and cross-host handoff are unavailable.
+Remote chat rendering cannot invoke local plugin slots, local slash commands,
+file previews, attachment staging, or local image resolution. Remote history
+cursors are session-owned opaque values even when represented as numbers; the
+renderer forwards returned cursors without local offset arithmetic or ordering.
+The additive `remoteHostBrowseProjects` Desktop IPC forwards only validated
+Host/path input to `project/browse` and validates returned directory entries.
+The broader R2 target below is not an acceptance claim for this slice.
+
+Reconnect rebuilds SSH forwarding and RACP subscriptions, acknowledges durable
+cursors, deduplicates events, and recovers snapshots on epoch/gap changes. It never
+replays mutations. Subscriptions are bounded and catalog refreshes do not subscribe
+every listed session. The additive Desktop-only `remoteInteractions` IPC event
+reconciles pending cards from accepted snapshots and peer resolutions; it does not
+add a network operation or change the local AgentEvent contract.
 
 The Host binds loopback only. Plain `ws://` is accepted on that port only
 when both the bind address and the peer address are loopback and a valid
@@ -402,10 +435,10 @@ transition that outlives the submitting turn. A remote client cannot select
 an unadvertised permission mode or execute a tool directly; changing a
 durable mode uses `session/configure` from the remote-host profile and is
 idle-only, exactly as locally. A Gateway-routed turn never exceeds the Host's
-remote permission ceiling. Approval lifetime is Host policy: the local
-default stays 120 seconds then deny, and while a remote subscriber is
-attached the default is 30 minutes (D375), bounded and operator-adjustable,
-because a remote approver is rarely at the keyboard.
+remote permission ceiling. Local desktop permission approvals have no
+automatic deadline. While a remote subscriber is attached, the remote approval
+record defaults to 30 minutes (D375), bounded and operator-adjustable, because
+a remote approver is rarely at the keyboard.
 
 ## 10. Failure and recovery model
 

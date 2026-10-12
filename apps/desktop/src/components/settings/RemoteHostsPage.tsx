@@ -9,12 +9,13 @@
  * typed into the SSH form lives in this component's state only; it is never
  * persisted or logged here.
  */
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import type { RemoteHostSshAuth, RemoteHostSummary } from "@pi-desktop/shared";
 import { api } from "../../lib/api";
 import { useAppStore } from "../../stores/app-store";
-import { Badge, Button, Field, Input, PasswordInput, cx } from "../ui";
+import { Badge, Button, Field, Input, PasswordInput, SegmentedControl, cx } from "../ui";
+import { RemoteHostSessions } from "./RemoteHostSessions";
 
 type AddMode = "ssh" | "pair";
 
@@ -48,6 +49,11 @@ const EMPTY_SSH_FORM: SshForm = {
 
 export function RemoteHostsPage() {
   const { t } = useTranslation();
+  const { t: remoteT } = useTranslation("remote");
+  const [selectedHost, setSelectedHost] = useState<RemoteHostSummary | null>(null);
+  const [reconnecting, setReconnecting] = useState<string | null>(null);
+  const alive = useRef(true);
+  const refreshGeneration = useRef(0);
   const showToast = useAppStore((state) => state.showToast);
   const [hosts, setHosts] = useState<RemoteHostSummary[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -59,19 +65,39 @@ export function RemoteHostsPage() {
   const [addMode, setAddMode] = useState<AddMode>("ssh");
 
   const refresh = useCallback(async () => {
+    const generation = ++refreshGeneration.current;
     try {
       const result = await api.listRemoteHosts();
+      if (!alive.current || generation !== refreshGeneration.current) return;
       setHosts(result.hosts);
       setError(null);
     } catch (caught) {
+      if (!alive.current || generation !== refreshGeneration.current) return;
       const message = caught instanceof Error ? caught.message : String(caught);
       setError(message);
     }
   }, []);
 
   useEffect(() => {
+    alive.current = true;
     void refresh();
+    const unsubscribe = api.onSessionsChanged(() => void refresh());
+    return () => { alive.current = false; refreshGeneration.current++; unsubscribe(); };
   }, [refresh]);
+
+  const reconnect = async (host: RemoteHostSummary) => {
+    if (reconnecting) return;
+    setReconnecting(host.hostKey);
+    setError(null);
+    try {
+      await api.reconnectRemoteHost(host.hostKey);
+      if (alive.current) await refresh();
+    } catch (caught) {
+      if (alive.current) setError(caught instanceof Error ? caught.message : String(caught));
+    } finally {
+      if (alive.current) setReconnecting(null);
+    }
+  };
 
   const submit = useCallback(
     async (event: React.FormEvent<HTMLFormElement>) => {
@@ -180,12 +206,13 @@ export function RemoteHostsPage() {
 
   return (
     <div className="settings-stack">
+      {error && hosts !== null && <p role="alert">{error}</p>}
       <div
         className="settings-remote-host-list"
         role="list"
         aria-busy={hosts === null || removing !== null}
       >
-        {error ? (
+        {error && hosts === null ? (
           <div className="settings-remote-host-empty" role="alert">
             {t("settings.remoteHosts.listError")}
             <span className="settings-remote-host-empty-detail">{error}</span>
@@ -222,6 +249,13 @@ export function RemoteHostsPage() {
                     ? t("settings.remoteHosts.statusOnline")
                     : t("settings.remoteHosts.statusOffline")}
                 </Badge>
+                <Button variant="secondary" onClick={() => setSelectedHost(host)}>
+                  {remoteT("sessions")}
+                </Button>
+                {host.transport === "ssh" && <Button variant="ghost" onClick={() => setSelectedHost(host)}>{remoteT("sync")}</Button>}
+                <Button variant="ghost" disabled={reconnecting !== null} onClick={() => void reconnect(host)}>
+                  {reconnecting === host.hostKey ? remoteT("loading") : remoteT("reconnect")}
+                </Button>
                 <Button
                   variant="ghost"
                   type="button"
@@ -237,33 +271,22 @@ export function RemoteHostsPage() {
           ))
         )}
       </div>
+      {selectedHost && <RemoteHostSessions key={selectedHost.hostKey} host={selectedHost} onClose={() => setSelectedHost(null)} />}
 
       <section className="settings-card-block">
         <div className="settings-card-heading-row settings-remote-host-add-heading">
           <h3 className="settings-card-heading">{t("settings.remoteHosts.addTitle")}</h3>
-          <div
-            className="settings-segment"
+          <SegmentedControl
+            value={addMode}
+            onChange={(mode) => setAddMode(mode)}
+            options={[
+              { value: "ssh", label: t("settings.remoteHosts.addSsh"), id: "remote-host-add-ssh", controls: "remote-host-add-panel-ssh" },
+              { value: "pair", label: t("settings.remoteHosts.addPair"), id: "remote-host-add-pair", controls: "remote-host-add-panel-pair" },
+            ]}
+            label={t("settings.remoteHosts.addTitle")}
             role="tablist"
-            aria-label={t("settings.remoteHosts.addTitle")}
-          >
-            {(["ssh", "pair"] as const).map((mode) => (
-              <button
-                key={mode}
-                type="button"
-                role="tab"
-                id={`remote-host-add-${mode}`}
-                aria-selected={addMode === mode}
-                aria-controls={`remote-host-add-panel-${mode}`}
-                className={cx("settings-segment-item", addMode === mode && "active")}
-                disabled={busy}
-                onClick={() => setAddMode(mode)}
-              >
-                {mode === "ssh"
-                  ? t("settings.remoteHosts.addSsh")
-                  : t("settings.remoteHosts.addPair")}
-              </button>
-            ))}
-          </div>
+            disabled={busy}
+          />
         </div>
         <div className="settings-panel">
           <form
@@ -340,31 +363,16 @@ export function RemoteHostsPage() {
               >
                 {t("settings.remoteHosts.sshAuthMode")}
               </div>
-              <div
-                className="settings-segment"
-                role="radiogroup"
-                aria-labelledby="settings-remote-host-auth-label"
-              >
-                {(["key", "password"] as const).map((auth) => (
-                  <button
-                    key={auth}
-                    type="button"
-                    role="radio"
-                    className={cx(
-                      "settings-segment-item",
-                      sshForm.auth === auth && "active",
-                    )}
-                    aria-checked={sshForm.auth === auth}
-                    aria-pressed={sshForm.auth === auth}
-                    disabled={installing}
-                    onClick={() => selectSshAuth(auth)}
-                  >
-                    {auth === "key"
-                      ? t("settings.remoteHosts.sshAuthKey")
-                      : t("settings.remoteHosts.sshAuthPassword")}
-                  </button>
-                ))}
-              </div>
+              <SegmentedControl
+                value={sshForm.auth}
+                onChange={(auth) => selectSshAuth(auth)}
+                options={[
+                  { value: "key", label: t("settings.remoteHosts.sshAuthKey") },
+                  { value: "password", label: t("settings.remoteHosts.sshAuthPassword") },
+                ]}
+                label={t("settings.remoteHosts.sshAuthMode")}
+                disabled={installing}
+              />
             </div>
 
             {sshForm.auth === "key" ? (

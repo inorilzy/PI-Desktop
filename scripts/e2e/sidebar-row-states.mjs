@@ -196,12 +196,12 @@ export async function checkSidebarRowStates({ cdp, check, waitFor, seed }) {
         const chatShell = document.querySelector('.app-chat-shell');
         const sidebar = chatShell?.querySelector('.sidebar');
         return {
-          hidden: chatShell?.hidden === true && chatShell.getAttribute('aria-hidden') === 'true' && chatShell.inert,
+          hiddenAndInert: chatShell?.hidden === true && chatShell.inert === true,
           sidebarRetained: sidebar?.isConnected === true,
         };
       })()`);
       check(
-        hiddenChatState.hidden && hiddenChatState.sidebarRetained,
+        hiddenChatState.hiddenAndInert && hiddenChatState.sidebarRetained,
         `${theme} settings hides the mounted chat and sidebar`,
         JSON.stringify({ hiddenChatState, selectedIds: await selectedIds() }),
       );
@@ -223,6 +223,57 @@ export async function checkSidebarRowStates({ cdp, check, waitFor, seed }) {
       reducedHeader.duration <= 0.00001 && reducedRow.duration <= 0.00001,
       "reduced motion suppresses both project and conversation hover transitions",
       JSON.stringify({ reducedHeader, reducedRow }),
+    );
+
+    const historyGroup = group(seed.paths.history);
+    const historyBody = `${historyGroup} .sidebar-session-group-body`;
+    const historyLoadMore = `${historyGroup} .sidebar-load-more`;
+    const historyRowIds = () => cdp.evaluate(`
+      [...document.querySelectorAll(${JSON.stringify(`${historyGroup} [data-sidebar-session-row]`)})]
+        .map(element => element.getAttribute('data-sidebar-session-row'))
+    `);
+    const expectedInitialIds = seed.historySessionIds.slice(0, 10);
+    await waitFor(
+      async () =>
+        (await historyRowIds()).length === 10 &&
+        (await cdp.evaluate(`!!document.querySelector(${JSON.stringify(historyLoadMore)})`)),
+      "history project starts with ten sessions and a load-more control",
+    );
+    check(
+      JSON.stringify(await historyRowIds()) === JSON.stringify(expectedInitialIds),
+      "project history initially shows the ten most recent sessions",
+      JSON.stringify(await historyRowIds()),
+    );
+    await click(historyLoadMore);
+    await waitFor(
+      async () => (await historyRowIds()).length === 12,
+      "history project loads all twelve sessions",
+    );
+    check(
+      JSON.stringify(await historyRowIds()) === JSON.stringify(seed.historySessionIds),
+      "Load more reveals the remaining project sessions",
+      JSON.stringify(await historyRowIds()),
+    );
+    await click(title(seed.paths.history));
+    await waitFor(
+      () => cdp.evaluate(`document.querySelector(${JSON.stringify(historyBody)}).inert`),
+      "history project folds after loading more",
+    );
+    await click(title(seed.paths.history));
+    await waitFor(
+      async () =>
+        !(await cdp.evaluate(`document.querySelector(${JSON.stringify(historyBody)}).inert`)) &&
+        (await historyRowIds()).length === 10,
+      "history project reopens with its initial session page",
+    );
+    const resetLoadMoreText = await cdp.evaluate(
+      `document.querySelector(${JSON.stringify(historyLoadMore)})?.textContent.trim() ?? null`,
+    );
+    check(
+      (await historyRowIds()).join() === expectedInitialIds.join() &&
+        resetLoadMoreText?.includes("2"),
+      "folding a project resets its loaded history and restores the two-session remainder",
+      JSON.stringify({ rowIds: await historyRowIds(), loadMoreText: resetLoadMoreText }),
     );
   } finally {
     await cdp.send("Emulation.setEmulatedMedia", { features: [] });

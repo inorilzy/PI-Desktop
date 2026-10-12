@@ -1,4 +1,4 @@
-# 04. Data Storage (Schema v17)
+# 04. Data Storage (Schema v23)
 
 ## 0. Ownership decision
 
@@ -37,15 +37,86 @@ relational schema. The host stores one JSON record per group in the
 `projectGroups` namespace, shared memory in `projectGroupMemory`, and shared
 instructions in `projectGroupInstructions`. The record contains the stable group
 id, display name, ordered canonical roots, primary root, timestamps, and optional
-`detachedPaths`. Removed roots stay in `detachedPaths` so an old path project
-record is not recreated as a standalone legacy group; sessions and files are not
-deleted. Existing path projects are projected as legacy single-root groups at
-read time; their path-scoped memory and filesystem instructions remain readable.
+`detachedPaths`. Removed roots without sessions stay in `detachedPaths` so an old
+path project record is not recreated as a standalone legacy group. A removed root
+with sessions is omitted from `detachedPaths` and remains readable as a standalone
+legacy group; removing a root from group membership never deletes sessions or files.
+Existing path projects are projected as legacy single-root groups at read time;
+their path-scoped memory and filesystem instructions remain readable.
 5. **Plan/Goal checkpoints are immutable host artifacts** with recorded path,
    hash, and size; the existing approval row also carries execution fields.
    Startup interruption is the process-epoch fence and no work is replayed.
 
+### Delegation settlement snapshots
+
+A completed `Task` tool call may still describe a running delegate. A later
+terminal snapshot with the same session, message/call ID and delegation ID
+replaces only that tool result and its display text. Existing metadata, message
+order and index identity are preserved, including namespaced IDs after a
+cross-session tool-call collision. A stale running replay, another delegation's
+result or a later terminal replay cannot overwrite the settled snapshot. Other
+duplicate appends retain their existing idempotent behavior. No schema migration
+or transcript format change is required.
+
 ## 2. File layout
+
+### User-selected storage location (issue #1213)
+
+Settings → General → Storage can select an empty directory on a different
+volume. A selected directory contains `data/` (the complete host/application
+profile) and `browser/` (Chromium default and persistent plugin/browser session
+state). The existing default directories remain unchanged until the user
+explicitly migrates. Project files outside the application profile are not moved.
+
+The original Electron `userData` directory remains the installation identity,
+single-instance lock, and owner-only `storage-location.json` bootstrap anchor.
+Chromium `sessionData` follows `browser/`; this preserves existing localStorage,
+cookies, IndexedDB and persistent partition state by copying the complete old
+profile. An explicit `PI_DESKTOP_DATA_DIR` still overrides the default and disables
+settings-driven maintenance, since such profiles opt out of the installation lock.
+A managed relaunch discards only the environment root published for child services
+through the internal `--pi-managed-storage` argument before reacquiring the lock.
+The location is machine-local and never part of cloud configuration sync.
+
+Migration is cold: the accepted settings action journals pending work, then uses
+existing ordered shutdown to settle turns/outbox and stop writers. The next launch
+points Chromium `sessionData` at a temporary directory, then opens only a
+sandboxed, nonpersistent maintenance window before importing the application
+composition root. The default session initializes with that first window, so it
+must not be inside a profile the job is about to copy or clean. It inventories bytes/files, checks free space, streams
+the copy, preserves permissions and internal/external links, and SHA-256 verifies
+both source and copied files. An interrupted copy may be retried only with its
+matching ownership marker; nonempty/unrelated destinations and overlapping roots
+are rejected. The stable installation lock prevents competing managed launches.
+
+Rust's offline `--relocate-data <old-root> <copied-root>` mode owns structured
+path relocation in the copied SQLite index, transcripts/revisions/checkpoints,
+outbox, installed plugin registry and agent capability metadata. It does not boot
+RPC, upgrade schemas, recover turns, or sweep scratch. It changes only known
+path-bearing fields under the old root. External projects, dev/builtin plugins,
+narrative text, commands, source code, secrets, and arbitrary plugin-private formats
+are preserved. Credentials and their machine key migrate as bytes with their
+permissions. SQLite ownership stays exclusively in Rust.
+
+Only after validation/relocation succeeds is the flushed bootstrap pointer
+atomically replaced. Errors keep the old profile active and visible in settings;
+retrying the same destination uses the failed job's ownership identity. A crash
+before publication leaves pending work to recopy from the source. An unavailable
+selected volume refuses startup rather than creating a blank profile elsewhere.
+Original directories remain explicit backups. Deleting these requires a separate
+settings confirmation after checking new-location functionality, including plugins
+that may own absolute references the host cannot safely rewrite. Backup cleanup
+preflights every root and protects active storage and bootstrap/lock files.
+
+Cache cleanup is a separate confirmed cold-restart operation. Its filesystem
+allowlist is `cache/`, `plugins/cache/download/`, `plugins/cache/backup/`,
+`openable-attachments/`, and Chromium's Cache/Code Cache/GPU/shader cache
+folders in the default profile and persistent partitions. Intermediate or leaf
+symlinks cannot redirect cleanup, even within the same profile. It never clears
+cookies/localStorage/IndexedDB, transcripts, attachments, secrets, scratch,
+review snapshots, plugin code/data, models, configuration, or logs. Partial cleanup
+failure remains observable, retains active roots, and can be retried.
+
 
 A packaged installation keeps this tree in `~/.pi-desktop`. A development build
 keeps the same tree in `~/.pi-desktop-dev`, because a shipped app and a
@@ -92,12 +163,15 @@ by path/hash.
 
 ### 1.3 Portable configuration sync
 
-Host-core stores sync configuration in the `configSync` key-value namespace.
-The vault key reference and WebDAV password use the existing encrypted secret
-store. `config-sync/base.bin` and `config-sync/pending.bin` are authenticated
-encrypted bundles replaced with temp-file rename; they are not renderer- or
-sidecar-readable files. Sync revisions and resources remain remote immutable
-objects and do not change the SQLite schema or transcript retention.
+Host Core stores S3 configuration at `configSyncS3/config` in the key-value
+store. Credentials and the vault key use existing encrypted secret storage.
+`config-sync/s3/<state-id>/base.bin` stores shared and observed baselines;
+`pending.bin` and local recovery points are also authenticated encrypted
+bundles replaced through temp-file rename. Connection or mode changes create
+a fresh state ID. The legacy `configSync` namespace, old credentials and old
+files are preserved, not migrated or deleted. Remote immutable objects remain
+indefinitely; only the mode-specific history index is capped at 30 revisions.
+This does not change the SQLite schema or transcript retention.
 
 ### 2.0 Message-owned review snapshots (ADR 0043)
 
@@ -122,6 +196,24 @@ per message; `seq` is implied by line order:
 {"type":"message","id":"m3","role":"assistant","createdAt":"…","blocks":[{"type":"thinking","text":"…"},{"type":"text","text":"…"}],"meta":{"usage":{},"modelId":"…"}}
 {"type":"compaction","id":"cp1","summary":"…","firstKeptMessageId":"m2","throughMessageId":"m3","tokensBefore":917000,"retainedTail":[…],"providerId":"…","modelId":"…","createdAt":"…"}
 ```
+
+Internal system-state rows use role `system`, empty visible content, and optional
+`meta.modelSystem = { version: 1, messageJson, beforeMessageId?, afterMessageId? }`.
+`messageJson` is validated JSON text of a Pi system message with sections and tool
+schema deltas; executable functions are excluded. JSON text preserves section and schema key
+order across Rust storage; parsing for validation never reserializes it. Stable row IDs make retries
+idempotent. The anchors restore logical model order when a user row was already
+persisted before its preceding declaration; a surviving following anchor takes
+precedence, then a preceding anchor, then the record's continuation position.
+Forks remap surviving anchor IDs. Normal system notices remain visible; internal
+model-state rows do not produce transcript bubbles or search text.
+
+Compaction details may include one `systemMessageJson` checkpoint. It replaces old
+system updates in the retained tail and is restored before the summary. These
+optional metadata fields use the existing JSONL/SQLite index and require no
+schema migration. Old sessions remain readable; their first continuation records
+a new baseline. Older app versions ignore the metadata and reconstruct their
+usual current prompt, so downgrade does not promise the same cache prefix.
 
 `sessions/<sessionId>.inflight.json` — the assistant reply currently
 streaming in the session, as one `{ schema, sessionId, turnId, savedAt,
@@ -278,16 +370,13 @@ The app settings JSON optionally stores `thinkingDisplayMode` (`detailed` or
 `compact`). Missing values retain detailed presentation. This additive display
 preference neither rewrites stored reasoning nor changes the database schema.
 
-The same blob optionally stores the prompt-enhancement overrides
-`promptEnhancementCustomTemplate` (the switch that decides whether a stored
-template applies), `promptEnhancementUserTemplate`,
-`promptEnhancementProviderId`, `promptEnhancementModelId`, and
-`promptEnhancementThinkingLevel` (ADR 0121). An absent or blank user template means the
-built-in default applies, so clearing the field stores no key rather than an
-empty string. A non-blank user template must contain the draft variable and stay
-within `PROMPT_ENHANCEMENT_TEMPLATE_MAX_LENGTH`; host-core rejects a write that
-breaks either rule and drops any stored `promptEnhancementSystemPrompt`, which is
-no longer read. No schema version bump is required.
+The settings blob may still contain legacy prompt-enhancement keys from an
+earlier release. They are retained for rollback and downgrade compatibility,
+but the host no longer reads or writes them as active preferences. When the
+user installs and grants the standalone `pi.prompt-enhancement` plugin, Electron
+copies valid legacy values into that plugin's private settings once (see
+`04-ux/12-prompt-enhancement.md`). The migration marker is also stored in the
+plugin's private data directory; the host settings schema does not change.
 
 New config domains (e.g. MCP servers) start as a namespace; they graduate to
 tables only when they need relations or indexes.
@@ -441,6 +530,8 @@ CREATE TABLE sessions (
   provider_id TEXT,                            -- loose ref, see below
   model_id    TEXT,
   mode        TEXT NOT NULL DEFAULT 'agent',   -- plan | agent
+  title_source TEXT NOT NULL DEFAULT 'legacy'  -- legacy | default | manual | generated
+               CHECK (title_source IN ('legacy', 'default', 'manual', 'generated')),
   thinking_level TEXT NOT NULL DEFAULT 'off'
                 CHECK (thinking_level IN ('off', 'minimal', 'low', 'medium',
                                           'high', 'xhigh', 'max', 'omit')),
@@ -453,7 +544,7 @@ CREATE TABLE sessions (
   created_at  INTEGER NOT NULL,
   updated_at  INTEGER NOT NULL
 );
-CREATE INDEX idx_sessions_updated ON sessions(updated_at DESC);
+CREATE INDEX idx_sessions_updated_id ON sessions(updated_at DESC, id DESC);
 CREATE INDEX idx_sessions_project ON sessions(project_id) WHERE project_id IS NOT NULL;
 CREATE INDEX idx_sessions_deleted ON sessions(deleted_at) WHERE deleted_at IS NOT NULL;
 ```
@@ -496,6 +587,16 @@ CREATE INDEX idx_session_import_origins_plugin
   rename does not update `updated_at`, so changing a label cannot reorder
   recent activity; transcript rows, message count, and session state remain
   unchanged.
+- `title_source` records `legacy`, `default`, `manual`, or `generated`. Schema
+  v23 classifies pre-existing known placeholder titles as `default` and all
+  other titles as `manual`; new session creation and manual rename write the
+  corresponding source. `default` means "not chosen by the user and still
+  replaceable": it covers a new session's placeholder and the deterministic
+  first-prompt fallback, which host-core writes only while the stored title is
+  still a recognized placeholder. A placeholder is recognized in every shipped
+  locale, because the renderer writes its localized `chat.untitledTask` label
+  when it creates a session. The standalone title plugin can read
+  exact-title compare-and-set, so a manual rename wins a race.
 - Import binds every non-empty normalized `projectPath` to `project_id`;
   path-less imports remain `NULL`. Re-importing a deterministic session id
   creates neither another session nor another project row.
@@ -656,7 +757,7 @@ Serves: mid-session model switches ("next turn only", spec 13 §4), the
 per-message cost chip's session rollup (benchmark §3.2), failed/aborted badges
 (§3.8), and retry lineage.
 
-### 4.6b turn_queue — Host-owned turn queue (schema v15)
+### 4.6b turn_queue — Host-owned turn queue (introduced in schema v15)
 
 ```sql
 CREATE TABLE turn_queue (
@@ -667,9 +768,12 @@ CREATE TABLE turn_queue (
   input_hash       TEXT NOT NULL,
   content          TEXT NOT NULL,
   attachments_json TEXT,
+  session_message_id TEXT,
+  user_message_id TEXT,
   permission_mode  TEXT NOT NULL,
   position         INTEGER NOT NULL,
   priority         INTEGER,
+  voice_origin_json TEXT,
   created_at       INTEGER NOT NULL
 );
 CREATE INDEX idx_turn_queue_session ON turn_queue(session_id, position);
@@ -691,12 +795,41 @@ CREATE UNIQUE INDEX idx_turn_queue_idempotency
   promoted entries are delivered first in click order and the remaining entries
   keep their `position` order. `queueReorder` swaps two adjacent non-promoted
   `position` values and refuses a promoted entry.
+- `user_message_id` and `voice_origin_json` (schema v20) retain the stable
+  user-message identity and optional Live Voice operation provenance across
+  restart. They are metadata only: queue recovery still does not replay work.
   `IDEMPOTENCY_CONFLICT`. A session holds at most eight entries.
 - `attachments_json` keeps the prompt's attachment references; bytes stay in
   the session scratch or project root like any other prompt attachment.
 - After a restart the module lists every entry, holds each session's queue
   until a controller attaches, and drains one entry after the active turn's
   terminal event. Deleting the session cascades to its entries.
+
+**Session Todo checklist — schema v21**
+
+```sql
+CREATE TABLE session_todo (
+  session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+  position INTEGER NOT NULL CHECK (position >= 0 AND position < 50),
+  content TEXT NOT NULL,
+  status TEXT NOT NULL CHECK (status IN ('pending', 'in_progress', 'completed', 'cancelled')),
+  priority TEXT NOT NULL DEFAULT 'medium' CHECK (priority IN ('high', 'medium', 'low')),
+  updated_at INTEGER NOT NULL,
+  PRIMARY KEY (session_id, position)
+);
+```
+
+`sessions.todo_revision` and `sessions.todo_updated_at` retain ordering metadata
+even when the checklist is empty. A host transaction updates those fields,
+deletes the prior rows, and inserts the normalized replacement. The revision
+advances for every successful write, including a clear. A unique partial
+`in_progress` index enforces the single active item invariant at the database
+boundary. Forks begin with revision zero and no rows; session deletion cascades
+the rows.
+
+The row content is bounded at 500 Unicode scalar values, contains no NUL, and
+is trimmed before storage. TodoWrite is the only writer; renderer and sidecar
+code access this state through host RPC.
 
 ### 4.6c session collaboration ledger — Host-owned delivery state (schema v16)
 
@@ -805,9 +938,10 @@ type Block =
       status: "ok" | "error" | "denied"; result?: unknown;
       completedAt?: string; durationMs?: number;
       toolUsage?: ToolTokenUsage }
-  | { type: "attachment"; kind: "image" | "file"; name: string;
-      ref: string /* attachments/<sha256> or absolute path */;
-      mimeType?: string; size?: number }
+  | { type: "attachment"; kind: "image" | "file" | "session"; name: string;
+      ref: string /* attachments/<sha256>, absolute path, or session id */;
+      mimeType?: string; size?: number;
+      text?: string /* bounded referenced-conversation excerpt */ }
   | { type: "hostedSearch"; status: "searching" | "completed" | "failed";
       rounds: Array<{ id: string;
         status: "searching" | "completed" | "failed";
@@ -830,6 +964,13 @@ type Block =
   `scratch/<sessionId>/replayed/` when a path fallback is required. Images
   above the inline bound are hashed and copied with streaming file operations;
   startup and history hydration must not load the whole image into memory.
+- A `kind: "session"` block is a conversation reference: it stores the session
+  id it names, the display title, and the bounded excerpt quoted to the model,
+  so a later turn reads the same reference instead of re-reading the referenced
+  conversation. The excerpt bound, the same-project rule, and the
+  `<session_reference>` prompt block belong to the reference contract
+  (`04-ux/08-component-spec.md` §20B); the host stores exactly what it is given
+  and never reads the referenced session to build one.
 - Assistant thinking is stored only in `thinking` blocks inside the file. The
   derived `text` column contains final answer text, so transcript search and
   answer previews do not expose or mix reasoning.
@@ -1017,7 +1158,7 @@ CREATE TABLE scheduled_tasks (
   id          TEXT PRIMARY KEY,
   title       TEXT NOT NULL,
   prompt      TEXT NOT NULL,
-  cadence     TEXT NOT NULL DEFAULT 'manual',  -- manual | hourly | daily | weekly
+  cadence     TEXT NOT NULL DEFAULT 'manual',  -- manual | hourly | interval | daily | weekly
   enabled     INTEGER NOT NULL DEFAULT 1,
   project_id  INTEGER REFERENCES projects(id) ON DELETE SET NULL,
   config_json TEXT NOT NULL DEFAULT '{}',      -- mode, cron expr, model override, notify policy
@@ -1039,14 +1180,43 @@ CREATE INDEX idx_task_runs ON task_runs(task_id, started_at DESC);
 ```
 
 A run that spawns a session gets its transcript for free via `session_id`.
+That transcript is identified as automation output by an `EXISTS` check against
+`task_runs` that every session summary and search hit carries as `scheduledRun`.
+The ownership is derived on read and never stored on the session row, so the
+SessionList and session search hide the transcript while it has a run, and
+deleting the task returns it to the ordinary lists instead of leaving it
+unreachable (issue #1291).
+`scheduled.listRuns` answers two shapes: one task's own history (`taskId`, at most
+200 rows) and one newest run per task (`latestPerTask`, one row per task, never
+combined with `taskId`). The task column reads the second shape. A global window
+over `task_runs` can be filled by one busy task — retention keeps the last 100
+runs *per task* — and would then report an idle task as never run, so the read
+that feeds the column is per task rather than a shared window.
+Retention keeps the newest 100 runs per task (`TASK_RUNS_KEEP`, applied on every
+boot). Ownership is derived from those rows, so a pruned run takes two things
+with it: the run leaves the task's history, and its session stops carrying
+`scheduledRun`, which returns that transcript to the SessionList and to session
+search. A task that runs faster than the kept window — an `interval` task from
+five minutes up, an hourly task after roughly four days — reaches that boundary;
+replacing the derived marker with a persistent origin is tracked with the rest
+of issue #1291.
+The task page also reads at most 200 runs per task, the bound
+`scheduled.listRuns` enforces for a single task's history.
 The existing JSON extension stores `schedule: {hour, minute, weekday}`,
-`nextRunAt` (epoch milliseconds) and `workspacePath` for desktop automations.
+`intervalMinutes` (5–1440; required by an `interval` cadence and read by no other
+one, so a schedule that keeps the field keeps its value), `nextRunAt` (epoch
+milliseconds), `workspacePath`, and `sessionMode` (`perRun` or `reuse`, absent
+means `perRun`) for desktop automations.
 Optional `weekdays` stores 1–7 unique integers in 0–6, overriding legacy
 `weekday` for weekly schedules. Missing `weekdays` preserves the single-day
 behavior. Invalid or empty selections are rejected before mutation. No table
 migration is needed. Daily/weekly schedules use the host local timezone; hourly
-schedules compute `nextRunAt = now + 3_600_000`, ignoring calendar fields. Absence
-of `schedule` leaves legacy tasks unarmed. No physical schema change is made.
+and interval schedules count elapsed time from the moment they were armed:
+hourly computes `nextRunAt = now + 3_600_000` and interval computes
+`nextRunAt = now + intervalMinutes × 60_000`, both ignoring calendar fields.
+An `interval` task whose schedule carries no `intervalMinutes` is refused rather
+than saved unarmed. Absence of `schedule` leaves legacy tasks unarmed. No
+physical schema change is made.
 Task wire fields project `schedule`, RFC3339 `nextRunAt`, `workspacePath` and the
 optional task-owned `permissionMode` plus paired `providerId`/`modelId` values.
 These additive values stay in `config_json`; no physical migration is required.
@@ -1182,7 +1352,8 @@ is the source of truth, the index is derived and self-healing.
 | event | file step | index/DB transaction |
 |---|---|---|
 | prompt accepted | append user message line | `last_seq` alloc (RETURNING) + index row + touch `sessions.updated_at`; then insert `turns(running)` |
-| assistant/tool message end | append message line; remove the in-flight checkpoint when its id matches | index row + touch session |
+| assistant/tool message end | append message line; remove the in-flight checkpoint when its id matches | validate optional `turnId` belongs to this session; if stale/missing, keep the message with a null turn link and emit a warning; otherwise insert the index row and touch session |
+| stale-turn outbox replay after an index failure | update all existing transcript lines for the message id to the latest snapshot; do not append another line | rebuild deduplicated message rows and `last_seq` from transcript order in one transaction, preserving only valid same-session turn links; FTS triggers stay synchronized |
 | streaming reply checkpoint (`session.saveInflightMessage`, D299) | atomically replace `<id>.inflight.json`; no-op for an empty message or an id already indexed | — |
 | context checkpoint (`session.appendCompaction`) | append typed checkpoint line after its referenced message boundary | — (checkpoint is not searchable transcript content) |
 | tool succeeded (Write/Edit) | — | upsert `artifacts` + `audit_log` row, same tx as result persistence |
@@ -1219,9 +1390,9 @@ prompt, computed from the full durable transcript merged with the live rows.
 A checkpoint is installed into the live runtime only after its append succeeds;
 therefore a failed/crashed checkpoint write leaves the previous full context or
 previous checkpoint authoritative rather than creating a memory-only state.
-A crash between file append and index commit leaves the message readable
-(transcript loads from the file) with only its search row missing until the
-next rewrite; transcript reads dedupe repeated ids keep-last.
+An append failure after the file write leaves the transcript authoritative while
+its derived index is repaired by the next rewrite or by replaying an unindexed
+outbox message with a stale turn reference; repeated ids are deduped keep-last.
 
 The renderer never needs the whole JSONL file to open a session. Its
 `session.get` request may specify a zero-based exclusive `messageBefore`, a
@@ -1288,7 +1459,7 @@ truncating at a guessed position.
     cross the host/Electron/renderer boundary
   - full transcript consumers → one sequential read of
     `sessions/<id>.jsonl` (no DB), retained for sidecar context and mutations
-  - session list → `idx_sessions_updated`
+  - session list → `idx_sessions_updated_id(updated_at DESC, id DESC)`
   - group-by-project → `idx_sessions_project`
   - badges/cost rollup → `idx_turns_session` (latest turn per session)
   - global token history → `idx_turns_ended_at` (completed turns by end time)
@@ -1303,7 +1474,7 @@ truncating at a guessed position.
 - JSON columns are read blind on hot paths (shipped to the renderer as-is);
   anything filtered or summed is a promoted column by rule.
 
-## 7. Versioning, v7 reset, and v8-to-v15 migration
+## 7. Versioning, v7 reset, and v8-to-v23 migration
 
 - `PRAGMA user_version` stays the schema authority; future structural changes
   add ordered Rust migration fns again, each in one transaction, with a
@@ -1314,7 +1485,7 @@ truncating at a guessed position.
   Sessions, providers, and settings from the old file are not carried over;
   the archive remains for manual recovery. All pre-v7 migration code
   (v1 `settings.sqlite` import, v2→v6 chain) is deleted.
-- Fresh installs run the full v15 DDL directly.
+- Fresh installs run the full v23 DDL directly.
 - **Schema v7 first reaches v8, then uses the guarded path.** The v7→v8
   migration is followed by the same guarded v8→v15 migration; schema-v9 and
   schema-v10 databases take the same guarded path and receive an exact readable
@@ -1368,6 +1539,16 @@ truncating at a guessed position.
   step. The v15→v16 session-collaboration step now stamps `16` (its own version)
   instead of the latest schema constant, so a v15 file can walk both steps in one
   launch.
+- **Schema v20 is additive.** It adds nullable `turn_queue.user_message_id`
+  and `turn_queue.voice_origin_json`; existing queue rows remain valid and
+  unset. The migration keeps a v19 backup, and queue entries remain held until
+  the existing Agent Host controller attaches.
+- **Schema v22 is additive.** It replaces `idx_sessions_updated` with
+  `idx_sessions_updated_id(updated_at DESC, id DESC)` for session-list ordering.
+  It changes no rows or persisted fields; a v21 backup precedes the migration.
+- **Schema v23 is additive.** It adds `sessions.title_source` and classifies
+  existing placeholder titles as `default`; every other existing title is
+  preserved and classified as `manual`. The migration keeps a v22 backup.
 - **Schema v14 is additive.** It adds nullable `sessions.deleted_at`, the
   partial deletion index, and `session_import_origins`. Existing sessions stay
   active and have no origin rows. The migration runs in the same guarded
@@ -1523,18 +1704,34 @@ line and search text, retaining sequence, owning turn and every other row.
 Late partial snapshots and duplicate terminal snapshots cannot overwrite the
 settled result. Recovery promotes the latest checkpoint in that same position.
 The outbox likewise keeps a newer snapshot that replaces an append while its
-host call is still pending. If `messages.id` already belongs to another
-session, the host remaps to `{sessionId}:{id}` before any JSONL write; a
-replay of the original id is a no-op against that remapped row. The outbox
-treats `UNIQUE constraint failed: messages.id` as an ack and keeps draining
-(D444). A permanently rejected append whose host error carries a
-`PERMISSION_DENIED:` prefix is likewise dropped so the FIFO can continue;
-`PLUGIN_PERMISSION_DENIED` and other host failures still pause (D597).
-Steering into a claimed collaboration delivery turn is extra human input: it
-must target that delivery's session, is exempt from the delivery
-content/attachment contract, does not inherit the delivery origin, and has
-any client-supplied `session_message` stripped. No schema migration is
-required.
+host call is still pending. An optional `turnId` is retained only when the turn
+exists and belongs to the target session; a missing or cross-session turn is
+logged and omitted without rejecting or losing the message. If an older failed
+append already wrote that message to JSONL, replay updates those lines and
+rebuilds the deduplicated index in transcript order rather than appending again.
+If `messages.id` already belongs to another session, the host remaps to
+`{sessionId}:{id}` before any JSONL write; a replay of the original id is a
+no-op against that remapped row. The outbox treats
+`UNIQUE constraint failed: messages.id` as an ack and keeps draining (D444).
+A permanently rejected append whose host error carries a `PERMISSION_DENIED:`
+prefix is likewise dropped so the FIFO can continue; `PLUGIN_PERMISSION_DENIED`
+and other host failures still pause while their retry budget lasts (D597). A
+failure the outbox cannot classify is retried within the same host generation
+on a bounded backoff (5s doubling to 60s) and quarantined after five
+consecutive failures into `session-message-outbox.dead-letter.json` (newest 256
+appends, oldest discarded first), carrying its payload, session id, timestamp,
+and host error, so one unclassifiable head cannot starve every session's writes
+(D656). A restarted host is a new generation and retries the head at once.
+Quarantined appends are never replayed automatically, and `session.delete`
+drops that session's quarantined appends too.
+When the 1024-entry cap remains
+full after a flush attempt, enqueue logs the rejected key/session and rejects;
+it does not report that entry as queued. Generic foreign-key errors are not
+treated as acknowledgements. Steering into a claimed collaboration delivery
+turn is extra human input: it must target that delivery's session, is exempt
+from the delivery content/attachment contract, does not inherit the delivery
+origin, and has any client-supplied `session_message` stripped. No schema
+migration is required.
 
 ## 12. Native Pi session authority (ADR 0254)
 
@@ -1543,6 +1740,11 @@ source-discriminated transcript authority owned by the Node agent sidecar. They
 are never inserted into SQLite and never copied to the Desktop transcript
 directory. `session.list` merges their projections with Rust-owned
 Desktop summaries, and `session.get` routes by the opaque `native-pi:` id.
+Discovery deduplicates native files that share the same JSONL `header.id`,
+keeping the projection with the newest transcript `updatedAt`. The selected
+file retains its path-derived opaque session id; duplicate files are not
+rewritten or deleted, and their paths are omitted from the in-memory lookup
+map for the current scan.
 
 Detail reads take an immutable byte snapshot, parse it into an in-memory
 `SessionManager`, and follow the current native branch. They must not call
@@ -1603,9 +1805,9 @@ when converted. Known intent survives cadence changes and database reopen.
 This additive JSON key needs no table or schema-version migration. Older
 versions ignore the key and cannot enforce the new conversion guard.
 
-## Schema 20: current-turn collaboration receipts
+## Schema 24: current-turn collaboration receipts
 
-Migration 19 -> 20 backs up the prior database and adds
+Migration 23 -> 24 backs up the prior database and adds
 `session_collaboration_current_turn`; it does not alter old ledger/queue rows.
 The table is keyed by message ID and references an exact target turn. Its
 `state` is `offered`, `accepted` or `fallback`; only an accepted receipt carries
@@ -1624,3 +1826,15 @@ interrupted, never converted to another prompt. Never-adopted messages restore
 through the held durable Agent Host queue. Queue exhaustion keeps the remaining
 fallback in the ledger for later reconciliation; it is not silently discarded.
 The schema permits neither direct renderer writes nor plugin-selected provenance.
+
+## Physical operation usage ledger
+
+Optional operation ID, origin, physical account/model and cost status augment
+existing message/turn usage. `session.recordUsage` merges identities into the
+existing turn `usage_json`; no schema migration or historical rewrite is needed.
+Identified records are idempotent across event replay, outbox retries, tool results
+and parent/subagent rollups. Legacy token-only rows remain readable and additive.
+An unknown price is distinct from a known zero price; partial known costs remain
+on the individual operations. Late usage targets its captured turn and does not
+revive it or debit the currently active turn. Immediate nested parent and owning
+Task remain separate optional transcript/event fields.

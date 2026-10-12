@@ -293,6 +293,8 @@ pub(super) fn recover(db: &Database) -> Result<()> {
                 input_hash: input_hash(&message)?,
                 content: message.content.clone(),
                 session_message_id: Some(message.id.clone()),
+                user_message_id: None,
+                voice_origin: None,
                 attachments: None,
                 permission_mode: permissions::effective_mode(db, &message.target_session_id)?,
             },

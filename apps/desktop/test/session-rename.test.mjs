@@ -49,6 +49,7 @@ test("rename dialog is modal, localized, and caps input by Unicode code points",
   assert.match(dialogSource, /Array\.from\(event\.target\.value\)/);
   assert.match(dialogSource, /MAX_SESSION_TITLE_LENGTH/);
   assert.match(dialogSource, /t\("session\.renameSave"\)/);
+  assert.match(dialogSource, /useBlockingOverlay\(\)/);
   assert.match(styles, /\.session-rename-dialog-overlay\s*\{[^}]*z-index:\s*65;/s);
 });
 
@@ -66,7 +67,7 @@ test("host title validation is bounded and does not change activity ordering", (
   assert.match(hostSource, /MAX_SESSION_TITLE_CHARS: usize = 80/);
   assert.match(hostSource, /let title = title\.trim\(\)/);
   assert.match(hostSource, /title\.chars\(\)\.count\(\) > MAX_SESSION_TITLE_CHARS/);
-  assert.match(hostSource, /UPDATE sessions SET title = \?1 WHERE id = \?2/);
+  assert.match(hostSource, /UPDATE sessions SET title = \?1, title_source = \?2 WHERE id = \?3/);
   assert.doesNotMatch(hostSource, /UPDATE sessions SET title = \?1, updated_at = \?2 WHERE id = \?3/);
   assert.match(hostSource, /rename_session_normalizes_title_without_touching_activity/);
 });

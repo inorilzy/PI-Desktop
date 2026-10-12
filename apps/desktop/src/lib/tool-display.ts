@@ -8,6 +8,7 @@ export type ToolAction =
   | "fetch"
   | "fork"
   | "delegate"
+  | "todo"
   | "use";
 
 const SUMMARY_KEYS: Record<ToolAction, string[]> = {
@@ -24,6 +25,7 @@ const SUMMARY_KEYS: Record<ToolAction, string[]> = {
   // tool (ADR 0089) carries only delegation ids, which read as bare UUIDs, so
   // it summarizes from the agent names in its own result roster instead (D268).
   delegate: ["description", "agent"],
+  todo: [],
   use: [
     "command",
     "cmd",
@@ -36,7 +38,6 @@ const SUMMARY_KEYS: Record<ToolAction, string[]> = {
     "prompt",
   ],
 };
-
 function compact(value: string, limit = 220) {
   const singleLine = value.replace(/\s+/g, " ").trim();
   return singleLine.length > limit
@@ -59,6 +60,10 @@ function bareToolName(toolName?: string): string {
     .pop()!
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "");
+}
+
+export function isAskToolName(toolName?: string): boolean {
+  return toolName?.toLowerCase() === "asktool";
 }
 
 /** The tool that STARTS a subagent (ADR 0062). The lifecycle tools of ADR 0089
@@ -104,6 +109,7 @@ export function getToolAction(toolName?: string): ToolAction {
   if (isDelegationStartTool(toolName) || delegationLifecycleKind(toolName)) {
     return "delegate";
   }
+  if (bareToolName(toolName) === "todowrite") return "todo";
   if (matches(["websearch", "searchquery", "fetch", "http", "browser"])) {
     return "fetch";
   }
@@ -112,12 +118,8 @@ export function getToolAction(toolName?: string): ToolAction {
   if (matches(["grep", "rg", "search", "searchfiles"])) return "search";
   if (matches(["write", "writefile", "createfile"])) return "write";
   if (matches(["edit", "editfile", "applypatch", "patch"])) return "edit";
-  if (matches(["fork", "forkagent", "forktask", "forksession"])) {
-    return "fork";
-  }
-  if (
-    matches(["bash", "shell", "exec", "execcommand", "runcommand", "terminal"])
-  ) {
+  if (matches(["fork", "forkagent", "forktask", "forksession"])) return "fork";
+  if (matches(["bash", "shell", "exec", "execcommand", "runcommand", "terminal"])) {
     return "run";
   }
   return "use";
@@ -180,6 +182,15 @@ export function getToolSummary(toolName: string | undefined, args: unknown) {
   const action = getToolAction(toolName);
   if (args && typeof args === "object") {
     const record = args as Record<string, unknown>;
+    if (isAskToolName(toolName) && Array.isArray(record.questions)) {
+      const first = record.questions[0];
+      if (first && typeof first === "object" && !Array.isArray(first)) {
+        const question = (first as Record<string, unknown>).question;
+        if (typeof question === "string" && question.trim()) {
+          return compact(question);
+        }
+      }
+    }
     const key = getToolSummaryKey(toolName, args);
     if (key) return compact(summaryText(record[key]));
     const fallback = formatToolValue(record);

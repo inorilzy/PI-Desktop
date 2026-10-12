@@ -31,6 +31,7 @@ test("launch resolves definition-only pins without granting Task.model selection
         if (method === "providers.list") return { providers };
         if (method === "providers.getSecret") return {};
         if (method === "agents.active") return { subagents: [{ id: "reviewer", path }] };
+        if (method === "skills.disabledBuiltins") return { disabled: [] };
         if (method === "skills.active") return { skills: [] };
         if (method === "mcp.active") return { servers: [] };
         if (method === "project.memory.get") return {};
@@ -40,10 +41,9 @@ test("launch resolves definition-only pins without granting Task.model selection
     logger: { app() {} }, userMcp: { setRecords() {}, toolsForProject: async () => [] },
     plugins: { listLoaded: () => [], getSkills: () => [], getTools: () => [], getAgentExtensions: () => [] },
     sessionProjects: new Map(), dataDir: root, vendorOAuth: {},
-    modelsDevCatalog: { ensureLoaded: async () => {}, findModel: () => undefined },
+    modelsDevCatalog: { configureAccount: () => {}, ensureLoaded: async () => {}, findModel: () => undefined },
     getWorkspacePath: () => root, pluginActiveInProject: () => true,
     bindingForModel: (row, id) => row.models.find((m) => m.id === id),
-    modelsDevModelFor: () => undefined,
     effectiveSubagentModelConfig: (row, id, catalog) => {
       const modelConfig = modelConfigWithBinding(catalog, row.models.find((m) => m.id === id));
       return { modelConfig, capabilities: capabilitiesFromModelConfig(modelConfig) };
